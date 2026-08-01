@@ -219,18 +219,43 @@ export async function getStationsByUuids(uuids: string[]): Promise<Station[]> {
   return results;
 }
 
+/**
+ * Fetch stations in random order.
+ * Soft filters (language, tag, https, …) are allowed; order/offset always stay random.
+ */
 export async function getRandomStations(
-  limit = 1,
+  limit = 12,
   extra: SearchParams = {}
 ): Promise<Station[]> {
+  // Strip pagination/sort so callers cannot accidentally force popular-first results.
+  const {
+    order: _order,
+    reverse: _reverse,
+    offset: _offset,
+    limit: _limit,
+    ...filters
+  } = extra;
   return searchStations({
+    ...filters,
     limit,
     offset: 0,
     order: 'random',
     reverse: false,
     hidebroken: true,
-    ...extra,
   });
+}
+
+/** Whether a station looks streamable enough to attempt (not a ranking signal). */
+export function isLikelyPlayable(
+  station: Station,
+  opts?: { httpsOnly?: boolean }
+): boolean {
+  const url = (station.url_resolved || station.url || '').trim();
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  if (opts?.httpsOnly && !/^https:\/\//i.test(url)) return false;
+  // 0 = last server check failed; treat as dead when the field is present.
+  if (station.lastcheckok === 0) return false;
+  return true;
 }
 
 export async function getStationsNear(

@@ -248,6 +248,66 @@ class AudioPlayer {
     }
   }
 
+  /**
+   * Wait until the current play attempt is clearly playing, has failed,
+   * was superseded, or times out. Used by Surprise Me retries.
+   */
+  waitForOutcome(
+    timeoutMs = 10_000
+  ): Promise<'playing' | 'error' | 'timeout' | 'cancelled'> {
+    return new Promise((resolve) => {
+      const gen = this.playGeneration;
+      if (gen === 0) {
+        resolve('cancelled');
+        return;
+      }
+      if (this.mediaGeneration === gen && this._playing && !this._loading) {
+        resolve('playing');
+        return;
+      }
+      if (this.mediaGeneration === gen && this._error && !this._loading) {
+        resolve('error');
+        return;
+      }
+
+      let settled = false;
+      const finish = (result: 'playing' | 'error' | 'timeout' | 'cancelled') => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.listeners.delete(onChange);
+        resolve(result);
+      };
+
+      const onChange = () => {
+        if (this.playGeneration !== gen) {
+          finish('cancelled');
+          return;
+        }
+        if (this.mediaGeneration === gen && this._playing && !this._loading) {
+          finish('playing');
+          return;
+        }
+        if (this._error && !this._loading) {
+          finish('error');
+        }
+      };
+
+      const timer = setTimeout(() => {
+        if (this.playGeneration !== gen) {
+          finish('cancelled');
+          return;
+        }
+        if (this._playing) finish('playing');
+        else finish('timeout');
+      }, timeoutMs);
+
+      this.listeners.add(onChange);
+      // Re-check in case state flipped between schedule and subscribe.
+      onChange();
+    });
+  }
+
   toggle() {
     if (!this._station) return;
     if (this._playing) {

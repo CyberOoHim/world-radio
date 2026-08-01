@@ -18,6 +18,7 @@ import {
   getStationsNear,
   getTags,
   getTopStations,
+  isLikelyPlayable,
   resolveTimeOfDayPeriod,
   searchStations,
   timeOfDayMoods,
@@ -108,6 +109,13 @@ let eventsBound = false;
 let shellBuilt = false;
 let applyingRoute = false;
 let infiniteObserver: IntersectionObserver | null = null;
+/** Guards concurrent Surprise Me runs; bumped to cancel in-flight retries. */
+let surpriseSeq = 0;
+let surpriseBusy = false;
+
+const SURPRISE_BATCH = 16;
+const SURPRISE_MAX_TRIES = 6;
+const SURPRISE_PLAY_TIMEOUT_MS = 10_000;
 
 // ─── Icons ───────────────────────────────────────────────
 
@@ -299,15 +307,193 @@ async function playRelative(delta: number) {
   await playStation(list[next]);
 }
 
+function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+/** Filters shared by Surprise Me (not list sort order — that broke true random). */
+function surpriseSoftFilters(): SearchParams {
+  const filters: SearchParams = { hidebroken: true };
+  if (state.languageFilter) filters.language = state.languageFilter;
+  if (state.httpsOnly) filters.is_https = true;
+  return filters;
+}
+
+function isSurpriseCandidate(station: Station, excludeId: string | null): boolean {
+  if (excludeId && station.stationuuid === excludeId) return false;
+  return isLikelyPlayable(station, { httpsOnly: state.httpsOnly });
+}
+
+/**
+ * Build a pool of random playable stations.
+ * Strategies: pure random → context tag → popular random offset (fallback).
+ */
+async function fetchSurprisePool(excludeId: string | null): Promise<Station[]> {
+  const soft = surpriseSoftFilters();
+  const seen = new Set<string>();
+  const pool: Station[] = [];
+
+  const add = (list: Station[]) => {
+    for (const s of list) {
+      if (seen.has(s.stationuuid)) continue;
+      if (!isSurpriseCandidate(s, excludeId)) continue;
+      seen.add(s.stationuuid);
+      pool.push(s);
+    }
+  };
+
+  const strategies: Array<() => Promise<Station[]>> = [
+    () => getRandomStations(SURPRISE_BATCH, soft),
+  ];
+
+  // Prefer current Discover tag / time-of-day mood when set, else a random mood.
+  const contextTag =
+    state.selectedTag ||
+    (state.view === 'discover'
+      ? timeOfDayMoods(resolveTimeOfDayPeriod(state.timeOfDayMode))[
+          Math.floor(Math.random() * 4)
+        ]?.id
+      : null) ||
+    MOOD_TAGS[Math.floor(Math.random() * MOOD_TAGS.length)]?.id;
+
+  if (contextTag) {
+    strategies.push(() =>
+      getRandomStations(SURPRISE_BATCH, { ...soft, tag: contextTag })
+    );
+  }
+
+  // Fallback if order=random is empty/broken on a mirror: random window of popular.
+  strategies.push(async () => {
+    const offset = Math.floor(Math.random() * 500);
+    return searchStations({
+      ...soft,
+      limit: SURPRISE_BATCH,
+      offset,
+      order: 'clickcount',
+      reverse: true,
+    });
+  });
+
+  for (const run of strategies) {
+    try {
+      add(await run());
+    } catch {
+      // try next strategy
+    }
+    if (pool.length >= 8) break;
+  }
+
+  return shuffleInPlace(pool);
+}
+
+/**
+ * Surprise Me: pick a truly random station (not current sort), skip dead streams,
+ * and retry a few candidates until one actually starts playing.
+ */
 async function playSurprise() {
+  if (surpriseBusy) {
+    showToast('Still finding a surprise…');
+    return;
+  }
+
+  const seq = ++surpriseSeq;
+  surpriseBusy = true;
+  const previous = state.current;
   showToast('Finding a surprise…');
+
   try {
-    const extra = listQueryExtras();
-    const list = await getRandomStations(1, extra);
-    if (list[0]) await playStation(list[0]);
-    else showToast('No station found — try again');
+    const pool = await fetchSurprisePool(previous?.stationuuid ?? null);
+    if (seq !== surpriseSeq) return;
+
+    if (!pool.length) {
+      showToast('No surprise stations available — try again');
+      return;
+    }
+
+    const tries = pool.slice(0, SURPRISE_MAX_TRIES);
+    let attempt = 0;
+
+    for (const station of tries) {
+      if (seq !== surpriseSeq) return;
+      attempt++;
+      if (attempt > 1) {
+        showToast(`Trying another… (${attempt}/${tries.length})`);
+      }
+
+      // Update UI without committing to recent until playback succeeds.
+      state.current = station;
+      state.detailStation = null;
+      sleepMenuOpen = false;
+      renderPlayer();
+      renderDetail();
+      updatePlaybackUI();
+      announce(`Trying ${station.name}`);
+
+      await player.play(station);
+      if (seq !== surpriseSeq) return;
+
+      const outcome = await player.waitForOutcome(SURPRISE_PLAY_TIMEOUT_MS);
+      if (seq !== surpriseSeq) return;
+
+      // Superseded by another play (user picked a station) — stop the hunt.
+      if (outcome === 'cancelled') return;
+
+      if (outcome === 'playing') {
+        pushRecent(station);
+        saveLastStation(station);
+        if (!applyingRoute) {
+          setHash({ kind: 'station', uuid: station.stationuuid });
+        }
+        syncMediaSession();
+        updatePlaybackUI();
+        announce(`Playing ${station.name}`);
+        showToast(
+          `Surprise: ${station.name.slice(0, 42)}${station.name.length > 42 ? '…' : ''}`,
+          3200
+        );
+        return;
+      }
+
+      // Autoplay blocked — keep this station selected; user can tap play.
+      if (player.error?.includes('Click play')) {
+        pushRecent(station);
+        saveLastStation(station);
+        if (!applyingRoute) {
+          setHash({ kind: 'station', uuid: station.stationuuid });
+        }
+        showToast('Tap play to start the surprise station');
+        return;
+      }
+    }
+
+    // All candidates failed — restore previous selection for a calmer recovery.
+    if (previous) {
+      state.current = previous;
+      renderPlayer();
+      updatePlaybackUI();
+      showToast('Those streams failed — try Surprise me again');
+    } else {
+      state.current = null;
+      renderPlayer();
+      updatePlaybackUI();
+      showToast('No working surprise found — try again');
+    }
   } catch {
+    if (seq !== surpriseSeq) return;
     showToast('Could not load a random station');
+    if (previous && state.current?.stationuuid !== previous.stationuuid) {
+      state.current = previous;
+      renderPlayer();
+      updatePlaybackUI();
+    }
+  } finally {
+    if (seq === surpriseSeq) surpriseBusy = false;
   }
 }
 
