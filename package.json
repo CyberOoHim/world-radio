@@ -1,0 +1,20 @@
+{
+  "name": "world-radio",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Relaxing world radio player with thousands of global stations",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1"
+  },
+  "dependencies": {
+    "@fontsource/dm-sans": "^5.2.8",
+    "@fontsource/instrument-serif": "^5.2.8"
+  }
+}
