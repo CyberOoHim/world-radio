@@ -8,34 +8,62 @@ import {
   CONTINENTS,
   MOOD_TAGS,
   getCountries,
+  getLanguages,
+  getRandomStations,
   getStationsByCountry,
   getStationsByTag,
   getStationsByUuid,
+  getStationsByUuids,
+  getStationsNear,
   getTags,
   getTopStations,
   searchStations,
+  timeOfDayMoods,
+  type SearchParams,
 } from './api/radioBrowser';
+import { updateMediaSession } from './mediaSession';
 import { player } from './player';
+import { parseHash, setHash, stationShareUrl } from './router';
+import { formatSleepRemaining, sleepTimer } from './sleepTimer';
 import {
+  exportFavoritesJson,
+  importFavoritesJson,
   loadFavorites,
+  loadLastStation,
+  loadPrefs,
   loadRecent,
   loadVolume,
   saveFavorites,
+  saveLastStation,
+  savePrefs,
   saveRecent,
   saveVolume,
+  toSnapshot,
 } from './storage';
-import type { AppState, Country, Station, ViewId } from './types';
+import type { AppState, Country, SleepMinutes, SortId, Station, ViewId } from './types';
 
 const PAGE = 48;
+const SLEEP_OPTIONS: SleepMinutes[] = [15, 30, 45, 60, 90];
+const SORT_OPTIONS: { id: SortId; label: string }[] = [
+  { id: 'clickcount', label: 'Popular' },
+  { id: 'clicktrend', label: 'Trending' },
+  { id: 'votes', label: 'Votes' },
+  { id: 'name', label: 'Name' },
+  { id: 'bitrate', label: 'Bitrate' },
+  { id: 'random', label: 'Random' },
+];
+
+const prefs = loadPrefs();
 
 const state: AppState = {
   view: 'discover',
   stations: [],
   countries: [],
   tags: [],
+  languages: [],
   favorites: loadFavorites(),
   recent: loadRecent(),
-  current: null,
+  current: loadLastStation(),
   playing: false,
   loading: true,
   loadingMore: false,
@@ -48,14 +76,29 @@ const state: AppState = {
   offset: 0,
   hasMore: true,
   continentFilter: null,
+  browseFilter: '',
+  sort: prefs.sort,
+  languageFilter: null,
+  httpsOnly: prefs.httpsOnly,
+  detailStation: null,
+  sleepUntil: null,
+  sleepMinutes: null,
+  toast: null,
+  nearMe: false,
+  userLat: null,
+  userLon: null,
 };
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let navOpen = false;
+let sleepMenuOpen = false;
 let totalStationHint = 0;
-/** Monotonic token so overlapping loads discard stale responses. */
 let loadSeq = 0;
 let eventsBound = false;
+let shellBuilt = false;
+let applyingRoute = false;
+let infiniteObserver: IntersectionObserver | null = null;
 
 // ─── Icons ───────────────────────────────────────────────
 
@@ -70,10 +113,18 @@ const icons = {
   search: `<svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>`,
   play: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>`,
   pause: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>`,
+  prev: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h2v14H5V5zm13 1v12l-9-6 9-6z"/></svg>`,
+  next: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 5h2v14h-2V5zM6 6l9 6-9 6V6z"/></svg>`,
   volume: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path d="M16 9a4 4 0 010 6M18.5 7a7 7 0 010 10"/></svg>`,
   mute: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path d="M18 10l4 4M22 10l-4 4"/></svg>`,
   menu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg>`,
   loader: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 00-9-9"/></svg>`,
+  moon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><path d="M21 14.5A8.5 8.5 0 0110.5 3 7 7 0 1019 16.5c.7-.6 1.3-1.3 2-2z"/></svg>`,
+  share: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.5 13.5l7 4M15.5 6.5l-7 4"/></svg>`,
+  close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
+  surprise: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3"/></svg>`,
+  pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><path d="M12 21s7-5.5 7-11a7 7 0 10-14 0c0 5.5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>`,
+  external: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><path d="M14 5h5v5M19 5l-9 9M10 7H6a2 2 0 00-2 2v9a2 2 0 002 2h9a2 2 0 002-2v-4"/></svg>`,
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -101,31 +152,139 @@ function escapeHtml(s: string | null | undefined): string {
     .replace(/"/g, '&quot;');
 }
 
+function titleCaseTag(name: string): string {
+  return name
+    .split(/[\s_-]+/)
+    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : ''))
+    .join(' ');
+}
+
 function isFav(id: string): boolean {
-  return state.favorites.includes(id);
+  return state.favorites.some((s) => s.stationuuid === id);
+}
+
+function showToast(msg: string, ms = 2600) {
+  state.toast = msg;
+  if (toastTimer) clearTimeout(toastTimer);
+  renderToast();
+  toastTimer = setTimeout(() => {
+    state.toast = null;
+    renderToast();
+  }, ms);
+}
+
+function persistPrefs() {
+  savePrefs({ httpsOnly: state.httpsOnly, sort: state.sort });
+}
+
+function listQueryExtras(): SearchParams {
+  const extra: SearchParams = {};
+  if (state.languageFilter) extra.language = state.languageFilter;
+  if (state.httpsOnly) extra.is_https = true;
+  if (state.sort === 'random') {
+    extra.order = 'random';
+    extra.reverse = false;
+  } else if (state.sort === 'name') {
+    extra.order = 'name';
+    extra.reverse = false;
+  } else {
+    extra.order = state.sort;
+    extra.reverse = true;
+  }
+  return extra;
 }
 
 function toggleFavorite(station: Station) {
   if (isFav(station.stationuuid)) {
-    state.favorites = state.favorites.filter((id) => id !== station.stationuuid);
+    state.favorites = state.favorites.filter((s) => s.stationuuid !== station.stationuuid);
+    showToast('Removed from favorites');
   } else {
-    state.favorites = [station.stationuuid, ...state.favorites];
+    state.favorites = [toSnapshot(station), ...state.favorites.filter((s) => s.stationuuid !== station.stationuuid)];
+    showToast('Added to favorites');
   }
   saveFavorites(state.favorites);
-  render();
+  renderNav();
+  renderMain();
+  updatePlaybackUI();
+  if (state.detailStation?.stationuuid === station.stationuuid) {
+    state.detailStation = station;
+    renderDetail();
+  }
 }
 
 function pushRecent(station: Station) {
   const rest = state.recent.filter((s) => s.stationuuid !== station.stationuuid);
-  state.recent = [station, ...rest].slice(0, 40);
+  state.recent = [toSnapshot(station), ...rest].slice(0, 40);
   saveRecent(state.recent);
+}
+
+function syncMediaSession() {
+  updateMediaSession(state.current, player.playing, {
+    play: () => {
+      if (state.current) {
+        if (player.station?.stationuuid === state.current.stationuuid) player.toggle();
+        else void playStation(state.current);
+      }
+    },
+    pause: () => player.pause(),
+    next: () => void playRelative(1),
+    previous: () => void playRelative(-1),
+  });
 }
 
 async function playStation(station: Station) {
   state.current = station;
+  state.detailStation = null;
   pushRecent(station);
-  render();
+  saveLastStation(station);
+  sleepMenuOpen = false;
+  renderPlayer();
+  renderDetail();
+  updatePlaybackUI();
+  announce(`Playing ${station.name}`);
+  if (!applyingRoute) {
+    setHash({ kind: 'station', uuid: station.stationuuid }, true);
+  }
   await player.play(station);
+  syncMediaSession();
+}
+
+function queueList(): Station[] {
+  if (state.stations.length) return state.stations;
+  if (state.recent.length) return state.recent;
+  return state.favorites;
+}
+
+async function playRelative(delta: number) {
+  const list = queueList();
+  if (!list.length) {
+    showToast('No station queue — browse or search first');
+    return;
+  }
+  const curId = state.current?.stationuuid;
+  let idx = curId ? list.findIndex((s) => s.stationuuid === curId) : -1;
+  if (idx < 0) idx = delta > 0 ? -1 : 0;
+  let next = idx + delta;
+  if (next < 0) next = list.length - 1;
+  if (next >= list.length) next = 0;
+  await playStation(list[next]);
+}
+
+async function playSurprise() {
+  showToast('Finding a surprise…');
+  try {
+    const extra = listQueryExtras();
+    const list = await getRandomStations(1, extra);
+    if (list[0]) await playStation(list[0]);
+    else showToast('No station found — try again');
+  } catch {
+    showToast('Could not load a random station');
+  }
+}
+
+function announce(text: string) {
+  const el = document.getElementById('live-region');
+  if (el) el.textContent = text;
 }
 
 // ─── Data loading ────────────────────────────────────────
@@ -133,31 +292,40 @@ async function playStation(station: Station) {
 async function loadDiscover(reset = true) {
   const seq = ++loadSeq;
   const tagAtStart = state.selectedTag;
+  const nearAtStart = state.nearMe;
   const offsetAtStart = reset ? 0 : state.offset;
+  const extras = listQueryExtras();
 
   if (reset) {
     state.loading = true;
     state.error = null;
     state.offset = 0;
     state.stations = [];
-    render();
+    renderMain();
   } else {
     state.loadingMore = true;
-    render();
+    renderLoadMore();
   }
 
   try {
     let list: Station[];
-    if (tagAtStart) {
-      list = await getStationsByTag(tagAtStart, PAGE, offsetAtStart);
+    if (nearAtStart && state.userLat != null && state.userLon != null) {
+      list = await getStationsNear(state.userLat, state.userLon, PAGE, offsetAtStart, {
+        ...extras,
+        order: 'distance',
+        reverse: false,
+      });
+    } else if (tagAtStart) {
+      list = await getStationsByTag(tagAtStart, PAGE, offsetAtStart, extras);
     } else {
-      list = await getTopStations(PAGE, offsetAtStart);
+      list = await getTopStations(PAGE, offsetAtStart, extras);
     }
     if (seq !== loadSeq) return;
-    if (state.view !== 'discover' || state.selectedTag !== tagAtStart) return;
+    if (state.view !== 'discover' || state.selectedTag !== tagAtStart || state.nearMe !== nearAtStart)
+      return;
 
     state.stations = reset ? list : [...state.stations, ...list];
-    state.hasMore = list.length >= PAGE;
+    state.hasMore = list.length >= PAGE && state.sort !== 'random';
     state.offset = offsetAtStart + list.length;
   } catch (e) {
     if (seq !== loadSeq) return;
@@ -167,23 +335,25 @@ async function loadDiscover(reset = true) {
     if (seq !== loadSeq) return;
     state.loading = false;
     state.loadingMore = false;
-    render();
+    renderMain();
+    setupInfiniteScroll();
   }
 }
 
 async function loadSearch(q: string, reset = true) {
   const seq = ++loadSeq;
   const offsetAtStart = reset ? 0 : state.offset;
+  const extras = listQueryExtras();
 
   if (reset) {
     state.loading = true;
     state.error = null;
     state.offset = 0;
     state.stations = [];
-    render();
+    renderMain();
   } else {
     state.loadingMore = true;
-    render();
+    renderLoadMore();
   }
 
   try {
@@ -191,14 +361,13 @@ async function loadSearch(q: string, reset = true) {
       name: q,
       limit: PAGE,
       offset: offsetAtStart,
-      order: 'clickcount',
-      reverse: true,
+      ...extras,
     });
     if (seq !== loadSeq) return;
     if (state.view !== 'search' || state.query.trim() !== q) return;
 
     state.stations = reset ? list : [...state.stations, ...list];
-    state.hasMore = list.length >= PAGE;
+    state.hasMore = list.length >= PAGE && state.sort !== 'random';
     state.offset = offsetAtStart + list.length;
   } catch (e) {
     if (seq !== loadSeq) return;
@@ -208,32 +377,34 @@ async function loadSearch(q: string, reset = true) {
     if (seq !== loadSeq) return;
     state.loading = false;
     state.loadingMore = false;
-    render();
+    renderMain();
+    setupInfiniteScroll();
   }
 }
 
 async function loadCountryStations(code: string, reset = true) {
   const seq = ++loadSeq;
   const offsetAtStart = reset ? 0 : state.offset;
+  const extras = listQueryExtras();
 
   if (reset) {
     state.loading = true;
     state.error = null;
     state.offset = 0;
     state.stations = [];
-    render();
+    renderMain();
   } else {
     state.loadingMore = true;
-    render();
+    renderLoadMore();
   }
 
   try {
-    const list = await getStationsByCountry(code, PAGE, offsetAtStart);
+    const list = await getStationsByCountry(code, PAGE, offsetAtStart, extras);
     if (seq !== loadSeq) return;
     if (state.view !== 'countries' || state.selectedCountry !== code) return;
 
     state.stations = reset ? list : [...state.stations, ...list];
-    state.hasMore = list.length >= PAGE;
+    state.hasMore = list.length >= PAGE && state.sort !== 'random';
     state.offset = offsetAtStart + list.length;
   } catch (e) {
     if (seq !== loadSeq) return;
@@ -243,21 +414,28 @@ async function loadCountryStations(code: string, reset = true) {
     if (seq !== loadSeq) return;
     state.loading = false;
     state.loadingMore = false;
-    render();
+    renderMain();
+    setupInfiniteScroll();
   }
 }
 
 async function ensureMeta() {
   try {
-    const [countries, tags] = await Promise.all([getCountries(), getTags(150)]);
+    const [countries, tags, languages] = await Promise.all([
+      getCountries(),
+      getTags(200),
+      getLanguages(80),
+    ]);
     state.countries = countries;
     state.tags = tags;
+    state.languages = languages;
     totalStationHint = countries.reduce((sum, c) => sum + c.stationcount, 0);
   } catch {
-    // non-fatal; browse views can retry
+    // non-fatal
   }
-  // Meta is shared across views — always apply, then re-render current shell.
-  render();
+  renderNav();
+  renderMain();
+  renderTopbar();
 }
 
 async function loadFavoritesStations() {
@@ -265,75 +443,74 @@ async function loadFavoritesStations() {
   state.loading = true;
   state.error = null;
   state.hasMore = false;
-  render();
+  renderMain();
 
   try {
     if (state.favorites.length === 0) {
       if (seq !== loadSeq || state.view !== 'favorites') return;
       state.stations = [];
     } else {
-      // Resolve favorites from recent first, then fetch missing by uuid
       const byId = new Map<string, Station>();
+      for (const s of state.favorites) byId.set(s.stationuuid, s);
       for (const s of state.recent) byId.set(s.stationuuid, s);
-      for (const s of state.stations) byId.set(s.stationuuid, s);
 
-      const missing = state.favorites.filter((id) => !byId.has(id));
-      if (missing.length > 0) {
-        const stations = await fetchStationsByUuids(missing);
+      const missing = state.favorites
+        .filter((s) => !s.url && !s.url_resolved)
+        .map((s) => s.stationuuid)
+        .filter((id) => {
+          const cached = byId.get(id);
+          return !cached?.url && !cached?.url_resolved;
+        });
+
+      // Also refresh stubs that only have uuid
+      const stubIds = state.favorites
+        .filter((s) => s.name === 'Saved station' || !s.name)
+        .map((s) => s.stationuuid);
+
+      const toFetch = [...new Set([...missing, ...stubIds])];
+      if (toFetch.length > 0) {
+        const stations = await getStationsByUuids(toFetch);
         if (seq !== loadSeq || state.view !== 'favorites') return;
         for (const s of stations) byId.set(s.stationuuid, s);
+        // Upgrade stored favorites
+        state.favorites = state.favorites.map((s) => byId.get(s.stationuuid) ?? s);
+        saveFavorites(state.favorites);
       }
 
       if (seq !== loadSeq || state.view !== 'favorites') return;
       state.stations = state.favorites
-        .map((id) => byId.get(id))
-        .filter((s): s is Station => Boolean(s));
+        .map((s) => byId.get(s.stationuuid) ?? s)
+        .filter(Boolean);
     }
   } catch (e) {
     if (seq !== loadSeq || state.view !== 'favorites') return;
-    state.error = e instanceof Error ? e.message : 'Failed to load favorites';
+    // Fall back to local snapshots
+    state.stations = [...state.favorites];
+    if (!state.stations.length) {
+      state.error = e instanceof Error ? e.message : 'Failed to load favorites';
+    }
   } finally {
     if (seq !== loadSeq || state.view !== 'favorites') return;
     state.loading = false;
-    render();
-  }
-}
-
-async function fetchStationsByUuids(uuids: string[]): Promise<Station[]> {
-  // API: POST /json/stations/byuuid with body as comma-separated or one per line
-  // Use search by uuid via GET /json/stations/byuuid/{uuid} in batches
-  const results: Station[] = [];
-  const chunk = 20;
-  for (let i = 0; i < uuids.length; i += chunk) {
-    const slice = uuids.slice(i, i + chunk);
-    const settled = await Promise.allSettled(
-      slice.map(async (uuid) => {
-        const list = await searchStationsByUuid(uuid);
-        return list[0];
-      })
-    );
-    for (const r of settled) {
-      if (r.status === 'fulfilled' && r.value) results.push(r.value);
-    }
-  }
-  return results;
-}
-
-async function searchStationsByUuid(uuid: string): Promise<Station[]> {
-  try {
-    return await getStationsByUuid(uuid);
-  } catch {
-    return [];
+    renderMain();
+    renderNav();
   }
 }
 
 // ─── Navigation ──────────────────────────────────────────
 
-function setView(view: ViewId) {
+function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   state.view = view;
   state.selectedCountry = null;
+  state.nearMe = false;
   if (view !== 'discover') state.selectedTag = null;
+  if (view !== 'countries' && view !== 'genres') state.browseFilter = '';
   navOpen = false;
+  state.detailStation = null;
+
+  if (!opts?.skipHash && !applyingRoute) {
+    setHash({ kind: 'view', view }, true);
+  }
 
   if (view === 'discover') {
     void loadDiscover(true);
@@ -341,25 +518,27 @@ function setView(view: ViewId) {
     state.loading = state.countries.length === 0;
     state.stations = [];
     state.error = null;
-    if (state.countries.length === 0) void ensureMeta().then(() => {
+    if (state.countries.length === 0) {
+      void ensureMeta().then(() => {
+        state.loading = false;
+        renderMain();
+      });
+    } else {
       state.loading = false;
-      render();
-    });
-    else {
-      state.loading = false;
-      render();
+      renderAllChrome();
     }
   } else if (view === 'genres') {
     state.loading = state.tags.length === 0;
     state.stations = [];
     state.error = null;
-    if (state.tags.length === 0) void ensureMeta().then(() => {
+    if (state.tags.length === 0) {
+      void ensureMeta().then(() => {
+        state.loading = false;
+        renderMain();
+      });
+    } else {
       state.loading = false;
-      render();
-    });
-    else {
-      state.loading = false;
-      render();
+      renderAllChrome();
     }
   } else if (view === 'favorites') {
     void loadFavoritesStations();
@@ -368,30 +547,129 @@ function setView(view: ViewId) {
     state.loading = false;
     state.hasMore = false;
     state.error = null;
-    render();
+    renderAllChrome();
   } else if (view === 'search') {
     if (state.query.trim()) void loadSearch(state.query.trim(), true);
     else {
       state.stations = [];
       state.loading = false;
-      render();
+      renderAllChrome();
     }
   }
+  renderNav();
+  renderMobileTabs();
+  renderDetail();
 }
 
-function openCountry(code: string) {
+function openCountry(code: string, opts?: { skipHash?: boolean }) {
   state.view = 'countries';
   state.selectedCountry = code;
+  state.nearMe = false;
+  navOpen = false;
+  if (!opts?.skipHash && !applyingRoute) {
+    setHash({ kind: 'country', code }, true);
+  }
+  renderNav();
+  renderMobileTabs();
   void loadCountryStations(code, true);
 }
 
-function openTag(tag: string) {
+function openTag(tag: string, opts?: { skipHash?: boolean }) {
   state.view = 'discover';
   state.selectedTag = tag;
+  state.nearMe = false;
+  state.selectedCountry = null;
+  navOpen = false;
+  if (!opts?.skipHash && !applyingRoute) {
+    setHash({ kind: 'tag', tag }, true);
+  }
+  renderNav();
+  renderMobileTabs();
   void loadDiscover(true);
 }
 
-// ─── Render ──────────────────────────────────────────────
+function openNearMe() {
+  if (!navigator.geolocation) {
+    showToast('Geolocation not available on this device');
+    return;
+  }
+  showToast('Finding stations near you…');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      state.userLat = pos.coords.latitude;
+      state.userLon = pos.coords.longitude;
+      state.nearMe = true;
+      state.selectedTag = null;
+      state.view = 'discover';
+      if (!applyingRoute) setHash({ kind: 'near' }, true);
+      renderNav();
+      void loadDiscover(true);
+    },
+    () => showToast('Location permission denied'),
+    { enableHighAccuracy: false, timeout: 10_000, maximumAge: 600_000 }
+  );
+}
+
+async function applyRouteFromHash() {
+  const route = parseHash();
+  if (!route) return;
+  applyingRoute = true;
+  try {
+    switch (route.kind) {
+      case 'view':
+        setView(route.view, { skipHash: true });
+        break;
+      case 'tag':
+        openTag(route.tag, { skipHash: true });
+        break;
+      case 'country':
+        openCountry(route.code, { skipHash: true });
+        break;
+      case 'search':
+        state.query = route.q;
+        state.view = 'search';
+        renderTopbar();
+        if (route.q.trim()) void loadSearch(route.q.trim(), true);
+        else setView('search', { skipHash: true });
+        break;
+      case 'near':
+        openNearMe();
+        break;
+      case 'station': {
+        // Show station in player; load meta if needed
+        let station =
+          findStation(route.uuid) ||
+          state.favorites.find((s) => s.stationuuid === route.uuid) ||
+          state.recent.find((s) => s.stationuuid === route.uuid) ||
+          (state.current?.stationuuid === route.uuid ? state.current : null);
+        if (!station) {
+          try {
+            const list = await getStationsByUuid(route.uuid);
+            station = list[0] ?? null;
+          } catch {
+            station = null;
+          }
+        }
+        if (station) {
+          state.current = station;
+          saveLastStation(station);
+          renderPlayer();
+          // Stay on discover for browsing context
+          if (state.view === 'discover' && !state.stations.length) void loadDiscover(true);
+          else renderMain();
+        } else {
+          showToast('Station not found');
+          setView('discover', { skipHash: true });
+        }
+        break;
+      }
+    }
+  } finally {
+    applyingRoute = false;
+  }
+}
+
+// ─── Render pieces ───────────────────────────────────────
 
 function stationArtHtml(station: Station, cls = 'station-art'): string {
   const initial = escapeHtml((station.name || '?').trim().charAt(0).toUpperCase() || '♪');
@@ -411,21 +689,27 @@ function stationCard(station: Station): string {
   const tags = formatTags(station.tags);
   const country = station.country || station.countrycode || '';
   const flag = countryFlag(station.countrycode);
+  const lang = station.language ? station.language.split(',')[0].trim() : '';
 
   return `
-    <article class="station-card ${current ? 'is-current' : ''}" data-id="${escapeHtml(station.stationuuid)}">
+    <article class="station-card ${current ? 'is-current' : ''} ${playing ? 'is-playing' : ''}" data-id="${escapeHtml(station.stationuuid)}" data-action="card-play" tabindex="0" role="button" aria-label="Play ${escapeHtml(station.name)}">
       <div class="station-card-top">
         ${stationArtHtml(station)}
         <div class="station-info">
-          <div class="station-name" title="${escapeHtml(station.name)}">${escapeHtml(station.name)}</div>
+          <div class="station-name" title="${escapeHtml(station.name)}" data-action="detail" data-id="${escapeHtml(station.stationuuid)}">${escapeHtml(station.name)}</div>
           <div class="station-meta">
             ${country ? `<span>${flag} ${escapeHtml(country)}</span>` : ''}
             ${station.bitrate ? `<span class="dot"></span><span>${station.bitrate} kbps</span>` : ''}
+            ${station.codec ? `<span class="dot"></span><span class="codec-badge">${escapeHtml(station.codec)}</span>` : ''}
+            ${lang ? `<span class="dot"></span><span>${escapeHtml(lang)}</span>` : ''}
           </div>
           ${
             tags.length
               ? `<div class="station-tags">${tags
-                  .map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`)
+                  .map(
+                    (t) =>
+                      `<button type="button" class="tag-pill is-clickable" data-action="tag" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`
+                  )
                   .join('')}</div>`
               : ''
           }
@@ -436,11 +720,63 @@ function stationCard(station: Station): string {
           ${playing ? icons.pause : icons.play}
           <span>${playing ? 'Playing' : current && player.loading ? 'Loading…' : 'Listen'}</span>
         </button>
-        <button type="button" class="btn-icon ${fav ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(station.stationuuid)}" title="${fav ? 'Remove favorite' : 'Add favorite'}" aria-label="Favorite">
+        <button type="button" class="btn-icon ${fav ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(station.stationuuid)}" title="${fav ? 'Remove favorite' : 'Add favorite'}" aria-label="Favorite" aria-pressed="${fav}">
           ${fav ? icons.heartFill : icons.heart}
+        </button>
+        <button type="button" class="btn-icon" data-action="detail" data-id="${escapeHtml(station.stationuuid)}" title="Details" aria-label="Station details">
+          ${icons.external}
         </button>
       </div>
     </article>
+  `;
+}
+
+function skeletonGrid(): string {
+  return `<div class="station-grid" aria-hidden="true">${Array.from({ length: 8 })
+    .map(
+      () => `<div class="station-card skeleton-card">
+      <div class="skeleton-line w60"></div>
+      <div class="skeleton-line w40"></div>
+      <div class="skeleton-line w80"></div>
+    </div>`
+    )
+    .join('')}</div>`;
+}
+
+function filterBar(): string {
+  const langs = state.languages.slice(0, 24);
+  return `
+    <div class="filter-bar">
+      <div class="filter-group">
+        <span class="filter-label">Sort</span>
+        <div class="chip-row chip-row-scroll compact">
+          ${SORT_OPTIONS.map(
+            (s) => `
+            <button type="button" class="chip ${state.sort === s.id ? 'active' : ''}" data-action="sort" data-sort="${s.id}">
+              ${escapeHtml(s.label)}
+            </button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">Language</span>
+        <div class="chip-row chip-row-scroll compact">
+          <button type="button" class="chip ${!state.languageFilter ? 'active' : ''}" data-action="lang" data-lang="">All</button>
+          ${langs
+            .map(
+              (l) => `
+            <button type="button" class="chip ${state.languageFilter === l.name ? 'active' : ''}" data-action="lang" data-lang="${escapeHtml(l.name)}">
+              ${escapeHtml(titleCaseTag(l.name))}
+            </button>`
+            )
+            .join('')}
+        </div>
+      </div>
+      <label class="toggle-https">
+        <input type="checkbox" data-action="https-only" ${state.httpsOnly ? 'checked' : ''} />
+        <span>HTTPS streams only</span>
+      </label>
+    </div>
   `;
 }
 
@@ -451,13 +787,24 @@ function stationsSection(title: string, meta?: string): string {
         <div class="spinner"></div>
         <p>Tuning into the world…</p>
       </div>
+      ${skeletonGrid()}
     `;
   }
   if (state.error && state.stations.length === 0) {
-    return `<div class="error-box">${escapeHtml(state.error)}</div>`;
+    return `<div class="error-box">
+      <p>${escapeHtml(state.error)}</p>
+      <button type="button" class="btn-more" data-action="retry">Retry</button>
+    </div>`;
   }
   if (state.stations.length === 0) {
-    return `<div class="empty"><p>${emptyMessage()}</p></div>`;
+    return `<div class="empty">
+      <p>${emptyMessage()}</p>
+      ${
+        state.view === 'favorites'
+          ? `<button type="button" class="btn-more" data-action="goto-discover">Discover stations</button>`
+          : ''
+      }
+    </div>`;
   }
 
   return `
@@ -474,6 +821,7 @@ function stationsSection(title: string, meta?: string): string {
             <button type="button" class="btn-more" data-action="more" ${state.loadingMore ? 'disabled' : ''}>
               ${state.loadingMore ? 'Loading…' : 'Load more stations'}
             </button>
+            <div class="infinite-sentinel" data-infinite-sentinel aria-hidden="true"></div>
           </div>`
         : ''
     }
@@ -496,14 +844,41 @@ function emptyMessage(): string {
 }
 
 function renderDiscover(): string {
+  const tod = timeOfDayMoods();
+  const last = state.current;
   return `
     <section class="hero">
       <h2>Listen to the world, softly.</h2>
       <p>Thousands of live radio stations from every continent — jazz at midnight in Tokyo, classical in Vienna, ambient from the coast. Pick a mood or drift through the globe.</p>
+      <div class="hero-stats">
+        ${totalStationHint > 0 ? `<span>${Math.floor(totalStationHint / 1000)}k+ stations</span>` : ''}
+        ${state.countries.length ? `<span>${state.countries.length} countries</span>` : ''}
+        ${state.tags.length ? `<span>${state.tags.length}+ genres</span>` : ''}
+      </div>
+      <div class="hero-actions">
+        <button type="button" class="chip active" data-action="surprise">${icons.surprise} Surprise me</button>
+        <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me">${icons.pin} Near me</button>
+        ${
+          last
+            ? `<button type="button" class="chip" data-action="resume">▶ Resume ${escapeHtml(last.name.slice(0, 28))}${last.name.length > 28 ? '…' : ''}</button>`
+            : ''
+        }
+      </div>
     </section>
-    <div class="section-head"><h3>Moods &amp; genres</h3></div>
-    <div class="chip-row">
-      <button type="button" class="chip ${!state.selectedTag ? 'active' : ''}" data-action="tag" data-tag="">
+    <div class="section-head"><h3>Right now</h3></div>
+    <div class="chip-row chip-row-scroll">
+      ${tod
+        .map(
+          (t) => `
+        <button type="button" class="chip ${state.selectedTag === t.id ? 'active' : ''}" data-action="tag" data-tag="${escapeHtml(t.id)}">
+          ${t.emoji} ${escapeHtml(t.label)}
+        </button>`
+        )
+        .join('')}
+    </div>
+    <div class="section-head sticky-section"><h3>Moods &amp; genres</h3></div>
+    <div class="chip-row chip-row-scroll chip-fade">
+      <button type="button" class="chip ${!state.selectedTag && !state.nearMe ? 'active' : ''}" data-action="tag" data-tag="">
         ✨ Popular
       </button>
       ${MOOD_TAGS.map(
@@ -513,10 +888,14 @@ function renderDiscover(): string {
         </button>`
       ).join('')}
     </div>
+    ${filterBar()}
     ${stationsSection(
-      state.selectedTag
-        ? MOOD_TAGS.find((t) => t.id === state.selectedTag)?.label || state.selectedTag
-        : 'Popular worldwide',
+      state.nearMe
+        ? 'Near you'
+        : state.selectedTag
+          ? MOOD_TAGS.find((t) => t.id === state.selectedTag)?.label ||
+            titleCaseTag(state.selectedTag)
+          : 'Popular worldwide',
       `${state.stations.length}${state.hasMore ? '+' : ''} stations`
     )}
   `;
@@ -527,6 +906,13 @@ function filteredCountries(): Country[] {
   if (state.continentFilter) {
     const codes = new Set(CONTINENTS[state.continentFilter] ?? []);
     list = list.filter((c) => codes.has(c.iso_3166_1.toUpperCase()));
+  }
+  const q = state.browseFilter.trim().toLowerCase();
+  if (q) {
+    list = list.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) || c.iso_3166_1.toLowerCase().includes(q)
+    );
   }
   return list;
 }
@@ -540,6 +926,7 @@ function renderCountries(): string {
         <h3>${countryFlag(state.selectedCountry)} ${escapeHtml(name)}</h3>
         <button type="button" class="chip" data-action="back-countries">← All countries</button>
       </div>
+      ${filterBar()}
       ${stationsSection('Stations', `${state.stations.length}${state.hasMore ? '+' : ''}`)}
     `;
   }
@@ -556,7 +943,10 @@ function renderCountries(): string {
       <h2>Every corner of the map.</h2>
       <p>Browse ${state.countries.length || 'hundreds of'} countries and territories with live streams.</p>
     </section>
-    <div class="continent-tabs">
+    <div class="browse-search-wrap">
+      <input type="search" class="browse-search" placeholder="Filter countries…" value="${escapeHtml(state.browseFilter)}" data-action="browse-filter" autocomplete="off" />
+    </div>
+    <div class="continent-tabs chip-row chip-row-scroll">
       <button type="button" class="chip ${!state.continentFilter ? 'active' : ''}" data-action="continent" data-continent="">
         All
       </button>
@@ -588,10 +978,18 @@ function renderCountries(): string {
   `;
 }
 
+function filteredTags() {
+  const q = state.browseFilter.trim().toLowerCase();
+  if (!q) return state.tags;
+  return state.tags.filter((t) => t.name.toLowerCase().includes(q));
+}
+
 function renderGenres(): string {
   if (state.loading) {
     return `<div class="loading-box"><div class="spinner"></div><p>Loading genres…</p></div>`;
   }
+
+  const tags = filteredTags();
 
   return `
     <section class="hero">
@@ -601,7 +999,7 @@ function renderGenres(): string {
     <div class="section-head">
       <h3>Popular moods</h3>
     </div>
-    <div class="chip-row" style="margin-bottom:28px">
+    <div class="chip-row chip-row-scroll" style="margin-bottom:20px">
       ${MOOD_TAGS.map(
         (t) => `
         <button type="button" class="chip" data-action="tag" data-tag="${escapeHtml(t.id)}">
@@ -609,16 +1007,19 @@ function renderGenres(): string {
         </button>`
       ).join('')}
     </div>
+    <div class="browse-search-wrap">
+      <input type="search" class="browse-search" placeholder="Filter genres…" value="${escapeHtml(state.browseFilter)}" data-action="browse-filter" autocomplete="off" />
+    </div>
     <div class="section-head">
       <h3>All genres</h3>
-      <span class="meta">${state.tags.length} tags</span>
+      <span class="meta">${tags.length} tags</span>
     </div>
     <div class="browse-grid">
-      ${state.tags
+      ${tags
         .map(
           (t) => `
         <button type="button" class="browse-card" data-action="tag" data-tag="${escapeHtml(t.name)}">
-          <div class="title">${escapeHtml(t.name)}</div>
+          <div class="title">${escapeHtml(titleCaseTag(t.name))}</div>
           <div class="count">${t.stationcount.toLocaleString()} stations</div>
         </button>`
         )
@@ -627,7 +1028,7 @@ function renderGenres(): string {
   `;
 }
 
-function renderMain(): string {
+function renderMainHtml(): string {
   switch (state.view) {
     case 'discover':
       return renderDiscover();
@@ -640,6 +1041,12 @@ function renderMain(): string {
         <section class="hero">
           <h2>Your quiet collection.</h2>
           <p>Stations you’ve saved for later evenings.</p>
+          <div class="hero-actions">
+            <button type="button" class="chip" data-action="export-favs">Export JSON</button>
+            <label class="chip file-chip">Import JSON
+              <input type="file" accept="application/json,.json" data-action="import-favs" hidden />
+            </label>
+          </div>
         </section>
         ${stationsSection('Favorites', `${state.stations.length}`)}
       `;
@@ -657,6 +1064,7 @@ function renderMain(): string {
           <h3>Search results</h3>
           ${state.query ? `<span class="meta">for “${escapeHtml(state.query)}”</span>` : ''}
         </div>
+        ${filterBar()}
         ${stationsSection('Stations', `${state.stations.length}${state.hasMore ? '+' : ''}`)}
       `;
     default:
@@ -664,38 +1072,82 @@ function renderMain(): string {
   }
 }
 
-function renderPlayer(): string {
+function renderPlayerHtml(): string {
   const s = state.current;
   if (!s) {
-    return `<div class="player-placeholder">Choose a station and let the world drift in…</div>`;
+    return `
+      <div class="player-idle">
+        <div class="player-placeholder">Choose a station and let the world drift in…</div>
+        <div class="player-quick">
+          <button type="button" class="chip" data-action="tag" data-tag="jazz">🎷 Jazz</button>
+          <button type="button" class="chip" data-action="tag" data-tag="ambient">🌙 Ambient</button>
+          <button type="button" class="chip" data-action="surprise">${icons.surprise} Surprise</button>
+        </div>
+      </div>`;
   }
 
   const playing = player.playing;
   const loading = player.loading;
   const err = player.error;
   const country = s.country || s.countrycode || '';
+  const sleepLabel = formatSleepRemaining(sleepTimer.remainingMs);
+  const sleepActive = sleepTimer.active;
 
   return `
     <div class="player-now">
       ${stationArtHtml(s, `player-art ${playing ? 'live' : ''}`)}
       <div class="player-meta">
         <div class="now-label">${loading ? 'Connecting…' : playing ? 'Now playing' : 'Paused'}</div>
-        <div class="now-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
-        <div class="now-sub">${countryFlag(s.countrycode)} ${escapeHtml(country)}${s.bitrate ? ` · ${s.bitrate} kbps` : ''}</div>
-        ${err ? `<div class="now-error">${escapeHtml(err)}</div>` : ''}
+        <div class="now-name" title="${escapeHtml(s.name)}" data-action="detail" data-id="${escapeHtml(s.stationuuid)}">${escapeHtml(s.name)}</div>
+        <div class="now-sub">${countryFlag(s.countrycode)} ${escapeHtml(country)}${s.bitrate ? ` · ${s.bitrate} kbps` : ''}${s.codec ? ` · ${escapeHtml(s.codec)}` : ''}</div>
+        ${
+          err
+            ? `<div class="now-error">
+                <span>${escapeHtml(err)}</span>
+                <button type="button" class="link-btn" data-action="retry-play">Retry</button>
+                <button type="button" class="link-btn" data-action="play-next">Play next</button>
+              </div>`
+            : ''
+        }
       </div>
     </div>
     <div class="player-controls">
       <div class="eq ${playing ? 'on' : ''}" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-      <button type="button" class="btn-main-play" data-action="toggle-play" aria-label="${playing ? 'Pause' : 'Play'}" ${loading && !playing ? '' : ''}>
+      <button type="button" class="btn-icon btn-skip" data-action="prev" aria-label="Previous station" title="Previous">
+        ${icons.prev}
+      </button>
+      <button type="button" class="btn-main-play" data-action="toggle-play" aria-label="${playing ? 'Pause' : 'Play'}">
         ${loading && !playing ? icons.loader : playing ? icons.pause : icons.play}
       </button>
-      <button type="button" class="btn-icon ${isFav(s.stationuuid) ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(s.stationuuid)}" title="Favorite">
+      <button type="button" class="btn-icon btn-skip" data-action="next" aria-label="Next station" title="Next">
+        ${icons.next}
+      </button>
+      <button type="button" class="btn-icon ${isFav(s.stationuuid) ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(s.stationuuid)}" title="Favorite" aria-pressed="${isFav(s.stationuuid)}">
         ${isFav(s.stationuuid) ? icons.heartFill : icons.heart}
       </button>
+      <button type="button" class="btn-icon" data-action="share" title="Share station" aria-label="Share">
+        ${icons.share}
+      </button>
+      <div class="sleep-wrap">
+        <button type="button" class="btn-icon ${sleepActive ? 'is-active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer" aria-label="Sleep timer" aria-expanded="${sleepMenuOpen}">
+          ${icons.moon}
+        </button>
+        ${sleepActive && sleepLabel ? `<span class="sleep-badge">${sleepLabel}</span>` : ''}
+        ${
+          sleepMenuOpen
+            ? `<div class="sleep-menu" role="menu">
+                ${SLEEP_OPTIONS.map(
+                  (m) =>
+                    `<button type="button" class="sleep-opt" data-action="sleep" data-min="${m}" role="menuitem">${m} min</button>`
+                ).join('')}
+                ${sleepActive ? `<button type="button" class="sleep-opt" data-action="sleep-cancel" role="menuitem">Cancel</button>` : ''}
+              </div>`
+            : ''
+        }
+      </div>
     </div>
     <div class="player-volume">
-      <button type="button" class="btn-icon" data-action="mute" title="${state.muted ? 'Unmute' : 'Mute'}">
+      <button type="button" class="btn-icon" data-action="mute" title="${state.muted ? 'Unmute' : 'Mute'}" aria-label="${state.muted ? 'Unmute' : 'Mute'}">
         ${state.muted || state.volume === 0 ? icons.mute : icons.volume}
       </button>
       <input type="range" class="volume-slider" min="0" max="1" step="0.01" value="${state.muted ? 0 : state.volume}" data-action="volume" aria-label="Volume" />
@@ -703,57 +1155,113 @@ function renderPlayer(): string {
   `;
 }
 
-function render() {
-  const app = document.querySelector('#app');
-  if (!app) return;
+function renderDetailHtml(): string {
+  const s = state.detailStation;
+  if (!s) return '';
+  const tags = formatTags(s.tags, 20);
+  const fav = isFav(s.stationuuid);
 
-  // Preserve search focus/caret across full re-renders when possible
-  const active = document.activeElement as HTMLElement | null;
-  const searchFocused = active?.classList.contains('search-input');
-  const searchSelStart =
-    searchFocused && active instanceof HTMLInputElement ? active.selectionStart : null;
-  const searchSelEnd =
-    searchFocused && active instanceof HTMLInputElement ? active.selectionEnd : null;
-
-  document.body.classList.toggle('is-playing', player.playing);
-
-  const stationCountLabel =
-    totalStationHint > 0
-      ? `${Math.floor(totalStationHint / 1000) >= 1 ? `${Math.floor(totalStationHint / 1000)}k+` : totalStationHint} stations`
-      : 'World stations';
-
-  app.innerHTML = `
-    <div class="nav-backdrop ${navOpen ? 'open' : ''}" data-action="close-nav"></div>
-    <aside class="nav ${navOpen ? 'open' : ''}">
-      <div class="brand">
-        <div class="brand-mark">${icons.radio}</div>
-        <div class="brand-text">
-          <h1>World Radio</h1>
-          <p>Relax &amp; listen</p>
+  return `
+    <div class="sheet-backdrop open" data-action="close-detail"></div>
+    <div class="detail-sheet open" role="dialog" aria-modal="true" aria-label="Station details">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <button type="button" class="btn-icon sheet-close" data-action="close-detail" aria-label="Close">${icons.close}</button>
+      <div class="detail-head">
+        ${stationArtHtml(s, 'detail-art')}
+        <div>
+          <h2 class="detail-title">${escapeHtml(s.name)}</h2>
+          <p class="detail-sub">${countryFlag(s.countrycode)} ${escapeHtml(s.country || s.countrycode || 'Unknown')}
+            ${s.state ? ` · ${escapeHtml(s.state)}` : ''}
+          </p>
         </div>
       </div>
-      <div class="nav-section">Explore</div>
-      <button type="button" class="nav-btn ${state.view === 'discover' ? 'active' : ''}" data-view="discover">
-        ${icons.discover} Discover
-      </button>
-      <button type="button" class="nav-btn ${state.view === 'countries' ? 'active' : ''}" data-view="countries">
-        ${icons.globe} Countries
-      </button>
-      <button type="button" class="nav-btn ${state.view === 'genres' ? 'active' : ''}" data-view="genres">
-        ${icons.music} Genres
-      </button>
-      <div class="nav-section">Library</div>
-      <button type="button" class="nav-btn ${state.view === 'favorites' ? 'active' : ''}" data-view="favorites">
-        ${icons.heart} Favorites
-      </button>
-      <button type="button" class="nav-btn ${state.view === 'recent' ? 'active' : ''}" data-view="recent">
-        ${icons.clock} Recent
-      </button>
-      <div class="nav-footer">
-        Streams via <a href="https://www.radio-browser.info/" target="_blank" rel="noopener">Radio Browser</a>
-        — community-powered, free radio directory.
+      <dl class="detail-meta">
+        ${s.language ? `<div><dt>Language</dt><dd>${escapeHtml(s.language)}</dd></div>` : ''}
+        ${s.codec ? `<div><dt>Codec</dt><dd>${escapeHtml(s.codec)}</dd></div>` : ''}
+        ${s.bitrate ? `<div><dt>Bitrate</dt><dd>${s.bitrate} kbps</dd></div>` : ''}
+        ${s.votes ? `<div><dt>Votes</dt><dd>${s.votes.toLocaleString()}</dd></div>` : ''}
+        ${s.clickcount ? `<div><dt>Clicks</dt><dd>${s.clickcount.toLocaleString()}</dd></div>` : ''}
+        ${
+          s.geo_lat != null && s.geo_long != null
+            ? `<div><dt>Location</dt><dd>${s.geo_lat.toFixed(2)}, ${s.geo_long.toFixed(2)}</dd></div>`
+            : ''
+        }
+      </dl>
+      ${
+        tags.length
+          ? `<div class="detail-tags">${tags
+              .map(
+                (t) =>
+                  `<button type="button" class="chip" data-action="tag" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`
+              )
+              .join('')}</div>`
+          : ''
+      }
+      <div class="detail-actions">
+        <button type="button" class="btn-play" data-action="play" data-id="${escapeHtml(s.stationuuid)}">
+          ${icons.play} <span>Listen</span>
+        </button>
+        <button type="button" class="btn-icon ${fav ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(s.stationuuid)}" aria-pressed="${fav}">
+          ${fav ? icons.heartFill : icons.heart}
+        </button>
+        <button type="button" class="btn-icon" data-action="share" data-id="${escapeHtml(s.stationuuid)}" title="Share">${icons.share}</button>
+        ${
+          s.homepage
+            ? `<a class="btn-icon" href="${escapeHtml(s.homepage)}" target="_blank" rel="noopener" title="Website">${icons.external}</a>`
+            : ''
+        }
       </div>
-    </aside>
+    </div>
+  `;
+}
+
+function navBtn(view: ViewId, icon: string, label: string, badge?: number): string {
+  return `
+    <button type="button" class="nav-btn ${state.view === view ? 'active' : ''}" data-view="${view}" aria-current="${state.view === view ? 'page' : 'false'}">
+      ${icon} ${label}
+      ${badge != null && badge > 0 ? `<span class="nav-badge">${badge}</span>` : ''}
+    </button>`;
+}
+
+function renderNavHtml(): string {
+  return `
+    <div class="brand">
+      <div class="brand-mark">${icons.radio}</div>
+      <div class="brand-text">
+        <h1>World Radio</h1>
+        <p>Relax &amp; listen</p>
+      </div>
+    </div>
+    <div class="nav-section">Explore</div>
+    ${navBtn('discover', icons.discover, 'Discover')}
+    ${navBtn('countries', icons.globe, 'Countries')}
+    ${navBtn('genres', icons.music, 'Genres')}
+    <div class="nav-section">Library</div>
+    ${navBtn('favorites', icons.heart, 'Favorites', state.favorites.length)}
+    ${navBtn('recent', icons.clock, 'Recent')}
+    <div class="nav-footer">
+      Streams via <a href="https://www.radio-browser.info/" target="_blank" rel="noopener">Radio Browser</a>
+      — community-powered, free radio directory.
+      <div class="kbd-hint">Shortcuts: Space play · / search · N/P next · M mute</div>
+    </div>
+  `;
+}
+
+// ─── Partial render API ──────────────────────────────────
+
+function qs<T extends Element>(sel: string): T | null {
+  return document.querySelector(sel) as T | null;
+}
+
+function ensureShell() {
+  const app = document.querySelector('#app');
+  if (!app) return;
+  if (shellBuilt && app.querySelector('.main')) return;
+
+  app.innerHTML = `
+    <div id="live-region" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+    <div class="nav-backdrop" data-action="close-nav"></div>
+    <aside class="nav" aria-label="Main"></aside>
     <main class="main">
       <div class="topbar">
         <button type="button" class="mobile-nav-toggle" data-action="toggle-nav" aria-label="Menu">
@@ -765,76 +1273,156 @@ function render() {
             type="search"
             class="search-input"
             placeholder="Search stations, cities, countries…"
-            value="${escapeHtml(state.query)}"
+            value=""
             data-action="search"
             autocomplete="off"
             spellcheck="false"
           />
         </div>
-        <div class="stats-pill"><strong>${stationCountLabel}</strong> online</div>
+        <div class="stats-pill"><strong>—</strong> online</div>
       </div>
-      <div class="content">
-        ${renderMain()}
-      </div>
+      <div class="content" tabindex="-1"></div>
     </main>
-    <footer class="player">
-      ${renderPlayer()}
-    </footer>
+    <footer class="player" aria-label="Player"></footer>
+    <nav class="mobile-tabs" aria-label="Primary"></nav>
+    <div class="detail-root"></div>
+    <div class="toast-root" aria-live="polite"></div>
   `;
-
+  shellBuilt = true;
   ensureAppEvents();
+}
 
-  if (searchFocused) {
-    const input = app.querySelector<HTMLInputElement>('.search-input');
-    if (input) {
-      input.focus();
-      if (searchSelStart != null && searchSelEnd != null) {
-        try {
-          input.setSelectionRange(searchSelStart, searchSelEnd);
-        } catch {
-          // some input types may not support selection
-        }
-      }
+function renderNav() {
+  ensureShell();
+  const nav = qs<HTMLElement>('aside.nav');
+  if (!nav) return;
+  nav.innerHTML = renderNavHtml();
+  nav.classList.toggle('open', navOpen);
+  const backdrop = qs('.nav-backdrop');
+  backdrop?.classList.toggle('open', navOpen);
+}
+
+function renderTopbar() {
+  ensureShell();
+  const pill = qs('.stats-pill');
+  if (pill) {
+    const stationCountLabel =
+      totalStationHint > 0
+        ? `${Math.floor(totalStationHint / 1000) >= 1 ? `${Math.floor(totalStationHint / 1000)}k+` : totalStationHint} stations`
+        : 'World stations';
+    pill.innerHTML = `<strong>${stationCountLabel}</strong> online`;
+  }
+  const input = qs<HTMLInputElement>('.search-input');
+  if (input && document.activeElement !== input) {
+    input.value = state.query;
+  }
+}
+
+function renderMain() {
+  ensureShell();
+  const content = qs('.content');
+  if (!content) return;
+  const scrollTop = content.scrollTop;
+  content.innerHTML = renderMainHtml();
+  // Restore scroll only if same view roughly — simple approach
+  content.scrollTop = state.loading && state.stations.length === 0 ? 0 : scrollTop;
+  setupInfiniteScroll();
+}
+
+function renderPlayer() {
+  ensureShell();
+  const footer = qs('footer.player');
+  if (!footer) return;
+
+  const activeEl = document.activeElement;
+  const volActive =
+    activeEl instanceof HTMLInputElement && activeEl.classList.contains('volume-slider');
+  const volValue = volActive ? activeEl.value : String(state.muted ? 0 : state.volume);
+
+  footer.innerHTML = renderPlayerHtml();
+  document.body.classList.toggle('has-player-station', Boolean(state.current));
+
+  if (volActive) {
+    const slider = footer.querySelector<HTMLInputElement>('.volume-slider');
+    if (slider) {
+      slider.value = volValue;
+      slider.focus();
     }
   }
 }
 
-/**
- * Patch only the player bar + station card play affordances.
- * Avoids destroying the search input and volume slider mid-interaction.
- */
+function renderDetail() {
+  ensureShell();
+  const root = qs('.detail-root');
+  if (!root) return;
+  root.innerHTML = renderDetailHtml();
+  document.body.classList.toggle('sheet-open', Boolean(state.detailStation));
+}
+
+function renderToast() {
+  ensureShell();
+  const root = qs('.toast-root');
+  if (!root) return;
+  root.innerHTML = state.toast
+    ? `<div class="toast">${escapeHtml(state.toast)}</div>`
+    : '';
+}
+
+function renderMobileTabs() {
+  ensureShell();
+  const tabs = qs('.mobile-tabs');
+  if (!tabs) return;
+  const items: { view: ViewId; label: string; icon: string }[] = [
+    { view: 'discover', label: 'Discover', icon: icons.discover },
+    { view: 'countries', label: 'Places', icon: icons.globe },
+    { view: 'favorites', label: 'Saved', icon: icons.heart },
+    { view: 'search', label: 'Search', icon: icons.search },
+  ];
+  tabs.innerHTML = items
+    .map(
+      (it) => `
+    <button type="button" class="tab-btn ${state.view === it.view || (it.view === 'search' && state.view === 'search') ? 'active' : ''}" data-view="${it.view}" data-action="${it.view === 'search' ? 'focus-search' : ''}">
+      ${it.icon}
+      <span>${it.label}</span>
+    </button>`
+    )
+    .join('');
+}
+
+function renderLoadMore() {
+  const btn = qs<HTMLButtonElement>('[data-action="more"]');
+  if (btn) {
+    btn.disabled = state.loadingMore;
+    btn.textContent = state.loadingMore ? 'Loading…' : 'Load more stations';
+  }
+}
+
+function renderAllChrome() {
+  renderNav();
+  renderTopbar();
+  renderMain();
+  renderPlayer();
+  renderMobileTabs();
+  renderDetail();
+  renderToast();
+}
+
 function updatePlaybackUI() {
   state.playing = player.playing;
   state.current = player.station ?? state.current;
   document.body.classList.toggle('is-playing', player.playing);
-
-  const footer = document.querySelector('footer.player');
-  if (footer) {
-    // Keep volume slider value stable if user is dragging it
-    const activeEl = document.activeElement;
-    const volActive =
-      activeEl instanceof HTMLInputElement && activeEl.classList.contains('volume-slider');
-    const volValue = volActive ? activeEl.value : String(state.muted ? 0 : state.volume);
-
-    footer.innerHTML = renderPlayer();
-
-    if (volActive) {
-      const slider = footer.querySelector<HTMLInputElement>('.volume-slider');
-      if (slider) {
-        slider.value = volValue;
-        slider.focus();
-      }
-    }
-  }
+  renderPlayer();
+  syncMediaSession();
 
   const currentId = state.current?.stationuuid;
   document.querySelectorAll<HTMLElement>('.station-card').forEach((card) => {
     const id = card.dataset.id;
     const isCurrent = Boolean(currentId && id === currentId);
+    const playing = isCurrent && player.playing;
     card.classList.toggle('is-current', isCurrent);
+    card.classList.toggle('is-playing', playing);
     const btn = card.querySelector<HTMLButtonElement>('[data-action="play"]');
     if (!btn) return;
-    const playing = isCurrent && player.playing;
     const loading = isCurrent && player.loading;
     btn.classList.toggle('is-playing', playing);
     btn.innerHTML = `${playing ? icons.pause : icons.play}<span>${
@@ -843,13 +1431,72 @@ function updatePlaybackUI() {
   });
 }
 
+function setupInfiniteScroll() {
+  if (infiniteObserver) {
+    infiniteObserver.disconnect();
+    infiniteObserver = null;
+  }
+  const sentinel = qs('[data-infinite-sentinel]');
+  if (!sentinel || !state.hasMore) return;
+  infiniteObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        void loadMore();
+      }
+    },
+    { root: qs('.content'), rootMargin: '200px' }
+  );
+  infiniteObserver.observe(sentinel);
+}
+
 function findStation(id: string): Station | undefined {
   return (
     state.stations.find((s) => s.stationuuid === id) ||
     state.recent.find((s) => s.stationuuid === id) ||
-    (state.current?.stationuuid === id ? state.current : undefined)
+    state.favorites.find((s) => s.stationuuid === id) ||
+    (state.current?.stationuuid === id ? state.current : undefined) ||
+    (state.detailStation?.stationuuid === id ? state.detailStation : undefined)
   );
 }
+
+async function shareStation(station: Station) {
+  const url = stationShareUrl(station.stationuuid);
+  const data = {
+    title: station.name,
+    text: `Listen to ${station.name} on World Radio`,
+    url,
+  };
+  try {
+    if (navigator.share) {
+      await navigator.share(data);
+      return;
+    }
+  } catch {
+    // user cancelled or failed — fall through to clipboard
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Link copied');
+  } catch {
+    showToast(url);
+  }
+}
+
+function openDetail(station: Station) {
+  state.detailStation = station;
+  sleepMenuOpen = false;
+  renderDetail();
+}
+
+function reloadCurrentList() {
+  if (state.view === 'discover') void loadDiscover(true);
+  else if (state.view === 'search' && state.query.trim()) void loadSearch(state.query.trim(), true);
+  else if (state.view === 'countries' && state.selectedCountry)
+    void loadCountryStations(state.selectedCountry, true);
+  else renderMain();
+}
+
+// ─── Events ──────────────────────────────────────────────
 
 function ensureAppEvents() {
   if (eventsBound) return;
@@ -858,20 +1505,49 @@ function ensureAppEvents() {
   eventsBound = true;
 
   app.addEventListener('click', (e) => {
-    const t = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-view], [data-action]');
+    const t = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+      '[data-view], [data-action], a[href]'
+    );
     if (!t || !app.contains(t)) return;
 
+    // File input handled via change
+    if (t.dataset.action === 'import-favs') return;
+
     const view = t.dataset.view as ViewId | undefined;
-    if (view) {
-      setView(view);
+    if (view && t.dataset.action !== 'focus-search') {
+      if (view === 'search') {
+        setView('search');
+        qs<HTMLInputElement>('.search-input')?.focus();
+      } else {
+        setView(view);
+      }
       return;
     }
 
     const action = t.dataset.action;
-    if (!action || action === 'search' || action === 'volume') return;
+    if (!action || action === 'search' || action === 'volume' || action === 'browse-filter') return;
+
+    // Stop card-play from double-firing when clicking nested buttons
+    if (
+      action !== 'card-play' &&
+      (e.target as HTMLElement).closest('[data-action="play"], [data-action="fav"], [data-action="detail"], [data-action="tag"]') &&
+      t.dataset.action === 'card-play'
+    ) {
+      return;
+    }
 
     switch (action) {
+      case 'focus-search':
+        qs<HTMLInputElement>('.search-input')?.focus();
+        if (state.view !== 'search') {
+          state.view = 'search';
+          renderNav();
+          renderMobileTabs();
+          renderMain();
+        }
+        break;
       case 'play': {
+        e.stopPropagation();
         const id = t.dataset.id;
         if (!id) return;
         const station = findStation(id);
@@ -883,14 +1559,61 @@ function ensureAppEvents() {
         }
         break;
       }
+      case 'card-play': {
+        // Ignore if click was on a nested control (handled above ideally)
+        if ((e.target as HTMLElement).closest('button, a, .tag-pill')) return;
+        const id = t.dataset.id;
+        if (!id) return;
+        const station = findStation(id);
+        if (!station) return;
+        if (state.current?.stationuuid === id) player.toggle();
+        else void playStation(station);
+        break;
+      }
       case 'toggle-play':
         player.toggle();
         break;
+      case 'prev':
+        void playRelative(-1);
+        break;
+      case 'next':
+      case 'play-next':
+        void playRelative(1);
+        break;
+      case 'retry-play':
+        if (state.current) void playStation(state.current);
+        break;
+      case 'retry':
+        reloadCurrentList();
+        break;
+      case 'goto-discover':
+        setView('discover');
+        break;
       case 'fav': {
+        e.stopPropagation();
         const id = t.dataset.id;
         if (!id) return;
         const station = findStation(id);
         if (station) toggleFavorite(station);
+        break;
+      }
+      case 'detail': {
+        e.stopPropagation();
+        const id = t.dataset.id;
+        if (!id) return;
+        const station = findStation(id);
+        if (station) openDetail(station);
+        break;
+      }
+      case 'close-detail':
+        state.detailStation = null;
+        renderDetail();
+        break;
+      case 'share': {
+        const id = t.dataset.id || state.current?.stationuuid;
+        if (!id) return;
+        const station = findStation(id);
+        if (station) void shareStation(station);
         break;
       }
       case 'mute':
@@ -903,16 +1626,30 @@ function ensureAppEvents() {
         void loadMore();
         break;
       case 'tag': {
+        e.stopPropagation();
         const tag = t.dataset.tag ?? '';
+        state.detailStation = null;
+        renderDetail();
         if (!tag) {
           state.selectedTag = null;
+          state.nearMe = false;
           state.view = 'discover';
+          if (!applyingRoute) setHash({ kind: 'view', view: 'discover' }, true);
           void loadDiscover(true);
         } else {
           openTag(tag);
         }
         break;
       }
+      case 'surprise':
+        void playSurprise();
+        break;
+      case 'near-me':
+        openNearMe();
+        break;
+      case 'resume':
+        if (state.current) void playStation(state.current);
+        break;
       case 'country': {
         const code = t.dataset.code;
         if (code) openCountry(code);
@@ -920,21 +1657,105 @@ function ensureAppEvents() {
       }
       case 'continent':
         state.continentFilter = t.dataset.continent || null;
-        render();
+        renderMain();
         break;
       case 'back-countries':
         state.selectedCountry = null;
         state.stations = [];
-        render();
+        if (!applyingRoute) setHash({ kind: 'view', view: 'countries' }, true);
+        renderMain();
         break;
+      case 'sort': {
+        const sort = t.dataset.sort as SortId;
+        if (!sort) return;
+        state.sort = sort;
+        persistPrefs();
+        reloadCurrentList();
+        break;
+      }
+      case 'lang': {
+        state.languageFilter = t.dataset.lang || null;
+        reloadCurrentList();
+        break;
+      }
+      case 'https-only': {
+        // handled on change
+        break;
+      }
       case 'toggle-nav':
         navOpen = !navOpen;
-        render();
+        renderNav();
         break;
       case 'close-nav':
         navOpen = false;
-        render();
+        renderNav();
         break;
+      case 'toggle-sleep-menu':
+        sleepMenuOpen = !sleepMenuOpen;
+        renderPlayer();
+        break;
+      case 'sleep': {
+        const min = Number(t.dataset.min) as SleepMinutes;
+        if (!SLEEP_OPTIONS.includes(min)) return;
+        sleepTimer.start(min);
+        state.sleepMinutes = min;
+        state.sleepUntil = sleepTimer.untilMs;
+        sleepMenuOpen = false;
+        showToast(`Sleep timer: ${min} minutes`);
+        renderPlayer();
+        break;
+      }
+      case 'sleep-cancel':
+        sleepTimer.cancel();
+        state.sleepMinutes = null;
+        state.sleepUntil = null;
+        sleepMenuOpen = false;
+        showToast('Sleep timer cancelled');
+        renderPlayer();
+        break;
+      case 'export-favs': {
+        const blob = new Blob([exportFavoritesJson(state.favorites)], {
+          type: 'application/json',
+        });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `world-radio-favorites.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showToast('Favorites exported');
+        break;
+      }
+    }
+  });
+
+  app.addEventListener('change', (e) => {
+    const t = e.target as HTMLElement | null;
+    if (!t || !app.contains(t)) return;
+    if (t.dataset.action === 'https-only' && t instanceof HTMLInputElement) {
+      state.httpsOnly = t.checked;
+      persistPrefs();
+      reloadCurrentList();
+      return;
+    }
+    if (t.dataset.action === 'import-favs' && t instanceof HTMLInputElement && t.files?.[0]) {
+      const file = t.files[0];
+      const reader = new FileReader();
+      reader.onload = () => {
+        const imported = importFavoritesJson(String(reader.result || ''));
+        if (!imported) {
+          showToast('Invalid favorites file');
+          return;
+        }
+        const map = new Map(state.favorites.map((s) => [s.stationuuid, s]));
+        for (const s of imported) map.set(s.stationuuid, s);
+        state.favorites = [...map.values()];
+        saveFavorites(state.favorites);
+        showToast(`Imported ${imported.length} favorites`);
+        if (state.view === 'favorites') void loadFavoritesStations();
+        else renderNav();
+      };
+      reader.readAsText(file);
+      t.value = '';
     }
   });
 
@@ -952,11 +1773,32 @@ function ensureAppEvents() {
           state.view = 'search';
           state.selectedCountry = null;
           state.selectedTag = null;
+          state.nearMe = false;
+          if (!applyingRoute) setHash({ kind: 'search', q }, true);
+          renderNav();
+          renderMobileTabs();
           void loadSearch(q, true);
         } else if (q.length === 0 && state.view === 'search') {
           setView('discover');
         }
       }, 350);
+      return;
+    }
+
+    if (action === 'browse-filter' && t instanceof HTMLInputElement) {
+      state.browseFilter = t.value;
+      renderMain();
+      // restore focus
+      const input = qs<HTMLInputElement>('.browse-search');
+      if (input) {
+        input.focus();
+        const len = input.value.length;
+        try {
+          input.setSelectionRange(len, len);
+        } catch {
+          // ignore
+        }
+      }
       return;
     }
 
@@ -967,7 +1809,6 @@ function ensureAppEvents() {
       player.setVolume(v);
       player.setMuted(state.muted, { silent: true });
       saveVolume(v);
-      // Update mute icon without replacing the slider
       const muteBtn = t.closest('.player-volume')?.querySelector('[data-action="mute"]');
       if (muteBtn) {
         muteBtn.innerHTML = state.muted || state.volume === 0 ? icons.mute : icons.volume;
@@ -977,14 +1818,100 @@ function ensureAppEvents() {
   });
 
   app.addEventListener('keydown', (e) => {
-    const t = e.target as HTMLElement | null;
+    const ke = e as KeyboardEvent;
+    const t = ke.target as HTMLElement | null;
     if (!t || !app.contains(t)) return;
-    if (t.dataset.action === 'search' && (e as KeyboardEvent).key === 'Enter') {
+
+    if (t.dataset.action === 'search' && ke.key === 'Enter') {
       const q = state.query.trim();
       if (q) {
         state.view = 'search';
         void loadSearch(q, true);
       }
+      return;
+    }
+
+    // Card activate
+    if (t.classList.contains('station-card') && (ke.key === 'Enter' || ke.key === ' ')) {
+      ke.preventDefault();
+      const id = t.dataset.id;
+      const station = id ? findStation(id) : undefined;
+      if (station) void playStation(station);
+    }
+  });
+}
+
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (el.isContentEditable) return true;
+  return false;
+}
+
+function bindGlobalKeys() {
+  document.addEventListener('keydown', (e) => {
+    if (isTypingTarget(e.target)) {
+      if (e.key === 'Escape') {
+        (e.target as HTMLElement).blur();
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case ' ':
+        e.preventDefault();
+        if (state.current) player.toggle();
+        break;
+      case 'm':
+      case 'M':
+        state.muted = !state.muted;
+        player.setMuted(state.muted, { silent: true });
+        player.setVolume(state.volume);
+        updatePlaybackUI();
+        break;
+      case 'ArrowLeft':
+        e.preventDefault();
+        state.volume = Math.max(0, state.volume - 0.05);
+        state.muted = state.volume === 0;
+        player.setVolume(state.volume);
+        player.setMuted(state.muted, { silent: true });
+        saveVolume(state.volume);
+        renderPlayer();
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        state.volume = Math.min(1, state.volume + 0.05);
+        state.muted = false;
+        player.setVolume(state.volume);
+        player.setMuted(false, { silent: true });
+        saveVolume(state.volume);
+        renderPlayer();
+        break;
+      case '/':
+        e.preventDefault();
+        qs<HTMLInputElement>('.search-input')?.focus();
+        break;
+      case 'n':
+      case 'N':
+        void playRelative(1);
+        break;
+      case 'p':
+      case 'P':
+        void playRelative(-1);
+        break;
+      case 'Escape':
+        if (state.detailStation) {
+          state.detailStation = null;
+          renderDetail();
+        } else if (sleepMenuOpen) {
+          sleepMenuOpen = false;
+          renderPlayer();
+        } else if (navOpen) {
+          navOpen = false;
+          renderNav();
+        }
+        break;
     }
   });
 }
@@ -1008,6 +1935,51 @@ player.subscribe(() => {
   updatePlaybackUI();
 });
 
-render();
+sleepTimer.setOnFire(() => {
+  const finish = () => {
+    player.pause();
+    state.sleepMinutes = null;
+    state.sleepUntil = null;
+    showToast('Sleep timer ended — sweet dreams');
+    renderPlayer();
+  };
+  // Fade last ~2s if still playing
+  if (player.playing) {
+    player.fadeOutThen(2000, finish);
+  } else {
+    finish();
+  }
+});
+
+sleepTimer.subscribe(() => {
+  state.sleepUntil = sleepTimer.untilMs;
+  // Light update: only badge
+  const badge = qs('.sleep-badge');
+  const label = formatSleepRemaining(sleepTimer.remainingMs);
+  if (badge && label) badge.textContent = label;
+  else if (sleepTimer.active) renderPlayer();
+});
+
+bindGlobalKeys();
+window.addEventListener('hashchange', () => {
+  void applyRouteFromHash();
+});
+
+renderAllChrome();
 void ensureMeta();
-void loadDiscover(true);
+
+const initialRoute = parseHash();
+if (initialRoute) {
+  void applyRouteFromHash();
+} else {
+  void loadDiscover(true);
+}
+
+// Register service worker for PWA shell caching (optional, ignore failures)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
+      // SW optional
+    });
+  });
+}

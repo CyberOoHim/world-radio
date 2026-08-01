@@ -1,14 +1,16 @@
-import type { Station } from './types';
+import type { AppPrefs, SortId, Station } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
 const VOLUME_KEY = 'world-radio:volume';
+const LAST_KEY = 'world-radio:last-station';
+const PREFS_KEY = 'world-radio:prefs';
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
-function sanitizeStation(raw: unknown): Station | null {
+export function sanitizeStation(raw: unknown): Station | null {
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Record<string, unknown>;
   if (!isNonEmptyString(s.stationuuid)) return null;
@@ -40,23 +42,62 @@ function sanitizeStation(raw: unknown): Station | null {
   };
 }
 
-export function loadFavorites(): string[] {
+/** Slim snapshot for favorites/last-played (same shape as Station for simplicity). */
+export function toSnapshot(station: Station): Station {
+  return sanitizeStation(station) ?? station;
+}
+
+export function loadFavorites(): Station[] {
   try {
     const raw = localStorage.getItem(FAV_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isNonEmptyString);
+
+    // Migrate legacy UUID-only arrays
+    if (parsed.every((x) => typeof x === 'string')) {
+      return (parsed as string[]).map((id) => ({
+        changeuuid: '',
+        stationuuid: id,
+        name: 'Saved station',
+        url: '',
+        url_resolved: '',
+        homepage: '',
+        favicon: '',
+        tags: '',
+        country: '',
+        countrycode: '',
+        state: '',
+        language: '',
+        languagecodes: '',
+        votes: 0,
+        codec: '',
+        bitrate: 0,
+        lastcheckok: 0,
+        clickcount: 0,
+        clicktrend: 0,
+        geo_lat: null,
+        geo_long: null,
+      }));
+    }
+
+    return parsed
+      .map(sanitizeStation)
+      .filter((s): s is Station => s != null)
+      .slice(0, 200);
   } catch {
     return [];
   }
 }
 
-export function saveFavorites(ids: string[]): void {
+export function saveFavorites(stations: Station[]): void {
   try {
-    localStorage.setItem(FAV_KEY, JSON.stringify(ids));
+    localStorage.setItem(
+      FAV_KEY,
+      JSON.stringify(stations.map(toSnapshot).slice(0, 200))
+    );
   } catch {
-    // Quota / private mode — keep in-memory state as source of truth
+    // Quota / private mode
   }
 }
 
@@ -99,5 +140,96 @@ export function saveVolume(v: number): void {
     localStorage.setItem(VOLUME_KEY, String(v));
   } catch {
     // Quota / private mode
+  }
+}
+
+export function loadLastStation(): Station | null {
+  try {
+    const raw = localStorage.getItem(LAST_KEY);
+    if (!raw) return null;
+    return sanitizeStation(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastStation(station: Station | null): void {
+  try {
+    if (!station) {
+      localStorage.removeItem(LAST_KEY);
+      return;
+    }
+    localStorage.setItem(LAST_KEY, JSON.stringify(toSnapshot(station)));
+  } catch {
+    // Quota / private mode
+  }
+}
+
+const DEFAULT_PREFS: AppPrefs = {
+  httpsOnly: false,
+  sort: 'clickcount',
+};
+
+export function loadPrefs(): AppPrefs {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return { ...DEFAULT_PREFS };
+    const parsed = JSON.parse(raw) as Partial<AppPrefs>;
+    const sort = (parsed.sort as SortId) || DEFAULT_PREFS.sort;
+    return {
+      httpsOnly: Boolean(parsed.httpsOnly),
+      sort:
+        sort === 'votes' ||
+        sort === 'name' ||
+        sort === 'bitrate' ||
+        sort === 'clicktrend' ||
+        sort === 'random' ||
+        sort === 'clickcount'
+          ? sort
+          : DEFAULT_PREFS.sort,
+    };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+}
+
+export function savePrefs(prefs: AppPrefs): void {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // Quota / private mode
+  }
+}
+
+export function exportFavoritesJson(stations: Station[]): string {
+  return JSON.stringify(
+    {
+      app: 'world-radio',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      favorites: stations.map(toSnapshot),
+    },
+    null,
+    2
+  );
+}
+
+export function importFavoritesJson(raw: string): Station[] | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const obj = parsed as Record<string, unknown>;
+    const list = Array.isArray(obj.favorites)
+      ? obj.favorites
+      : Array.isArray(parsed)
+        ? parsed
+        : null;
+    if (!list) return null;
+    const stations = list
+      .map(sanitizeStation)
+      .filter((s): s is Station => s != null);
+    return stations.length ? stations : null;
+  } catch {
+    return null;
   }
 }

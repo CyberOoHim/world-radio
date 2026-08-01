@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Relaxing world radio player with thousands of global stations",
   "type": "module",
-  "homepage": "https://CyberOoHim.github.io/world_radioX/",
+  "homepage": "https://CyberOoHim.github.io/world_radio/",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

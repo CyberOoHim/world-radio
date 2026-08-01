@@ -33,6 +33,12 @@ export interface Tag {
   stationcount: number;
 }
 
+export interface Language {
+  name: string;
+  iso_639?: string;
+  stationcount: number;
+}
+
 export type ViewId =
   | 'discover'
   | 'countries'
@@ -41,12 +47,17 @@ export type ViewId =
   | 'recent'
   | 'search';
 
+export type SortId = 'clickcount' | 'votes' | 'name' | 'bitrate' | 'clicktrend' | 'random';
+
+export type SleepMinutes = 15 | 30 | 45 | 60 | 90;
+
 export interface AppState {
   view: ViewId;
   stations: Station[];
   countries: Country[];
   tags: Tag[];
-  favorites: string[];
+  languages: Language[];
+  favorites: Station[];
   recent: Station[];
   current: Station | null;
   playing: boolean;
@@ -61,4 +72,21 @@ export interface AppState {
   offset: number;
   hasMore: boolean;
   continentFilter: string | null;
+  /** Local filter for country/genre browse lists */
+  browseFilter: string;
+  sort: SortId;
+  languageFilter: string | null;
+  httpsOnly: boolean;
+  detailStation: Station | null;
+  sleepUntil: number | null;
+  sleepMinutes: SleepMinutes | null;
+  toast: string | null;
+  nearMe: boolean;
+  userLat: number | null;
+  userLon: number | null;
+}
+
+export interface AppPrefs {
+  httpsOnly: boolean;
+  sort: SortId;
 }

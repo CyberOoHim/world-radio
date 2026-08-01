@@ -1,4 +1,4 @@
-import type { Country, Station, Tag } from '../types';
+import type { Country, Language, Station, Tag } from '../types';
 
 const MIRRORS = [
   'https://de1.api.radio-browser.info',
@@ -32,7 +32,6 @@ async function pickMirror(force = false): Promise<void> {
 
   const gen = ++pickGeneration;
   baseReady = (async () => {
-    // Prefer a different mirror when re-picking after failure
     const order = force
       ? [...MIRRORS.filter((m) => m !== baseUrl), baseUrl]
       : [...MIRRORS];
@@ -46,7 +45,6 @@ async function pickMirror(force = false): Promise<void> {
       }
     }
     if (gen !== pickGeneration) return;
-    // Last resort: keep current baseUrl (or first mirror) so callers still try
     if (!force) baseUrl = MIRRORS[0];
   })();
 
@@ -101,13 +99,11 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     return await fetchOnce<T>(path, init);
   } catch (err) {
-    // Do not retry if the caller aborted
     if (init?.signal?.aborted) throw err;
     if (err instanceof DOMException && err.name === 'AbortError' && init?.signal?.aborted) {
       throw err;
     }
 
-    // Re-pick mirror and retry once on network / 5xx-style failure
     baseReady = null;
     await pickMirror(true);
     return fetchOnce<T>(path, init);
@@ -127,6 +123,8 @@ export interface SearchParams {
   reverse?: boolean;
   hidebroken?: boolean;
   is_https?: boolean;
+  geo_lat?: number;
+  geo_long?: number;
 }
 
 function toQuery(params: SearchParams): string {
@@ -150,28 +148,100 @@ export async function searchStations(params: SearchParams = {}): Promise<Station
   return apiFetch<Station[]>(`/json/stations/search?${toQuery(defaults)}`);
 }
 
-export async function getTopStations(limit = 48, offset = 0): Promise<Station[]> {
-  return searchStations({ limit, offset, order: 'clickcount', reverse: true });
+export async function getTopStations(
+  limit = 48,
+  offset = 0,
+  extra: SearchParams = {}
+): Promise<Station[]> {
+  return searchStations({
+    limit,
+    offset,
+    order: extra.order ?? 'clickcount',
+    reverse: extra.reverse ?? true,
+    ...extra,
+  });
 }
 
 export async function getStationsByCountry(
   countrycode: string,
   limit = 48,
-  offset = 0
+  offset = 0,
+  extra: SearchParams = {}
 ): Promise<Station[]> {
-  return searchStations({ countrycode, limit, offset });
+  return searchStations({ countrycode, limit, offset, ...extra });
 }
 
 export async function getStationsByTag(
   tag: string,
   limit = 48,
-  offset = 0
+  offset = 0,
+  extra: SearchParams = {}
 ): Promise<Station[]> {
-  return searchStations({ tag, limit, offset });
+  return searchStations({ tag, limit, offset, ...extra });
 }
 
 export async function getStationsByUuid(uuid: string): Promise<Station[]> {
   return apiFetch<Station[]>(`/json/stations/byuuid/${encodeURIComponent(uuid)}`);
+}
+
+/** Batch resolve stations by UUID (comma-separated GET, with per-uuid fallback). */
+export async function getStationsByUuids(uuids: string[]): Promise<Station[]> {
+  if (uuids.length === 0) return [];
+  const unique = [...new Set(uuids.filter(Boolean))];
+  const results: Station[] = [];
+  const chunk = 20;
+  for (let i = 0; i < unique.length; i += chunk) {
+    const slice = unique.slice(i, i + chunk);
+    try {
+      const path = `/json/stations/byuuid/${slice.map(encodeURIComponent).join(',')}`;
+      const list = await apiFetch<Station[]>(path);
+      if (Array.isArray(list) && list.length) {
+        results.push(...list);
+        continue;
+      }
+    } catch {
+      // fall through to individual
+    }
+    const settled = await Promise.allSettled(slice.map((uuid) => getStationsByUuid(uuid)));
+    for (const r of settled) {
+      if (r.status === 'fulfilled' && r.value[0]) results.push(r.value[0]);
+    }
+  }
+  return results;
+}
+
+export async function getRandomStations(
+  limit = 1,
+  extra: SearchParams = {}
+): Promise<Station[]> {
+  return searchStations({
+    limit,
+    offset: 0,
+    order: 'random',
+    reverse: false,
+    hidebroken: true,
+    ...extra,
+  });
+}
+
+export async function getStationsNear(
+  lat: number,
+  lon: number,
+  limit = 48,
+  offset = 0,
+  extra: SearchParams = {}
+): Promise<Station[]> {
+  // Radio Browser supports geo search via search with geo_lat/geo_long and order=distance on some mirrors
+  return searchStations({
+    geo_lat: lat,
+    geo_long: lon,
+    order: 'distance',
+    reverse: false,
+    limit,
+    offset,
+    hidebroken: true,
+    ...extra,
+  });
 }
 
 export async function getCountries(): Promise<Country[]> {
@@ -186,6 +256,17 @@ export async function getTags(limit = 120): Promise<Tag[]> {
     `/json/tags?order=stationcount&reverse=true&hidebroken=true&limit=${limit}`
   );
   return list.filter((t) => t.stationcount > 0 && t.name.trim().length > 0);
+}
+
+export async function getLanguages(limit = 80): Promise<Language[]> {
+  try {
+    const list = await apiFetch<Language[]>(
+      `/json/languages?order=stationcount&reverse=true&hidebroken=true&limit=${limit}`
+    );
+    return list.filter((l) => l.stationcount > 0 && l.name.trim().length > 0);
+  } catch {
+    return [];
+  }
 }
 
 /** Resolve a playable stream URL and register a click (improves ranking). */
@@ -260,3 +341,38 @@ export const MOOD_TAGS = [
   { id: 'hip hop', label: 'Hip Hop', emoji: '🎤' },
   { id: 'reggae', label: 'Reggae', emoji: '🌴' },
 ];
+
+/** Time-of-day curated chip sets */
+export function timeOfDayMoods(): { id: string; label: string; emoji: string }[] {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 11) {
+    return [
+      { id: 'news', label: 'Morning news', emoji: '📰' },
+      { id: 'classical', label: 'Classical', emoji: '🎻' },
+      { id: 'jazz', label: 'Jazz', emoji: '🎷' },
+      { id: 'easy listening', label: 'Easy', emoji: '☕' },
+    ];
+  }
+  if (hour >= 11 && hour < 17) {
+    return [
+      { id: 'pop', label: 'Pop', emoji: '💫' },
+      { id: 'chillout', label: 'Chillout', emoji: '🍃' },
+      { id: 'world music', label: 'World', emoji: '🌍' },
+      { id: 'soul', label: 'Soul', emoji: '💜' },
+    ];
+  }
+  if (hour >= 17 && hour < 22) {
+    return [
+      { id: 'jazz', label: 'Evening jazz', emoji: '🎷' },
+      { id: 'lounge', label: 'Lounge', emoji: '🍸' },
+      { id: 'smooth jazz', label: 'Smooth', emoji: '✨' },
+      { id: 'blues', label: 'Blues', emoji: '🎸' },
+    ];
+  }
+  return [
+    { id: 'ambient', label: 'Late ambient', emoji: '🌙' },
+    { id: 'meditation', label: 'Meditation', emoji: '🕊' },
+    { id: 'classical', label: 'Classical', emoji: '🎻' },
+    { id: 'nature', label: 'Nature', emoji: '🌲' },
+  ];
+}

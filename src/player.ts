@@ -19,13 +19,14 @@ class AudioPlayer {
   /** Stream URL currently assigned for this generation (used for HTTPS fallback). */
   private activeStreamUrl: string | null = null;
   private triedOriginalFallback = false;
+  private fadeTimer: ReturnType<typeof setInterval> | null = null;
+  private _userVolume = 0.75;
 
   constructor() {
     this.audio.preload = 'none';
     // Do not set crossOrigin — most radio streams lack CORS headers and would fail to play.
     this.audio.setAttribute('playsinline', '');
     this.audio.setAttribute('webkit-playsinline', '');
-    // TS DOM lib: playsInline is on HTMLMediaElement in modern browsers
     (this.audio as HTMLAudioElement & { playsInline?: boolean }).playsInline = true;
 
     this.audio.addEventListener('playing', () => {
@@ -48,7 +49,6 @@ class AudioPlayer {
     });
     this.audio.addEventListener('error', () => {
       if (!this.isActiveGeneration()) return;
-      // If we rewrote http→https and the media element failed, retry original once.
       if (!this.triedOriginalFallback && this._station) {
         const original = this._station.url_resolved || this._station.url;
         if (original && original !== this.activeStreamUrl) {
@@ -111,12 +111,19 @@ class AudioPlayer {
     this.emit();
   }
 
+  clearError() {
+    this._error = null;
+    this.emit();
+  }
+
   /**
    * Set volume on the element. Does not emit — callers already own the UI value
    * and full re-renders on every slider tick thrash focus.
    */
   setVolume(v: number) {
-    this._volume = Math.min(1, Math.max(0, v));
+    this._userVolume = Math.min(1, Math.max(0, v));
+    this._volume = this._userVolume;
+    this.cancelFade();
     this.audio.volume = this._muted ? 0 : this._volume;
   }
 
@@ -124,6 +131,51 @@ class AudioPlayer {
     this._muted = m;
     this.audio.volume = m ? 0 : this._volume;
     if (!opts?.silent) this.emit();
+  }
+
+  /** Soft fade-in over ~400ms when a station starts. */
+  private softFadeIn() {
+    this.cancelFade();
+    const target = this._muted ? 0 : this._userVolume;
+    if (target <= 0) {
+      this.audio.volume = 0;
+      return;
+    }
+    this.audio.volume = 0;
+    const steps = 8;
+    let i = 0;
+    this.fadeTimer = setInterval(() => {
+      i++;
+      this.audio.volume = target * (i / steps);
+      if (i >= steps) this.cancelFade();
+    }, 50);
+  }
+
+  /** Fade out then invoke callback (for sleep timer). */
+  fadeOutThen(ms: number, done: () => void) {
+    this.cancelFade();
+    const start = this.audio.volume;
+    if (start <= 0.01 || this._muted) {
+      done();
+      return;
+    }
+    const steps = Math.max(6, Math.floor(ms / 50));
+    let i = 0;
+    this.fadeTimer = setInterval(() => {
+      i++;
+      this.audio.volume = start * (1 - i / steps);
+      if (i >= steps) {
+        this.cancelFade();
+        done();
+      }
+    }, 50);
+  }
+
+  private cancelFade() {
+    if (this.fadeTimer != null) {
+      clearInterval(this.fadeTimer);
+      this.fadeTimer = null;
+    }
   }
 
   async play(station: Station) {
@@ -134,6 +186,7 @@ class AudioPlayer {
     this._playing = false;
     this.activeStreamUrl = null;
     this.triedOriginalFallback = false;
+    this.cancelFade();
     this.emit();
 
     this.audio.pause();
@@ -160,7 +213,6 @@ class AudioPlayer {
 
     const originalUrl = station.url_resolved || station.url || streamUrl;
 
-    // Prefer https when the page is secure and stream is http (mixed content).
     if (location.protocol === 'https:' && streamUrl.startsWith('http:')) {
       streamUrl = streamUrl.replace(/^http:/, 'https:');
     }
@@ -168,15 +220,15 @@ class AudioPlayer {
     this.mediaGeneration = gen;
     this.activeStreamUrl = streamUrl;
     this.audio.src = streamUrl;
-    this.audio.volume = this._muted ? 0 : this._volume;
+    this.audio.volume = this._muted ? 0 : this._userVolume;
 
     try {
       await this.audio.play();
       if (gen !== this.playGeneration) return;
+      this.softFadeIn();
     } catch (err) {
       if (gen !== this.playGeneration) return;
 
-      // If https rewrite failed at play() promise, try original immediately.
       if (originalUrl && originalUrl !== streamUrl) {
         try {
           this.triedOriginalFallback = true;
@@ -184,6 +236,7 @@ class AudioPlayer {
           this.audio.src = originalUrl;
           await this.audio.play();
           if (gen !== this.playGeneration) return;
+          this.softFadeIn();
           return;
         } catch {
           // fall through
@@ -206,6 +259,7 @@ class AudioPlayer {
       this.audio.pause();
     } else if (this.audio.src) {
       this._loading = true;
+      this._error = null;
       this.emit();
       const gen = this.playGeneration;
       void this.audio.play().catch(() => {
@@ -219,9 +273,14 @@ class AudioPlayer {
     }
   }
 
+  pause() {
+    this.audio.pause();
+  }
+
   stop() {
     this.playGeneration++;
     this.mediaGeneration = 0;
+    this.cancelFade();
     this.audio.pause();
     this.audio.removeAttribute('src');
     try {
