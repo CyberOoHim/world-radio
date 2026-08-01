@@ -369,7 +369,6 @@ function closePlayerAndCleanActivity() {
   state.detailStation = null;
   sleepMenuOpen = false;
   sleepTimer.cancel();
-  saveLastStation(null);
 
   // Clear Near me findings / mode entirely.
   state.nearMe = false;
@@ -1569,11 +1568,27 @@ function emptyMessage(): string {
   }
 }
 
+/**
+ * Resolves the LAST station listened to (distinct from the currently active station, if any).
+ * - If a station is currently playing, returns the previous station in recent history.
+ * - If no station is active (or player is idle), returns the most recent station played.
+ */
+function getLastStation(): Station | null {
+  const current = state.current;
+  if (current) {
+    const prev = state.recent.find((s) => s.stationuuid !== current.stationuuid);
+    if (prev) return prev;
+    if (!player.playing) return current;
+    return null;
+  }
+  return state.recent[0] ?? loadLastStation();
+}
+
 function renderDiscover(): string {
   const period = resolveTimeOfDayPeriod(state.timeOfDayMode);
   const periodLabel = timeOfDayPeriodLabel(period).toLowerCase();
   const tod = timeOfDayMoods(period);
-  const last = state.current;
+  const last = getLastStation();
   return `
     <section class="hero">
       <h2>Listen to the world, softly.</h2>
@@ -1588,7 +1603,7 @@ function renderDiscover(): string {
         <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me">${icons.pin} Near me</button>
         ${
           last
-            ? `<button type="button" class="chip" data-action="resume">▶ Resume ${escapeHtml(last.name.slice(0, 28))}${last.name.length > 28 ? '…' : ''}</button>`
+            ? `<button type="button" class="chip" data-action="resume" data-id="${escapeHtml(last.stationuuid)}">▶ Resume ${escapeHtml(last.name.slice(0, 28))}${last.name.length > 28 ? '…' : ''}</button>`
             : ''
         }
       </div>
@@ -2160,11 +2175,32 @@ function renderAllChrome() {
   renderToast();
 }
 
+function updateHeroResumeUI() {
+  const container = qs('.hero-actions');
+  if (!container) return;
+  const last = getLastStation();
+  let resumeBtn = container.querySelector<HTMLButtonElement>('[data-action="resume"]');
+  if (last) {
+    const btnHtml = `<button type="button" class="chip" data-action="resume" data-id="${escapeHtml(last.stationuuid)}">▶ Resume ${escapeHtml(last.name.slice(0, 28))}${last.name.length > 28 ? '…' : ''}</button>`;
+    if (resumeBtn) {
+      resumeBtn.outerHTML = btnHtml;
+    } else {
+      container.insertAdjacentHTML('beforeend', btnHtml);
+    }
+  } else if (resumeBtn) {
+    resumeBtn.remove();
+  }
+}
+
 function updatePlaybackUI() {
   state.current = player.station ?? state.current;
+  if (state.current) {
+    saveLastStation(state.current);
+  }
   document.body.classList.toggle('is-playing', player.playing);
   renderPlayer();
   syncMediaSession();
+  updateHeroResumeUI();
 
   const currentId = state.current?.stationuuid;
   document.querySelectorAll<HTMLElement>('.station-card').forEach((card) => {
@@ -2419,9 +2455,17 @@ function ensureAppEvents() {
       case 'near-me':
         openNearMe();
         break;
-      case 'resume':
-        if (state.current) void playStation(state.current);
+      case 'resume': {
+        const id = t.dataset.id;
+        const station =
+          (id
+            ? findStation(id) ||
+              state.recent.find((s) => s.stationuuid === id) ||
+              (loadLastStation()?.stationuuid === id ? loadLastStation() : null)
+            : null) || getLastStation();
+        if (station) void playStation(station);
         break;
+      }
       case 'country': {
         const code = t.dataset.code;
         if (code) openCountry(code);
