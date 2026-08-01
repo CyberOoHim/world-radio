@@ -413,7 +413,33 @@ function queueList(): Station[] {
   return state.favorites;
 }
 
+function getQueueContextName(): string {
+  if (state.stations.length) {
+    if (state.nearMe) return 'Near me';
+    if (state.selectedTag) return state.selectedTag;
+    if (state.selectedCountry) return state.selectedCountry;
+    if (state.view === 'search' && state.query.trim()) return `Search "${state.query.trim()}"`;
+    if (state.view === 'favorites') return 'Favorites';
+    if (state.view === 'recent') return 'Recent history';
+    return 'Popular';
+  }
+  if (state.recent.length) return 'Recent history';
+  if (state.favorites.length) return 'Favorites';
+  return 'Queue';
+}
+
+async function waitForLoading(maxWaitMs = 3000): Promise<void> {
+  if (!state.loading) return;
+  const start = Date.now();
+  while (state.loading && Date.now() - start < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 async function playRelative(delta: number) {
+  if (state.loading) {
+    await waitForLoading();
+  }
   const list = queueList();
   if (!list.length) {
     showToast('No station queue — browse or search first');
@@ -425,6 +451,11 @@ async function playRelative(delta: number) {
   let next = idx + delta;
   if (next < 0) next = list.length - 1;
   if (next >= list.length) next = 0;
+
+  const dir = delta > 0 ? 'Next' : 'Prev';
+  const ctxName = getQueueContextName();
+  showToast(`${dir} (${next + 1}/${list.length} in ${ctxName})`);
+
   await playStation(list[next]);
 }
 
