@@ -475,9 +475,28 @@ body.is-playing .orb {
   font-weight: 400;
 }
 
+.section-head .period-tag {
+  font-family: var(--font-body, inherit);
+  font-size: 0.72em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+
 .section-head .meta {
   font-size: 0.82rem;
   color: var(--text-muted);
+}
+
+button.chip.chip-period {
+  font-size: 0.8rem;
+  padding: 6px 12px;
+  opacity: 0.92;
+}
+
+button.chip.chip-period.active {
+  opacity: 1;
 }
 
 .chip-row {

@@ -1,4 +1,13 @@
-import type { Country, Language, Station, Tag } from '../types';
+import type {
+  Country,
+  Language,
+  Station,
+  Tag,
+  TimeOfDayMode,
+  TimeOfDayPeriod,
+} from '../types';
+
+export type { TimeOfDayMode, TimeOfDayPeriod };
 
 const MIRRORS = [
   'https://de1.api.radio-browser.info',
@@ -342,37 +351,69 @@ export const MOOD_TAGS = [
   { id: 'reggae', label: 'Reggae', emoji: '🌴' },
 ];
 
-/** Time-of-day curated chip sets */
-export function timeOfDayMoods(): { id: string; label: string; emoji: string }[] {
-  const hour = new Date().getHours();
-  if (hour >= 5 && hour < 11) {
-    return [
-      { id: 'news', label: 'Morning news', emoji: '📰' },
-      { id: 'classical', label: 'Classical', emoji: '🎻' },
-      { id: 'jazz', label: 'Jazz', emoji: '🎷' },
-      { id: 'easy listening', label: 'Easy', emoji: '☕' },
-    ];
-  }
-  if (hour >= 11 && hour < 17) {
-    return [
-      { id: 'pop', label: 'Pop', emoji: '💫' },
-      { id: 'chillout', label: 'Chillout', emoji: '🍃' },
-      { id: 'world music', label: 'World', emoji: '🌍' },
-      { id: 'soul', label: 'Soul', emoji: '💜' },
-    ];
-  }
-  if (hour >= 17 && hour < 22) {
-    return [
-      { id: 'jazz', label: 'Evening jazz', emoji: '🎷' },
-      { id: 'lounge', label: 'Lounge', emoji: '🍸' },
-      { id: 'smooth jazz', label: 'Smooth', emoji: '✨' },
-      { id: 'blues', label: 'Blues', emoji: '🎸' },
-    ];
-  }
-  return [
+/** Time-of-day periods for the Discover "Right now" strip */
+export const TIME_OF_DAY_PERIODS: {
+  id: TimeOfDayPeriod;
+  label: string;
+  emoji: string;
+}[] = [
+  { id: 'morning', label: 'Morning', emoji: '🌅' },
+  { id: 'day', label: 'Day', emoji: '☀️' },
+  { id: 'evening', label: 'Evening', emoji: '🌇' },
+  { id: 'night', label: 'Night', emoji: '🌙' },
+];
+
+const TIME_OF_DAY_MOODS: Record<
+  TimeOfDayPeriod,
+  { id: string; label: string; emoji: string }[]
+> = {
+  morning: [
+    { id: 'news', label: 'Morning news', emoji: '📰' },
+    { id: 'classical', label: 'Classical', emoji: '🎻' },
+    { id: 'jazz', label: 'Jazz', emoji: '🎷' },
+    { id: 'easy listening', label: 'Easy', emoji: '☕' },
+  ],
+  day: [
+    { id: 'pop', label: 'Pop', emoji: '💫' },
+    { id: 'chillout', label: 'Chillout', emoji: '🍃' },
+    { id: 'world music', label: 'World', emoji: '🌍' },
+    { id: 'soul', label: 'Soul', emoji: '💜' },
+  ],
+  evening: [
+    { id: 'jazz', label: 'Evening jazz', emoji: '🎷' },
+    { id: 'lounge', label: 'Lounge', emoji: '🍸' },
+    { id: 'smooth jazz', label: 'Smooth', emoji: '✨' },
+    { id: 'blues', label: 'Blues', emoji: '🎸' },
+  ],
+  night: [
     { id: 'ambient', label: 'Late ambient', emoji: '🌙' },
     { id: 'meditation', label: 'Meditation', emoji: '🕊' },
     { id: 'classical', label: 'Classical', emoji: '🎻' },
     { id: 'nature', label: 'Nature', emoji: '🌲' },
-  ];
+  ],
+};
+
+/** Resolve period from local clock (5–11 morning, 11–17 day, 17–22 evening, else night). */
+export function currentTimeOfDayPeriod(date = new Date()): TimeOfDayPeriod {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 11) return 'morning';
+  if (hour >= 11 && hour < 17) return 'day';
+  if (hour >= 17 && hour < 22) return 'evening';
+  return 'night';
+}
+
+export function resolveTimeOfDayPeriod(mode: TimeOfDayMode): TimeOfDayPeriod {
+  return mode === 'auto' ? currentTimeOfDayPeriod() : mode;
+}
+
+export function timeOfDayPeriodLabel(period: TimeOfDayPeriod): string {
+  return TIME_OF_DAY_PERIODS.find((p) => p.id === period)?.label ?? period;
+}
+
+/** Time-of-day curated chip sets. Pass a period, or omit to use the clock. */
+export function timeOfDayMoods(
+  period?: TimeOfDayPeriod
+): { id: string; label: string; emoji: string }[] {
+  const p = period ?? currentTimeOfDayPeriod();
+  return TIME_OF_DAY_MOODS[p];
 }

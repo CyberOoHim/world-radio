@@ -1,4 +1,4 @@
-import type { AppPrefs, SortId, Station } from './types';
+import type { AppPrefs, SortId, Station, TimeOfDayMode } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
@@ -168,7 +168,21 @@ export function saveLastStation(station: Station | null): void {
 const DEFAULT_PREFS: AppPrefs = {
   httpsOnly: false,
   sort: 'clickcount',
+  timeOfDayMode: 'auto',
 };
+
+function sanitizeTimeOfDayMode(v: unknown): TimeOfDayMode {
+  if (
+    v === 'auto' ||
+    v === 'morning' ||
+    v === 'day' ||
+    v === 'evening' ||
+    v === 'night'
+  ) {
+    return v;
+  }
+  return DEFAULT_PREFS.timeOfDayMode;
+}
 
 export function loadPrefs(): AppPrefs {
   try {
@@ -187,6 +201,7 @@ export function loadPrefs(): AppPrefs {
         sort === 'clickcount'
           ? sort
           : DEFAULT_PREFS.sort,
+      timeOfDayMode: sanitizeTimeOfDayMode(parsed.timeOfDayMode),
     };
   } catch {
     return { ...DEFAULT_PREFS };

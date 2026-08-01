@@ -7,6 +7,7 @@ import './style.css';
 import {
   CONTINENTS,
   MOOD_TAGS,
+  TIME_OF_DAY_PERIODS,
   getCountries,
   getLanguages,
   getRandomStations,
@@ -17,8 +18,10 @@ import {
   getStationsNear,
   getTags,
   getTopStations,
+  resolveTimeOfDayPeriod,
   searchStations,
   timeOfDayMoods,
+  timeOfDayPeriodLabel,
   type SearchParams,
 } from './api/radioBrowser';
 import { updateMediaSession } from './mediaSession';
@@ -40,7 +43,15 @@ import {
   saveVolume,
   toSnapshot,
 } from './storage';
-import type { AppState, Country, SleepMinutes, SortId, Station, ViewId } from './types';
+import type {
+  AppState,
+  Country,
+  SleepMinutes,
+  SortId,
+  Station,
+  TimeOfDayMode,
+  ViewId,
+} from './types';
 
 const PAGE = 48;
 const SLEEP_OPTIONS: SleepMinutes[] = [15, 30, 45, 60, 90];
@@ -84,6 +95,7 @@ const state: AppState = {
   nearMe: false,
   userLat: null,
   userLon: null,
+  timeOfDayMode: prefs.timeOfDayMode,
 };
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -172,7 +184,11 @@ function showToast(msg: string, ms = 2600) {
 }
 
 function persistPrefs() {
-  savePrefs({ httpsOnly: state.httpsOnly, sort: state.sort });
+  savePrefs({
+    httpsOnly: state.httpsOnly,
+    sort: state.sort,
+    timeOfDayMode: state.timeOfDayMode,
+  });
 }
 
 function applyMute(muted: boolean) {
@@ -857,7 +873,9 @@ function emptyMessage(): string {
 }
 
 function renderDiscover(): string {
-  const tod = timeOfDayMoods();
+  const period = resolveTimeOfDayPeriod(state.timeOfDayMode);
+  const periodLabel = timeOfDayPeriodLabel(period).toLowerCase();
+  const tod = timeOfDayMoods(period);
   const last = state.current;
   return `
     <section class="hero">
@@ -878,7 +896,21 @@ function renderDiscover(): string {
         }
       </div>
     </section>
-    <div class="section-head"><h3>Right now</h3></div>
+    <div class="section-head">
+      <h3>Right now <span class="period-tag">(${escapeHtml(periodLabel)})</span></h3>
+      <span class="meta">${state.timeOfDayMode === 'auto' ? 'Auto' : 'Manual'}</span>
+    </div>
+    <div class="chip-row chip-row-scroll compact" role="group" aria-label="Time of day">
+      <button type="button" class="chip chip-period ${state.timeOfDayMode === 'auto' ? 'active' : ''}" data-action="time-of-day" data-mode="auto" title="Follow local time">
+        ⏱ Auto
+      </button>
+      ${TIME_OF_DAY_PERIODS.map(
+        (p) => `
+        <button type="button" class="chip chip-period ${state.timeOfDayMode === p.id ? 'active' : ''}" data-action="time-of-day" data-mode="${p.id}" title="${escapeHtml(p.label)} moods">
+          ${p.emoji} ${escapeHtml(p.label)}
+        </button>`
+      ).join('')}
+    </div>
     <div class="chip-row chip-row-scroll">
       ${tod
         .map(
@@ -1651,6 +1683,26 @@ function ensureAppEvents() {
       case 'surprise':
         void playSurprise();
         break;
+      case 'time-of-day': {
+        const mode = t.dataset.mode as TimeOfDayMode | undefined;
+        if (
+          !mode ||
+          !(
+            mode === 'auto' ||
+            mode === 'morning' ||
+            mode === 'day' ||
+            mode === 'evening' ||
+            mode === 'night'
+          )
+        ) {
+          return;
+        }
+        if (state.timeOfDayMode === mode) return;
+        state.timeOfDayMode = mode;
+        persistPrefs();
+        renderMain();
+        break;
+      }
       case 'near-me':
         openNearMe();
         break;

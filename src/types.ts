@@ -51,6 +51,10 @@ export type SortId = 'clickcount' | 'votes' | 'name' | 'bitrate' | 'clicktrend' 
 
 export type SleepMinutes = 15 | 30 | 45 | 60 | 90;
 
+/** Discover "Right now" period: follow clock, or a fixed bucket. */
+export type TimeOfDayPeriod = 'morning' | 'day' | 'evening' | 'night';
+export type TimeOfDayMode = 'auto' | TimeOfDayPeriod;
+
 export interface AppState {
   view: ViewId;
   stations: Station[];
@@ -81,9 +85,12 @@ export interface AppState {
   nearMe: boolean;
   userLat: number | null;
   userLon: number | null;
+  /** Right now strip: auto follows local clock, or a pinned period */
+  timeOfDayMode: TimeOfDayMode;
 }
 
 export interface AppPrefs {
   httpsOnly: boolean;
   sort: SortId;
+  timeOfDayMode: TimeOfDayMode;
 }
