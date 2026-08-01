@@ -259,9 +259,9 @@ export function isLikelyPlayable(
   const url = (station.url_resolved || station.url || '').trim();
   if (!url || !/^https?:\/\//i.test(url)) return false;
   if (opts?.httpsOnly && !/^https:\/\//i.test(url)) return false;
-  // 0 = last server check failed; treat as dead when the field is present.
+  // Prefer online stations, but allow unknown (null/undefined) so snapshots still work.
   if (station.lastcheckok === 0) return false;
-  return true;
+  return Boolean(station.stationuuid);
 }
 
 /**
@@ -292,11 +292,11 @@ export async function getStationsNear(
     ...filters
   } = extra;
 
-  // Progressive radii (m): city → metro → region → country-scale → continental
-  const radiiMeters = [75_000, 200_000, 500_000, 1_200_000, 3_000_000];
+  // Progressive radii (m). Cap rounds so Near me cannot hang on many sequential API calls.
+  const radiiMeters = [100_000, 350_000, 1_000_000, 2_500_000];
   const need = offset + limit;
   // Over-fetch a bit so sorting still fills the page after filtering.
-  const fetchLimit = Math.min(500, Math.max(need + 24, 80));
+  const fetchLimit = Math.min(200, Math.max(need + 24, 64));
 
   const byId = new Map<string, Station>();
 
@@ -331,7 +331,8 @@ export async function getStationsNear(
       // try next radius / mirror already retried in apiFetch
     }
 
-    if (byId.size >= need) break;
+    // Enough for this page, or already more than a full first page.
+    if (byId.size >= need || byId.size >= limit) break;
   }
 
   const sorted = [...byId.values()].sort((a, b) => {

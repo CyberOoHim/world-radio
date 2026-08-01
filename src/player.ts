@@ -178,6 +178,22 @@ class AudioPlayer {
     }
   }
 
+  private raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), ms);
+      promise.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          reject(e);
+        }
+      );
+    });
+  }
+
   async play(station: Station) {
     const gen = ++this.playGeneration;
     this._station = station;
@@ -197,10 +213,14 @@ class AudioPlayer {
       // ignore
     }
 
-    let streamUrl =
-      (await resolveStream(station.stationuuid)) ||
-      station.url_resolved ||
-      station.url;
+    // Prefer click-counted resolve URL, but never hang surprise/play on a dead API.
+    let streamUrl: string | null = null;
+    try {
+      const resolved = await this.raceTimeout(resolveStream(station.stationuuid), 6_000);
+      streamUrl = resolved || station.url_resolved || station.url || null;
+    } catch {
+      streamUrl = station.url_resolved || station.url || null;
+    }
 
     if (gen !== this.playGeneration) return;
 
@@ -222,21 +242,35 @@ class AudioPlayer {
     this.audio.src = streamUrl;
     this.audio.volume = this._muted ? 0 : this._userVolume;
 
+    const tryPlay = async (url: string) => {
+      this.activeStreamUrl = url;
+      this.audio.src = url;
+      // Some streams never settle play(); bound it so Surprise can skip ahead.
+      await this.raceTimeout(this.audio.play(), 5_000);
+    };
+
     try {
-      await this.audio.play();
+      await tryPlay(streamUrl);
       if (gen !== this.playGeneration) return;
+      // play() resolved ⇒ playback has started (may still buffer).
+      this._playing = true;
+      this._loading = false;
+      this._error = null;
       this.softFadeIn();
+      this.emit();
     } catch (err) {
       if (gen !== this.playGeneration) return;
 
       if (originalUrl && originalUrl !== streamUrl) {
         try {
           this.triedOriginalFallback = true;
-          this.activeStreamUrl = originalUrl;
-          this.audio.src = originalUrl;
-          await this.audio.play();
+          await tryPlay(originalUrl);
           if (gen !== this.playGeneration) return;
+          this._playing = true;
+          this._loading = false;
+          this._error = null;
           this.softFadeIn();
+          this.emit();
           return;
         } catch {
           // fall through
@@ -258,7 +292,7 @@ class AudioPlayer {
    * was superseded, or times out. Used by Surprise Me retries.
    */
   waitForOutcome(
-    timeoutMs = 10_000
+    timeoutMs = 8_000
   ): Promise<'playing' | 'error' | 'timeout' | 'cancelled'> {
     return new Promise((resolve) => {
       const gen = this.playGeneration;
@@ -266,7 +300,8 @@ class AudioPlayer {
         resolve('cancelled');
         return;
       }
-      if (this.mediaGeneration === gen && this._playing && !this._loading) {
+      // Buffering after start still counts as success for live radio.
+      if (this.mediaGeneration === gen && this._playing) {
         resolve('playing');
         return;
       }
@@ -289,7 +324,7 @@ class AudioPlayer {
           finish('cancelled');
           return;
         }
-        if (this.mediaGeneration === gen && this._playing && !this._loading) {
+        if (this.mediaGeneration === gen && this._playing) {
           finish('playing');
           return;
         }
@@ -304,6 +339,7 @@ class AudioPlayer {
           return;
         }
         if (this._playing) finish('playing');
+        else if (this._error) finish('error');
         else finish('timeout');
       }, timeoutMs);
 

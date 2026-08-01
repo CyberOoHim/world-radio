@@ -115,9 +115,33 @@ let surpriseBusy = false;
 /** Bumped to abandon in-flight Near me geolocation + list loads. */
 let nearMeSeq = 0;
 
-const SURPRISE_BATCH = 16;
+const SURPRISE_BATCH = 20;
+/**
+ * Full surprise budget (~60s):
+ *   pool fetch ≤ 12s
+ *   remaining ≈ 48s for connect attempts
+ *   6 tries × ~8s outcome wait (play itself capped ~13s; deadline cuts overruns)
+ */
+const SURPRISE_TOTAL_MS = 60_000;
+const SURPRISE_POOL_TIMEOUT_MS = 12_000;
 const SURPRISE_MAX_TRIES = 6;
-const SURPRISE_PLAY_TIMEOUT_MS = 10_000;
+const SURPRISE_PLAY_TIMEOUT_MS = 8_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
 
 // ─── Icons ───────────────────────────────────────────────
 
@@ -468,12 +492,12 @@ function collectSurprisePool(
 async function runSurpriseStrategies(
   strategies: Array<() => Promise<Station[]>>,
   excludeId: string | null,
-  minPool = 8
+  minPool = 4
 ): Promise<Station[]> {
   const gathered: Station[][] = [];
   for (const run of strategies) {
     try {
-      gathered.push(await run());
+      gathered.push(await withTimeout(run(), SURPRISE_POOL_TIMEOUT_MS));
     } catch {
       // try next strategy
     }
@@ -577,30 +601,61 @@ function getSurpriseContext(): SurpriseContext {
   };
 }
 
-/** Pure worldwide random (HTTPS-only pref only). */
+/** Pure worldwide random (HTTPS-only pref only). Fast path first, then one parallel fallback. */
 async function fetchSurprisePoolAnywhere(excludeId: string | null): Promise<Station[]> {
   const soft = surpriseHttpsFilter();
-  const randomMood = MOOD_TAGS[Math.floor(Math.random() * MOOD_TAGS.length)]?.id;
 
-  return runSurpriseStrategies(
-    [
-      () => getRandomStations(SURPRISE_BATCH, soft),
-      ...(randomMood
-        ? [() => getRandomStations(SURPRISE_BATCH, { ...soft, tag: randomMood })]
-        : []),
-      async () => {
-        const offset = Math.floor(Math.random() * 500);
-        return searchStations({
+  // Fast path: single random batch (most common success case).
+  try {
+    const list = await withTimeout(getRandomStations(SURPRISE_BATCH, soft), SURPRISE_POOL_TIMEOUT_MS);
+    const pool = collectSurprisePool([list], excludeId);
+    if (pool.length >= 3) return pool;
+    if (pool.length) {
+      // Keep partial; still try to top up once.
+      try {
+        const offset = Math.floor(Math.random() * 400);
+        const more = await withTimeout(
+          searchStations({
+            ...soft,
+            limit: SURPRISE_BATCH,
+            offset,
+            order: 'clickcount',
+            reverse: true,
+          }),
+          SURPRISE_POOL_TIMEOUT_MS
+        );
+        return collectSurprisePool([list, more], excludeId);
+      } catch {
+        return pool;
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // Parallel fallback: random mood + popular window
+  const randomMood = MOOD_TAGS[Math.floor(Math.random() * MOOD_TAGS.length)]?.id;
+  const offset = Math.floor(Math.random() * 400);
+  try {
+    const settled = await withTimeout(
+      Promise.all([
+        getRandomStations(SURPRISE_BATCH, randomMood ? { ...soft, tag: randomMood } : soft).catch(
+          () => [] as Station[]
+        ),
+        searchStations({
           ...soft,
           limit: SURPRISE_BATCH,
           offset,
           order: 'clickcount',
           reverse: true,
-        });
-      },
-    ],
-    excludeId
-  );
+        }).catch(() => [] as Station[]),
+      ]),
+      SURPRISE_POOL_TIMEOUT_MS
+    );
+    return collectSurprisePool(settled, excludeId);
+  } catch {
+    return [];
+  }
 }
 
 /** Random within current browse conditions / list. */
@@ -619,13 +674,7 @@ async function fetchSurprisePoolHere(
 
   if (ctx.near) {
     const { lat, lon } = ctx.near;
-    strategies.push(() =>
-      getStationsNear(lat, lon, SURPRISE_BATCH, 0, {
-        ...soft,
-        order: 'distance',
-        reverse: false,
-      })
-    );
+    strategies.push(() => getStationsNear(lat, lon, SURPRISE_BATCH, 0, soft));
   }
 
   if (ctx.countrycode) {
@@ -711,7 +760,8 @@ async function fetchSurprisePoolHere(
 async function runSurpriseAttempts(
   pool: Station[],
   seq: number,
-  scopeLabel: string
+  scopeLabel: string,
+  deadlineMs: number
 ): Promise<SurpriseAttemptResult> {
   if (!pool.length) return 'failed';
 
@@ -720,11 +770,16 @@ async function runSurpriseAttempts(
 
   for (const station of tries) {
     if (seq !== surpriseSeq) return 'cancelled';
+    if (Date.now() > deadlineMs) return 'failed';
+
     attempt++;
     if (attempt > 1) {
       showToast(`Trying another… (${attempt}/${tries.length})`);
+    } else {
+      showToast(`Connecting (${scopeLabel})…`);
     }
 
+    // Only switch UI to the candidate once we start this attempt.
     state.current = station;
     state.detailStation = null;
     sleepMenuOpen = false;
@@ -733,10 +788,40 @@ async function runSurpriseAttempts(
     updatePlaybackUI();
     announce(`Trying ${station.name}`);
 
-    await player.play(station);
+    // play() includes resolveStream + audio.play timeouts; leave a little headroom for waitForOutcome.
+    const remaining = Math.max(2_000, deadlineMs - Date.now());
+    const attemptBudget = Math.min(SURPRISE_PLAY_TIMEOUT_MS + 5_000, remaining);
+
+    try {
+      await withTimeout(player.play(station), attemptBudget);
+    } catch {
+      // play hung past budget — next player.play() bumps generation and cancels it
+      if (seq !== surpriseSeq) return 'cancelled';
+      continue;
+    }
     if (seq !== surpriseSeq) return 'cancelled';
 
-    const outcome = await player.waitForOutcome(SURPRISE_PLAY_TIMEOUT_MS);
+    // If play already marked success, skip long wait.
+    if (player.playing && player.station?.stationuuid === station.stationuuid) {
+      pushRecent(station);
+      saveLastStation(station);
+      if (!applyingRoute) {
+        setHash({ kind: 'station', uuid: station.stationuuid });
+      }
+      syncMediaSession();
+      updatePlaybackUI();
+      announce(`Playing ${station.name}`);
+      const short =
+        station.name.slice(0, 40) + (station.name.length > 40 ? '…' : '');
+      showToast(`Surprise (${scopeLabel}): ${short}`, 3200);
+      return 'played';
+    }
+
+    const waitMs = Math.min(
+      SURPRISE_PLAY_TIMEOUT_MS,
+      Math.max(1_500, deadlineMs - Date.now())
+    );
+    const outcome = await player.waitForOutcome(waitMs);
     if (seq !== surpriseSeq) return 'cancelled';
     if (outcome === 'cancelled') return 'cancelled';
 
@@ -778,17 +863,20 @@ function restoreSurprisePrevious(previous: Station | null) {
 /**
  * Surprise · Anywhere — worldwide random.
  * Surprise · Here — respect current filters/list; one auto-fallback to Anywhere.
+ * Re-click cancels the previous hunt and starts a new one (no permanent hang).
  */
 async function playSurprise(mode: SurpriseMode = 'anywhere') {
   if (surpriseBusy) {
-    showToast('Still finding a surprise…');
-    return;
+    // Abandon stuck/slow hunt instead of blocking the user.
+    surpriseSeq++;
+    showToast('Restarting surprise…');
   }
 
   const seq = ++surpriseSeq;
   surpriseBusy = true;
   const previous = state.current;
   const excludeId = previous?.stationuuid ?? null;
+  const deadlineMs = Date.now() + SURPRISE_TOTAL_MS;
 
   try {
     if (mode === 'here') {
@@ -811,7 +899,7 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
         showToast('Nothing in this filter — trying anywhere…');
         pool = await fetchSurprisePoolAnywhere(excludeId);
         if (seq !== surpriseSeq) return;
-        const result = await runSurpriseAttempts(pool, seq, 'anywhere');
+        const result = await runSurpriseAttempts(pool, seq, 'anywhere', deadlineMs);
         if (result === 'failed') {
           restoreSurprisePrevious(previous);
           showToast('No working surprise found — try again');
@@ -819,16 +907,21 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
         return;
       }
 
-      let result = await runSurpriseAttempts(pool, seq, ctx.label);
+      let result = await runSurpriseAttempts(pool, seq, ctx.label, deadlineMs);
       if (result === 'cancelled' || result === 'played' || result === 'blocked') {
         return;
       }
 
       // Scoped streams all dead — one-shot global fallback
+      if (Date.now() > deadlineMs) {
+        restoreSurprisePrevious(previous);
+        showToast('Surprise timed out — try again');
+        return;
+      }
       showToast('Those streams failed — trying anywhere…');
       const anywherePool = await fetchSurprisePoolAnywhere(excludeId);
       if (seq !== surpriseSeq) return;
-      result = await runSurpriseAttempts(anywherePool, seq, 'anywhere');
+      result = await runSurpriseAttempts(anywherePool, seq, 'anywhere', deadlineMs);
       if (result === 'failed') {
         restoreSurprisePrevious(previous);
         showToast('No working surprise found — try again');
@@ -840,18 +933,22 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
     showToast('Finding a surprise (anywhere)…');
     const pool = await fetchSurprisePoolAnywhere(excludeId);
     if (seq !== surpriseSeq) return;
-    const result = await runSurpriseAttempts(pool, seq, 'anywhere');
+    if (!pool.length) {
+      restoreSurprisePrevious(previous);
+      showToast('No surprise stations available — try again');
+      return;
+    }
+    const result = await runSurpriseAttempts(pool, seq, 'anywhere', deadlineMs);
     if (result === 'failed') {
       restoreSurprisePrevious(previous);
-      if (!pool.length) showToast('No surprise stations available — try again');
-      else showToast('Those streams failed — try again');
+      showToast('Those streams failed — try again');
+    } else if (result === 'cancelled') {
+      // superseded by a newer surprise or close — leave UI alone
     }
   } catch {
     if (seq !== surpriseSeq) return;
     showToast('Could not load a random station');
-    if (previous && state.current?.stationuuid !== previous.stationuuid) {
-      restoreSurprisePrevious(previous);
-    }
+    restoreSurprisePrevious(previous);
   } finally {
     if (seq === surpriseSeq) surpriseBusy = false;
   }
