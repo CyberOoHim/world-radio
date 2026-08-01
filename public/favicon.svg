@@ -1,70 +1,181 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges">
-  <!-- Retro 8-bit World Radio favicon -->
-  <rect width="32" height="32" rx="6" fill="#0c1222"/>
-  <!-- rounded frame accents (pixel corners) -->
-  <rect x="0" y="4" width="2" height="24" fill="#5a8f86"/>
-  <rect x="30" y="4" width="2" height="24" fill="#5a8f86"/>
-  <rect x="4" y="0" width="24" height="2" fill="#5a8f86"/>
-  <rect x="4" y="30" width="24" height="2" fill="#5a8f86"/>
-  <rect x="2" y="2" width="2" height="2" fill="#5a8f86"/>
-  <rect x="28" y="2" width="2" height="2" fill="#5a8f86"/>
-  <rect x="2" y="28" width="2" height="2" fill="#5a8f86"/>
-  <rect x="28" y="28" width="2" height="2" fill="#5a8f86"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Dark Midnight Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090e1a"/>
+      <stop offset="50%" stop-color="#10182a"/>
+      <stop offset="100%" stop-color="#182238"/>
+    </linearGradient>
 
-  <!-- antenna mast -->
-  <rect x="9" y="4" width="2" height="7" fill="#8b9cf7"/>
-  <rect x="8" y="3" width="4" height="2" fill="#8b9cf7"/>
-  <rect x="9" y="2" width="2" height="1" fill="#7dd3c0"/>
+    <!-- App Icon Border Glow Gradient -->
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#fb7185"/>
+    </linearGradient>
 
-  <!-- signal waves (pixel arcs) -->
-  <rect x="18" y="5" width="2" height="2" fill="#7dd3c0"/>
-  <rect x="20" y="4" width="2" height="2" fill="#7dd3c0"/>
-  <rect x="22" y="5" width="2" height="2" fill="#7dd3c0"/>
-  <rect x="24" y="7" width="2" height="2" fill="#8b9cf7"/>
-  <rect x="25" y="9" width="2" height="2" fill="#8b9cf7"/>
-  <rect x="20" y="7" width="2" height="2" fill="#7dd3c0"/>
-  <rect x="22" y="8" width="2" height="2" fill="#7dd3c0"/>
-  <rect x="23" y="10" width="2" height="2" fill="#8b9cf7"/>
+    <!-- Retro Radio Body Outer Metallic Cabinet -->
+    <linearGradient id="cabinetGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2c3a58"/>
+      <stop offset="100%" stop-color="#141d30"/>
+    </linearGradient>
 
-  <!-- radio body outer (purple) -->
-  <rect x="5" y="11" width="22" height="16" fill="#6b5fb5"/>
-  <!-- body face -->
-  <rect x="6" y="12" width="20" height="14" fill="#121a2e"/>
-  <!-- teal left trim -->
-  <rect x="6" y="12" width="2" height="14" fill="#7dd3c0"/>
-  <!-- purple rim -->
-  <rect x="6" y="12" width="20" height="1" fill="#8b9cf7"/>
-  <rect x="6" y="25" width="20" height="1" fill="#8b9cf7"/>
-  <rect x="24" y="12" width="2" height="14" fill="#8b9cf7"/>
+    <!-- Front Panel Faceplate -->
+    <linearGradient id="faceplateGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
 
-  <!-- speaker grille (coral ring) -->
-  <rect x="8" y="15" width="8" height="8" fill="#1a2238"/>
-  <rect x="9" y="15" width="6" height="1" fill="#e07a6a"/>
-  <rect x="9" y="22" width="6" height="1" fill="#e07a6a"/>
-  <rect x="8" y="16" width="1" height="6" fill="#e07a6a"/>
-  <rect x="15" y="16" width="1" height="6" fill="#e07a6a"/>
-  <rect x="10" y="16" width="1" height="1" fill="#e07a6a"/>
-  <rect x="13" y="16" width="1" height="1" fill="#e07a6a"/>
-  <rect x="11" y="17" width="2" height="1" fill="#e07a6a"/>
-  <rect x="10" y="18" width="1" height="2" fill="#e07a6a"/>
-  <rect x="13" y="18" width="1" height="2" fill="#e07a6a"/>
-  <rect x="11" y="20" width="2" height="1" fill="#e07a6a"/>
-  <rect x="10" y="21" width="1" height="1" fill="#e07a6a"/>
-  <rect x="13" y="21" width="1" height="1" fill="#e07a6a"/>
-  <rect x="11" y="18" width="2" height="2" fill="#e07a6a"/>
+    <!-- Speaker Grille Bar Gradient -->
+    <linearGradient id="grilleGrad" x1="112" y1="0" x2="256" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
 
-  <!-- cream dial -->
-  <rect x="18" y="15" width="6" height="6" fill="#e8c4a0"/>
-  <rect x="19" y="14" width="4" height="1" fill="#e8c4a0"/>
-  <rect x="19" y="21" width="4" height="1" fill="#e8c4a0"/>
-  <rect x="17" y="16" width="1" height="4" fill="#e8c4a0"/>
-  <rect x="24" y="16" width="1" height="4" fill="#e8c4a0"/>
-  <!-- dial needle -->
-  <rect x="20" y="16" width="1" height="3" fill="#e07a6a"/>
-  <rect x="21" y="18" width="2" height="1" fill="#e07a6a"/>
-  <rect x="20" y="18" width="1" height="1" fill="#c45a4a"/>
+    <!-- Frequency Glass Window Gradient -->
+    <linearGradient id="glassGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#071b29"/>
+      <stop offset="100%" stop-color="#0e2f47"/>
+    </linearGradient>
 
-  <!-- mini knobs -->
-  <rect x="18" y="23" width="2" height="2" fill="#7dd3c0"/>
-  <rect x="22" y="23" width="2" height="2" fill="#7dd3c0"/>
+    <!-- Tuning Dial Metallic Rim -->
+    <linearGradient id="metalRim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#64748b"/>
+      <stop offset="50%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#475569"/>
+    </linearGradient>
+
+    <!-- Soft Drop Shadow -->
+    <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="14" flood-color="#020617" flood-opacity="0.8"/>
+    </filter>
+    
+    <!-- Neon Glow Effect -->
+    <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- App Rounded Squircle Frame -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  <rect x="5" y="5" width="502" height="502" rx="107" fill="none" stroke="url(#borderGrad)" stroke-width="4" opacity="0.85"/>
+
+  <!-- Signal Waves Radiating from Antenna Tip -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M 80 50 A 30 30 0 0 1 122 92" stroke="#38bdf8" stroke-width="6" opacity="0.95" filter="url(#neonGlow)"/>
+    <path d="M 68 36 A 48 48 0 0 1 136 104" stroke="#818cf8" stroke-width="5" opacity="0.8"/>
+    <path d="M 54 22 A 68 68 0 0 1 150 118" stroke="#fb7185" stroke-width="4.5" opacity="0.55"/>
+  </g>
+
+  <!-- Antenna Assembly -->
+  <g stroke-linecap="round">
+    <!-- Main Rod -->
+    <line x1="168" y1="150" x2="96" y2="64" stroke="#64748b" stroke-width="9"/>
+    <line x1="168" y1="150" x2="96" y2="64" stroke="#e2e8f0" stroke-width="4"/>
+    <!-- Antenna Tip Ball -->
+    <circle cx="92" cy="60" r="8" fill="#38bdf8" filter="url(#neonGlow)"/>
+  </g>
+
+  <!-- Top Handle -->
+  <path d="M 160 148 C 160 102, 352 102, 352 148" fill="none" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+  <path d="M 160 148 C 160 102, 352 102, 352 148" fill="none" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round"/>
+  <rect x="148" y="138" width="24" height="16" rx="4" fill="#475569"/>
+  <rect x="340" y="138" width="24" height="16" rx="4" fill="#475569"/>
+
+  <!-- Radio Body Container -->
+  <g filter="url(#dropShadow)">
+    <!-- Outer Radio Cabinet Body -->
+    <rect x="72" y="148" width="368" height="276" rx="38" fill="url(#cabinetGrad)" stroke="#475569" stroke-width="4"/>
+    <!-- Cabinet Inner Accent Rim -->
+    <rect x="84" y="160" width="344" height="252" rx="28" fill="none" stroke="url(#borderGrad)" stroke-width="3.5" opacity="0.9"/>
+
+    <!-- Front Faceplate -->
+    <rect x="92" y="168" width="328" height="236" rx="22" fill="url(#faceplateGrad)"/>
+
+    <!-- ================= TOP: FREQUENCY DISPLAY SCALE ================= -->
+    <g transform="translate(112, 186)">
+      <!-- Display Frame Box -->
+      <rect x="0" y="0" width="288" height="46" rx="10" fill="url(#glassGrad)" stroke="#1e293b" stroke-width="3"/>
+      <!-- Glowing Inner Border -->
+      <rect x="2" y="2" width="284" height="42" rx="8" fill="none" stroke="#0284c7" stroke-width="1.5" opacity="0.6"/>
+      
+      <!-- Frequency Scale Markings -->
+      <g stroke="#38bdf8" stroke-linecap="round">
+        <!-- Main Ticks -->
+        <line x1="20" y1="8" x2="20" y2="22" stroke-width="3"/>
+        <line x1="52" y1="10" x2="52" y2="18" stroke-width="1.5"/>
+        <line x1="84" y1="8" x2="84" y2="22" stroke-width="3"/>
+        <line x1="116" y1="10" x2="116" y2="18" stroke-width="1.5"/>
+        <line x1="148" y1="8" x2="148" y2="22" stroke-width="3"/>
+        <line x1="180" y1="10" x2="180" y2="18" stroke-width="1.5"/>
+        <line x1="212" y1="8" x2="212" y2="22" stroke-width="3"/>
+        <line x1="244" y1="10" x2="244" y2="18" stroke-width="1.5"/>
+        <line x1="268" y1="8" x2="268" y2="22" stroke-width="3"/>
+        <!-- Scale Baseline -->
+        <line x1="12" y1="28" x2="276" y2="28" stroke-width="2" stroke="#0284c7"/>
+      </g>
+
+      <!-- Glowing Red Tuning Needle -->
+      <line x1="148" y1="4" x2="148" y2="40" stroke="#f43f5e" stroke-width="4" stroke-linecap="round" filter="url(#neonGlow)"/>
+      <circle cx="148" cy="28" r="4.5" fill="#fb7185" filter="url(#neonGlow)"/>
+    </g>
+
+    <!-- ================= BOTTOM LEFT: SPEAKER GRILLE ================= -->
+    <g transform="translate(112, 246)">
+      <!-- Speaker Recess Box -->
+      <rect x="0" y="0" width="144" height="142" rx="16" fill="#0b1120" stroke="#334155" stroke-width="3"/>
+      
+      <!-- Speaker Grille Horizontal Rounded Bars (Smooth Line Slots) -->
+      <rect x="18" y="16" width="108" height="7" rx="3.5" fill="url(#grilleGrad)"/>
+      <rect x="18" y="36" width="108" height="7" rx="3.5" fill="url(#grilleGrad)"/>
+      <rect x="18" y="56" width="108" height="7" rx="3.5" fill="url(#grilleGrad)"/>
+      <rect x="18" y="76" width="108" height="7" rx="3.5" fill="url(#grilleGrad)"/>
+      <rect x="18" y="96" width="108" height="7" rx="3.5" fill="url(#grilleGrad)"/>
+      <rect x="18" y="116" width="108" height="7" rx="3.5" fill="url(#grilleGrad)"/>
+    </g>
+
+    <!-- ================= BOTTOM RIGHT: TUNING DIAL & KNOBS ================= -->
+    <!-- Large Circular Main Tuning Dial -->
+    <g transform="translate(332, 296)">
+      <!-- Outer Bevel Ring -->
+      <circle cx="0" cy="0" r="44" fill="url(#metalRim)" stroke="#334155" stroke-width="2"/>
+      <circle cx="0" cy="0" r="38" fill="#0b1324" stroke="url(#borderGrad)" stroke-width="2.5"/>
+      
+      <!-- Dial Frequency Graduation Ticks -->
+      <g stroke="#38bdf8" stroke-linecap="round" opacity="0.9">
+        <line x1="0" y1="-33" x2="0" y2="-26" stroke-width="2.5"/>
+        <line x1="23" y1="-23" x2="18" y2="-18" stroke-width="2"/>
+        <line x1="33" y1="0" x2="26" y2="0" stroke-width="2.5"/>
+        <line x1="23" y1="23" x2="18" y2="18" stroke-width="2"/>
+        <line x1="0" y1="33" x2="0" y2="26" stroke-width="2.5"/>
+        <line x1="-23" y1="23" x2="-18" y2="18" stroke-width="2"/>
+        <line x1="-33" y1="0" x2="-26" y2="0" stroke-width="2.5"/>
+        <line x1="-23" y1="-23" x2="-18" y2="-18" stroke-width="2"/>
+      </g>
+
+      <!-- Center Metallic Tuning Knob -->
+      <circle cx="0" cy="0" r="23" fill="#1e293b" stroke="#64748b" stroke-width="2"/>
+      <circle cx="0" cy="0" r="16" fill="#0f172a"/>
+      <!-- Red Needle Pointer -->
+      <line x1="0" y1="0" x2="12" y2="-12" stroke="#f43f5e" stroke-width="3.5" stroke-linecap="round" filter="url(#neonGlow)"/>
+      <circle cx="0" cy="0" r="5" fill="#38bdf8"/>
+    </g>
+
+    <!-- Volume & Tone Control Knobs -->
+    <!-- Knob 1: Left Volume -->
+    <g transform="translate(290, 364)">
+      <circle cx="0" cy="0" r="18" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+      <circle cx="0" cy="0" r="13" fill="#0b1324" stroke="#38bdf8" stroke-width="2"/>
+      <line x1="0" y1="0" x2="-6" y2="-8" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
+    </g>
+
+    <!-- Knob 2: Right Tone/Band -->
+    <g transform="translate(374, 364)">
+      <circle cx="0" cy="0" r="18" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+      <circle cx="0" cy="0" r="13" fill="#0b1324" stroke="#fb7185" stroke-width="2"/>
+      <line x1="0" y1="0" x2="8" y2="-6" stroke="#fb7185" stroke-width="3" stroke-linecap="round"/>
+    </g>
+  </g>
 </svg>
