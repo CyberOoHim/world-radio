@@ -132,8 +132,14 @@ export interface SearchParams {
   reverse?: boolean;
   hidebroken?: boolean;
   is_https?: boolean;
+  /** Reference latitude for geo_distance filtering / distance annotation */
   geo_lat?: number;
+  /** Reference longitude for geo_distance filtering / distance annotation */
   geo_long?: number;
+  /** Max distance in meters from (geo_lat, geo_long). Required to actually filter “near”. */
+  geo_distance?: number;
+  /** true = only stations that have geo coordinates */
+  has_geo_info?: boolean;
 }
 
 function toQuery(params: SearchParams): string {
@@ -258,6 +264,14 @@ export function isLikelyPlayable(
   return true;
 }
 
+/**
+ * Stations near a lat/lon.
+ *
+ * Radio Browser does **not** support `order=distance`. Proximity requires
+ * `geo_lat` + `geo_long` + `geo_distance` (radius in meters). We expand the
+ * radius until we have enough playable geo-tagged results, then sort by
+ * `geo_distance` and slice for pagination.
+ */
 export async function getStationsNear(
   lat: number,
   lon: number,
@@ -265,17 +279,69 @@ export async function getStationsNear(
   offset = 0,
   extra: SearchParams = {}
 ): Promise<Station[]> {
-  // Radio Browser supports geo search via search with geo_lat/geo_long and order=distance on some mirrors
-  return searchStations({
-    geo_lat: lat,
-    geo_long: lon,
-    order: 'distance',
-    reverse: false,
-    limit,
-    offset,
-    hidebroken: true,
-    ...extra,
+  // Soft filters only — never let list sort/pagination clobber geo query.
+  const {
+    order: _order,
+    reverse: _reverse,
+    offset: _offset,
+    limit: _limit,
+    geo_lat: _glat,
+    geo_long: _glon,
+    geo_distance: _gdist,
+    has_geo_info: _hasGeo,
+    ...filters
+  } = extra;
+
+  // Progressive radii (m): city → metro → region → country-scale → continental
+  const radiiMeters = [75_000, 200_000, 500_000, 1_200_000, 3_000_000];
+  const need = offset + limit;
+  // Over-fetch a bit so sorting still fills the page after filtering.
+  const fetchLimit = Math.min(500, Math.max(need + 24, 80));
+
+  const byId = new Map<string, Station>();
+
+  for (const radius of radiiMeters) {
+    try {
+      const list = await searchStations({
+        ...filters,
+        geo_lat: lat,
+        geo_long: lon,
+        geo_distance: radius,
+        has_geo_info: true,
+        hidebroken: true,
+        // `distance` is not a valid order field in the API docs.
+        order: 'clickcount',
+        reverse: true,
+        limit: fetchLimit,
+        offset: 0,
+      });
+      for (const s of list) {
+        if (!s.stationuuid) continue;
+        const prev = byId.get(s.stationuuid);
+        // Keep the row with the better (smaller) distance annotation when present.
+        if (
+          !prev ||
+          (typeof s.geo_distance === 'number' &&
+            (typeof prev.geo_distance !== 'number' || s.geo_distance < prev.geo_distance))
+        ) {
+          byId.set(s.stationuuid, s);
+        }
+      }
+    } catch {
+      // try next radius / mirror already retried in apiFetch
+    }
+
+    if (byId.size >= need) break;
+  }
+
+  const sorted = [...byId.values()].sort((a, b) => {
+    const da = typeof a.geo_distance === 'number' ? a.geo_distance : Number.POSITIVE_INFINITY;
+    const db = typeof b.geo_distance === 'number' ? b.geo_distance : Number.POSITIVE_INFINITY;
+    if (da !== db) return da - db;
+    return (b.clickcount || 0) - (a.clickcount || 0);
   });
+
+  return sorted.slice(offset, offset + limit);
 }
 
 export async function getCountries(): Promise<Country[]> {

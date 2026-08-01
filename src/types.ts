@@ -20,6 +20,8 @@ export interface Station {
   clicktrend: number;
   geo_lat: number | null;
   geo_long: number | null;
+  /** Meters from request origin; only set on geo searches. */
+  geo_distance?: number | null;
 }
 
 export interface Country {

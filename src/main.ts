@@ -177,6 +177,14 @@ function titleCaseTag(name: string): string {
     .join(' ');
 }
 
+/** Format API geo_distance (meters) for station cards. */
+function formatDistance(meters: number | null | undefined): string | null {
+  if (typeof meters !== 'number' || !Number.isFinite(meters) || meters < 0) return null;
+  if (meters < 1000) return `${Math.round(meters)} m`;
+  if (meters < 100_000) return `${(meters / 1000).toFixed(1)} km`;
+  return `${Math.round(meters / 1000)} km`;
+}
+
 function isFav(id: string): boolean {
   return state.favorites.some((s) => s.stationuuid === id);
 }
@@ -828,10 +836,11 @@ async function loadDiscover(reset = true) {
   try {
     let list: Station[];
     if (nearAtStart && state.userLat != null && state.userLon != null) {
+      // Soft filters only — getStationsNear owns geo radius + distance sort.
       list = await getStationsNear(state.userLat, state.userLon, PAGE, offsetAtStart, {
-        ...extras,
-        order: 'distance',
-        reverse: false,
+        language: extras.language,
+        is_https: extras.is_https,
+        hidebroken: true,
       });
     } else if (tagAtStart) {
       list = await getStationsByTag(tagAtStart, PAGE, offsetAtStart, extras);
@@ -843,11 +852,13 @@ async function loadDiscover(reset = true) {
       return;
 
     state.stations = reset ? list : [...state.stations, ...list];
+    // Near-me uses expanding radius + client sort; allow more if page was full.
     state.hasMore = list.length >= PAGE && state.sort !== 'random';
     state.offset = offsetAtStart + list.length;
   } catch (e) {
     if (seq !== loadSeq) return;
-    if (state.view !== 'discover' || state.selectedTag !== tagAtStart) return;
+    if (state.view !== 'discover' || state.selectedTag !== tagAtStart || state.nearMe !== nearAtStart)
+      return;
     state.error = e instanceof Error ? e.message : 'Failed to load stations';
   } finally {
     if (seq !== loadSeq) return;
@@ -1118,13 +1129,37 @@ function openNearMe() {
       state.userLon = pos.coords.longitude;
       state.nearMe = true;
       state.selectedTag = null;
+      state.selectedCountry = null;
       state.view = 'discover';
       if (!applyingRoute) setHash({ kind: 'near' });
       renderNav();
-      void loadDiscover(true);
+      renderMobileTabs();
+      void loadDiscover(true).then(() => {
+        if (state.nearMe && !state.loading) {
+          if (state.stations.length) {
+            const n = state.stations.length;
+            showToast(
+              `Near you: ${n}${state.hasMore ? '+' : ''} station${n === 1 ? '' : 's'}`,
+              3200
+            );
+          } else if (!state.error) {
+            showToast('No geo-tagged stations found nearby — try a wider filter or Popular');
+          }
+        }
+      });
     },
-    () => showToast('Location permission denied'),
-    { enableHighAccuracy: false, timeout: 10_000, maximumAge: 600_000 }
+    (err) => {
+      const msg =
+        err.code === err.PERMISSION_DENIED
+          ? 'Location permission denied'
+          : err.code === err.POSITION_UNAVAILABLE
+            ? 'Location unavailable'
+            : err.code === err.TIMEOUT
+              ? 'Location request timed out — try again'
+              : 'Could not get your location';
+      showToast(msg);
+    },
+    { enableHighAccuracy: false, timeout: 15_000, maximumAge: 600_000 }
   );
 }
 
@@ -1208,6 +1243,10 @@ function stationCard(station: Station): string {
   const country = station.country || station.countrycode || '';
   const flag = countryFlag(station.countrycode);
   const lang = station.language ? station.language.split(',')[0].trim() : '';
+  const dist =
+    state.nearMe || typeof station.geo_distance === 'number'
+      ? formatDistance(station.geo_distance)
+      : null;
 
   return `
     <article class="station-card ${current ? 'is-current' : ''} ${playing ? 'is-playing' : ''}" data-id="${escapeHtml(station.stationuuid)}" data-action="card-play" tabindex="0" role="button" aria-label="Play ${escapeHtml(station.name)}">
@@ -1217,6 +1256,7 @@ function stationCard(station: Station): string {
           <div class="station-name" title="${escapeHtml(station.name)}" data-action="detail" data-id="${escapeHtml(station.stationuuid)}">${escapeHtml(station.name)}</div>
           <div class="station-meta">
             ${country ? `<span>${flag} ${escapeHtml(country)}</span>` : ''}
+            ${dist ? `<span class="dot"></span><span title="Distance">${escapeHtml(dist)}</span>` : ''}
             ${station.bitrate ? `<span class="dot"></span><span>${station.bitrate} kbps</span>` : ''}
             ${station.codec ? `<span class="dot"></span><span class="codec-badge">${escapeHtml(station.codec)}</span>` : ''}
             ${lang ? `<span class="dot"></span><span>${escapeHtml(lang)}</span>` : ''}

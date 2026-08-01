@@ -39,6 +39,7 @@ export function sanitizeStation(raw: unknown): Station | null {
     clicktrend: typeof s.clicktrend === 'number' ? s.clicktrend : 0,
     geo_lat: typeof s.geo_lat === 'number' ? s.geo_lat : null,
     geo_long: typeof s.geo_long === 'number' ? s.geo_long : null,
+    geo_distance: typeof s.geo_distance === 'number' ? s.geo_distance : null,
   };
 }
 
