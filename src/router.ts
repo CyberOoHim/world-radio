@@ -33,41 +33,39 @@ export function parseHash(hash = location.hash): Route | null {
   return null;
 }
 
-export function setHash(route: Route, replace = false) {
-  let path = '';
+function routeToHash(route: Route): string {
   switch (route.kind) {
     case 'view':
-      path = route.view === 'discover' ? '' : `/${route.view}`;
-      break;
+      return route.view === 'discover' ? '#/' : `#/${route.view}`;
     case 'station':
-      path = `/station/${encodeURIComponent(route.uuid)}`;
-      break;
+      return `#/station/${encodeURIComponent(route.uuid)}`;
     case 'tag':
-      path = `/tag/${encodeURIComponent(route.tag)}`;
-      break;
+      return `#/tag/${encodeURIComponent(route.tag)}`;
     case 'country':
-      path = `/country/${encodeURIComponent(route.code)}`;
-      break;
+      return `#/country/${encodeURIComponent(route.code)}`;
     case 'search':
-      path = route.q
-        ? `/search/${encodeURIComponent(route.q)}`
-        : '/search';
-      break;
+      return route.q ? `#/search/${encodeURIComponent(route.q)}` : '#/search';
     case 'near':
-      path = '/near';
-      break;
-  }
-
-  const next = path ? `#${path}` : '#/';
-  if (replace) {
-    history.replaceState(null, '', next);
-  } else if (location.hash !== next && location.hash !== path.replace(/^\//, '#')) {
-    // Avoid duplicate history entries when already there
-    if (location.hash !== next) location.hash = next.slice(1) ? next : '#/';
+      return '#/near';
   }
 }
 
+function sameHash(a: string, b: string): boolean {
+  const norm = (h: string) => {
+    if (!h || h === '#' || h === '#/') return '#/';
+    return h;
+  };
+  return norm(a) === norm(b);
+}
+
+/** Update the URL hash. Prefer replace so browsing does not spam history. */
+export function setHash(route: Route, replace = true) {
+  const next = routeToHash(route);
+  if (sameHash(location.hash, next)) return;
+  if (replace) history.replaceState(null, '', next);
+  else location.hash = next;
+}
+
 export function stationShareUrl(uuid: string): string {
-  const base = `${location.origin}${location.pathname}`;
-  return `${base}#/station/${encodeURIComponent(uuid)}`;
+  return `${location.origin}${location.pathname}#/station/${encodeURIComponent(uuid)}`;
 }

@@ -213,12 +213,15 @@ body.is-playing .orb {
 .brand-mark {
   width: 40px;
   height: 40px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(125, 211, 192, 0.25), rgba(139, 156, 247, 0.3));
-  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #0c1222;
+  border: 2px solid rgba(125, 211, 192, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(139, 156, 247, 0.35);
   display: grid;
   place-items: center;
   flex-shrink: 0;
+  color: #7dd3c0;
+  image-rendering: pixelated;
 }
 
 .brand-mark svg {
@@ -1575,10 +1578,6 @@ button.browse-card:hover,
 
   .volume-slider {
     width: 90px;
-  }
-
-  .player-controls .btn-icon:not(.btn-skip):not(.is-fav):not(.is-active) {
-    /* keep essential controls */
   }
 
   .detail-meta {

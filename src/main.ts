@@ -64,7 +64,6 @@ const state: AppState = {
   favorites: loadFavorites(),
   recent: loadRecent(),
   current: loadLastStation(),
-  playing: false,
   loading: true,
   loadingMore: false,
   error: null,
@@ -81,8 +80,6 @@ const state: AppState = {
   languageFilter: null,
   httpsOnly: prefs.httpsOnly,
   detailStation: null,
-  sleepUntil: null,
-  sleepMinutes: null,
   toast: null,
   nearMe: false,
   userLat: null,
@@ -103,28 +100,29 @@ let infiniteObserver: IntersectionObserver | null = null;
 // ─── Icons ───────────────────────────────────────────────
 
 const icons = {
-  radio: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 5v2M12 17v2M5 12h2M17 12h2"/><path d="M7.05 7.05l1.4 1.4M15.55 15.55l1.4 1.4M7.05 16.95l1.4-1.4M15.55 8.45l1.4-1.4" opacity=".6"/></svg>`,
-  discover: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5l-2.2 5.3-2.3-2.3z"/></svg>`,
-  globe: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>`,
-  music: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="16" r="2.5"/></svg>`,
-  heart: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s-7-4.5-7-10a4 4 0 017-2.5A4 4 0 0119 11c0 5.5-7 10-7 10z"/></svg>`,
-  heartFill: `<svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.2"><path d="M12 21s-7-4.5-7-10a4 4 0 017-2.5A4 4 0 0119 11c0 5.5-7 10-7 10z"/></svg>`,
-  clock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`,
-  search: `<svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>`,
-  play: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>`,
-  pause: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>`,
-  prev: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h2v14H5V5zm13 1v12l-9-6 9-6z"/></svg>`,
-  next: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 5h2v14h-2V5zM6 6l9 6-9 6V6z"/></svg>`,
-  volume: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path d="M16 9a4 4 0 010 6M18.5 7a7 7 0 010 10"/></svg>`,
-  mute: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path d="M18 10l4 4M22 10l-4 4"/></svg>`,
-  menu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg>`,
-  loader: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 00-9-9"/></svg>`,
-  moon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><path d="M21 14.5A8.5 8.5 0 0110.5 3 7 7 0 1019 16.5c.7-.6 1.3-1.3 2-2z"/></svg>`,
-  share: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.5 13.5l7 4M15.5 6.5l-7 4"/></svg>`,
-  close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
-  surprise: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3"/></svg>`,
-  pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><path d="M12 21s7-5.5 7-11a7 7 0 10-14 0c0 5.5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>`,
-  external: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><path d="M14 5h5v5M19 5l-9 9M10 7H6a2 2 0 00-2 2v9a2 2 0 002 2h9a2 2 0 002-2v-4"/></svg>`,
+  // Retro chunky set: thick strokes, geometric forms, vintage radio brand mark
+  radio: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><rect x="3" y="9" width="18" height="12" rx="2"/><path d="M7 5v4M7 5h2"/><path d="M14 5l4-2" opacity=".85"/><path d="M16 4c1.2.8 2 2 2.2 3.2" opacity=".7"/><circle cx="9" cy="15" r="2.5"/><circle cx="16" cy="14" r="2"/><path d="M15 17h2M18 17h1"/></svg>`,
+  discover: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><circle cx="12" cy="12" r="9"/><path d="M15 9l-2.5 6.5L9 13z" fill="currentColor" stroke="none"/></svg>`,
+  globe: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.8 4 5.8 4 9s-1.5 6.2-4 9c-2.5-2.8-4-5.8-4-9s1.5-6.2 4-9z"/></svg>`,
+  music: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M9 18V5l11-2v13"/><circle cx="7" cy="18" r="3" fill="currentColor" stroke="none"/><circle cx="17" cy="16" r="3" fill="currentColor" stroke="none"/><path d="M9 8l11-2"/></svg>`,
+  heart: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M12 20l-7-7a4.5 4.5 0 017-5.5 4.5 4.5 0 017 5.5l-7 7z"/></svg>`,
+  heartFill: `<svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M12 20l-7-7a4.5 4.5 0 017-5.5 4.5 4.5 0 017 5.5l-7 7z"/></svg>`,
+  clock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2.5"/></svg>`,
+  search: `<svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>`,
+  play: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg>`,
+  pause: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="4" width="5" height="16" rx="0.5"/><rect x="14" y="4" width="5" height="16" rx="0.5"/></svg>`,
+  prev: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="3" height="16"/><path d="M19 5v14L8 12l11-7z"/></svg>`,
+  next: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="17" y="4" width="3" height="16"/><path d="M5 5v14l11-7L5 5z"/></svg>`,
+  volume: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="20" height="20"><path d="M3 10v4h3l5 4V6L6 10H3z" fill="currentColor" stroke="none"/><path d="M16 9v6M19 7v10"/></svg>`,
+  mute: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="20" height="20"><path d="M3 10v4h3l5 4V6L6 10H3z" fill="currentColor" stroke="none"/><path d="M17 10l5 5M22 10l-5 5"/></svg>`,
+  menu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square"><path d="M4 7h16M4 12h16M4 17h16"/></svg>`,
+  loader: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="22" height="22" stroke-linecap="square"><rect x="3" y="3" width="18" height="18" rx="2" opacity=".25"/><path d="M12 3h9v9"/></svg>`,
+  moon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="18" height="18"><path d="M16 3a8 8 0 108 8 6.5 6.5 0 01-8-8z"/></svg>`,
+  share: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="18" height="18"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.4 13.2l7.2 4.1M15.6 6.7l-7.2 4.1"/></svg>`,
+  close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" width="20" height="20"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
+  surprise: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" width="18" height="18"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/><rect x="9" y="9" width="6" height="6" fill="currentColor" stroke="none"/></svg>`,
+  pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="16" height="16"><path d="M12 21s6.5-5 6.5-10a6.5 6.5 0 10-13 0c0 5 6.5 10 6.5 10z"/><circle cx="12" cy="11" r="2.2" fill="currentColor" stroke="none"/></svg>`,
+  external: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="16" height="16"><path d="M14 4h6v6M20 4l-9 9"/><path d="M10 6H5a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1v-5"/></svg>`,
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -175,6 +173,21 @@ function showToast(msg: string, ms = 2600) {
 
 function persistPrefs() {
   savePrefs({ httpsOnly: state.httpsOnly, sort: state.sort });
+}
+
+function applyMute(muted: boolean) {
+  state.muted = muted;
+  player.setMuted(muted, { silent: true });
+  player.setVolume(state.volume);
+  updatePlaybackUI();
+}
+
+function applyVolume(v: number) {
+  state.volume = Math.min(1, Math.max(0, v));
+  state.muted = state.volume === 0;
+  player.setVolume(state.volume);
+  player.setMuted(state.muted, { silent: true });
+  saveVolume(state.volume);
 }
 
 function listQueryExtras(): SearchParams {
@@ -243,7 +256,7 @@ async function playStation(station: Station) {
   updatePlaybackUI();
   announce(`Playing ${station.name}`);
   if (!applyingRoute) {
-    setHash({ kind: 'station', uuid: station.stationuuid }, true);
+    setHash({ kind: 'station', uuid: station.stationuuid });
   }
   await player.play(station);
   syncMediaSession();
@@ -509,7 +522,7 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   state.detailStation = null;
 
   if (!opts?.skipHash && !applyingRoute) {
-    setHash({ kind: 'view', view }, true);
+    setHash({ kind: 'view', view });
   }
 
   if (view === 'discover') {
@@ -567,7 +580,7 @@ function openCountry(code: string, opts?: { skipHash?: boolean }) {
   state.nearMe = false;
   navOpen = false;
   if (!opts?.skipHash && !applyingRoute) {
-    setHash({ kind: 'country', code }, true);
+    setHash({ kind: 'country', code });
   }
   renderNav();
   renderMobileTabs();
@@ -581,7 +594,7 @@ function openTag(tag: string, opts?: { skipHash?: boolean }) {
   state.selectedCountry = null;
   navOpen = false;
   if (!opts?.skipHash && !applyingRoute) {
-    setHash({ kind: 'tag', tag }, true);
+    setHash({ kind: 'tag', tag });
   }
   renderNav();
   renderMobileTabs();
@@ -601,7 +614,7 @@ function openNearMe() {
       state.nearMe = true;
       state.selectedTag = null;
       state.view = 'discover';
-      if (!applyingRoute) setHash({ kind: 'near' }, true);
+      if (!applyingRoute) setHash({ kind: 'near' });
       renderNav();
       void loadDiscover(true);
     },
@@ -1408,7 +1421,6 @@ function renderAllChrome() {
 }
 
 function updatePlaybackUI() {
-  state.playing = player.playing;
   state.current = player.station ?? state.current;
   document.body.classList.toggle('is-playing', player.playing);
   renderPlayer();
@@ -1510,9 +1522,6 @@ function ensureAppEvents() {
     );
     if (!t || !app.contains(t)) return;
 
-    // File input handled via change
-    if (t.dataset.action === 'import-favs') return;
-
     const view = t.dataset.view as ViewId | undefined;
     if (view && t.dataset.action !== 'focus-search') {
       if (view === 'search') {
@@ -1525,13 +1534,14 @@ function ensureAppEvents() {
     }
 
     const action = t.dataset.action;
-    if (!action || action === 'search' || action === 'volume' || action === 'browse-filter') return;
-
-    // Stop card-play from double-firing when clicking nested buttons
+    // Inputs use input/change handlers; ignore bare https checkbox clicks (change handles it)
     if (
-      action !== 'card-play' &&
-      (e.target as HTMLElement).closest('[data-action="play"], [data-action="fav"], [data-action="detail"], [data-action="tag"]') &&
-      t.dataset.action === 'card-play'
+      !action ||
+      action === 'search' ||
+      action === 'volume' ||
+      action === 'browse-filter' ||
+      action === 'https-only' ||
+      action === 'import-favs'
     ) {
       return;
     }
@@ -1617,10 +1627,7 @@ function ensureAppEvents() {
         break;
       }
       case 'mute':
-        state.muted = !state.muted;
-        player.setMuted(state.muted, { silent: true });
-        player.setVolume(state.volume);
-        updatePlaybackUI();
+        applyMute(!state.muted);
         break;
       case 'more':
         void loadMore();
@@ -1634,7 +1641,7 @@ function ensureAppEvents() {
           state.selectedTag = null;
           state.nearMe = false;
           state.view = 'discover';
-          if (!applyingRoute) setHash({ kind: 'view', view: 'discover' }, true);
+          if (!applyingRoute) setHash({ kind: 'view', view: 'discover' });
           void loadDiscover(true);
         } else {
           openTag(tag);
@@ -1662,7 +1669,7 @@ function ensureAppEvents() {
       case 'back-countries':
         state.selectedCountry = null;
         state.stations = [];
-        if (!applyingRoute) setHash({ kind: 'view', view: 'countries' }, true);
+        if (!applyingRoute) setHash({ kind: 'view', view: 'countries' });
         renderMain();
         break;
       case 'sort': {
@@ -1676,10 +1683,6 @@ function ensureAppEvents() {
       case 'lang': {
         state.languageFilter = t.dataset.lang || null;
         reloadCurrentList();
-        break;
-      }
-      case 'https-only': {
-        // handled on change
         break;
       }
       case 'toggle-nav':
@@ -1698,8 +1701,6 @@ function ensureAppEvents() {
         const min = Number(t.dataset.min) as SleepMinutes;
         if (!SLEEP_OPTIONS.includes(min)) return;
         sleepTimer.start(min);
-        state.sleepMinutes = min;
-        state.sleepUntil = sleepTimer.untilMs;
         sleepMenuOpen = false;
         showToast(`Sleep timer: ${min} minutes`);
         renderPlayer();
@@ -1707,8 +1708,6 @@ function ensureAppEvents() {
       }
       case 'sleep-cancel':
         sleepTimer.cancel();
-        state.sleepMinutes = null;
-        state.sleepUntil = null;
         sleepMenuOpen = false;
         showToast('Sleep timer cancelled');
         renderPlayer();
@@ -1774,7 +1773,7 @@ function ensureAppEvents() {
           state.selectedCountry = null;
           state.selectedTag = null;
           state.nearMe = false;
-          if (!applyingRoute) setHash({ kind: 'search', q }, true);
+          if (!applyingRoute) setHash({ kind: 'search', q });
           renderNav();
           renderMobileTabs();
           void loadSearch(q, true);
@@ -1803,16 +1802,12 @@ function ensureAppEvents() {
     }
 
     if (action === 'volume' && t instanceof HTMLInputElement) {
-      const v = Number(t.value);
-      state.volume = v;
-      state.muted = v === 0;
-      player.setVolume(v);
-      player.setMuted(state.muted, { silent: true });
-      saveVolume(v);
+      applyVolume(Number(t.value));
       const muteBtn = t.closest('.player-volume')?.querySelector('[data-action="mute"]');
       if (muteBtn) {
         muteBtn.innerHTML = state.muted || state.volume === 0 ? icons.mute : icons.volume;
         muteBtn.setAttribute('title', state.muted ? 'Unmute' : 'Mute');
+        muteBtn.setAttribute('aria-label', state.muted ? 'Unmute' : 'Mute');
       }
     }
   });
@@ -1865,27 +1860,16 @@ function bindGlobalKeys() {
         break;
       case 'm':
       case 'M':
-        state.muted = !state.muted;
-        player.setMuted(state.muted, { silent: true });
-        player.setVolume(state.volume);
-        updatePlaybackUI();
+        applyMute(!state.muted);
         break;
       case 'ArrowLeft':
         e.preventDefault();
-        state.volume = Math.max(0, state.volume - 0.05);
-        state.muted = state.volume === 0;
-        player.setVolume(state.volume);
-        player.setMuted(state.muted, { silent: true });
-        saveVolume(state.volume);
+        applyVolume(state.volume - 0.05);
         renderPlayer();
         break;
       case 'ArrowRight':
         e.preventDefault();
-        state.volume = Math.min(1, state.volume + 0.05);
-        state.muted = false;
-        player.setVolume(state.volume);
-        player.setMuted(false, { silent: true });
-        saveVolume(state.volume);
+        applyVolume(state.volume + 0.05);
         renderPlayer();
         break;
       case '/':
@@ -1938,26 +1922,18 @@ player.subscribe(() => {
 sleepTimer.setOnFire(() => {
   const finish = () => {
     player.pause();
-    state.sleepMinutes = null;
-    state.sleepUntil = null;
     showToast('Sleep timer ended — sweet dreams');
     renderPlayer();
   };
-  // Fade last ~2s if still playing
-  if (player.playing) {
-    player.fadeOutThen(2000, finish);
-  } else {
-    finish();
-  }
+  if (player.playing) player.fadeOutThen(2000, finish);
+  else finish();
 });
 
 sleepTimer.subscribe(() => {
-  state.sleepUntil = sleepTimer.untilMs;
-  // Light update: only badge
   const badge = qs('.sleep-badge');
   const label = formatSleepRemaining(sleepTimer.remainingMs);
   if (badge && label) badge.textContent = label;
-  else if (sleepTimer.active) renderPlayer();
+  else if (sleepTimer.active || badge) renderPlayer();
 });
 
 bindGlobalKeys();

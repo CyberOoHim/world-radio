@@ -111,11 +111,6 @@ class AudioPlayer {
     this.emit();
   }
 
-  clearError() {
-    this._error = null;
-    this.emit();
-  }
-
   /**
    * Set volume on the element. Does not emit — callers already own the UI value
    * and full re-renders on every slider tick thrash focus.

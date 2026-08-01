@@ -26,9 +26,12 @@ export function updateMediaSession(
     artwork.push({
       src: station.favicon,
       sizes: '96x96',
-      type: 'image/png',
     });
   }
+  artwork.push(
+    { src: './icon-192.png', sizes: '192x192', type: 'image/png' },
+    { src: './icon-512.png', sizes: '512x512', type: 'image/png' }
+  );
 
   try {
     ms.metadata = new MediaMetadata({

@@ -60,7 +60,6 @@ export interface AppState {
   favorites: Station[];
   recent: Station[];
   current: Station | null;
-  playing: boolean;
   loading: boolean;
   loadingMore: boolean;
   error: string | null;
@@ -78,8 +77,6 @@ export interface AppState {
   languageFilter: string | null;
   httpsOnly: boolean;
   detailStation: Station | null;
-  sleepUntil: number | null;
-  sleepMinutes: SleepMinutes | null;
   toast: string | null;
   nearMe: boolean;
   userLat: number | null;
