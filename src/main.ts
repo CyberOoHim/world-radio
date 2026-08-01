@@ -146,8 +146,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 // ─── Icons ───────────────────────────────────────────────
 
 const icons = {
-  // Retro chunky set: thick strokes, geometric forms, vintage radio brand mark
-  radio: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><rect x="3" y="9" width="18" height="12" rx="2"/><path d="M7 5v4M7 5h2"/><path d="M14 5l4-2" opacity=".85"/><path d="M16 4c1.2.8 2 2 2.2 3.2" opacity=".7"/><circle cx="9" cy="15" r="2.5"/><circle cx="16" cy="14" r="2"/><path d="M15 17h2M18 17h1"/></svg>`,
+  // Smooth-line retro radio set icon
+  radio: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6.5C8 4.8 16 4.8 16 6.5"/><path d="M7 6.5L4.2 2.8"/><circle cx="4" cy="2.5" r="0.75" fill="currentColor"/><path d="M6 1.8A3 3 0 018.5 4" opacity="0.85"/><rect x="2.5" y="6.5" width="19" height="14" rx="2.5"/><path d="M5 9.5h14"/><path d="M12 8.5v2" stroke-width="2"/><path d="M5.5 13h4.5M5.5 15.5h4.5M5.5 18h4.5"/><circle cx="15.5" cy="15.5" r="2.75"/><path d="M15.5 15.5l1.25-1.25"/></svg>`,
   discover: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><circle cx="12" cy="12" r="9"/><path d="M15 9l-2.5 6.5L9 13z" fill="currentColor" stroke="none"/></svg>`,
   globe: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.8 4 5.8 4 9s-1.5 6.2-4 9c-2.5-2.8-4-5.8-4-9s1.5-6.2 4-9z"/></svg>`,
   music: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M9 18V5l11-2v13"/><circle cx="7" cy="18" r="3" fill="currentColor" stroke="none"/><circle cx="17" cy="16" r="3" fill="currentColor" stroke="none"/><path d="M9 8l11-2"/></svg>`,
