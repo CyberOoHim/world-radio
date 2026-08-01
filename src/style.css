@@ -207,7 +207,7 @@ body.is-playing .orb {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 4px 12px 20px;
+  padding: 4px 3px 20px;
 }
 
 .brand-mark {
@@ -245,7 +245,7 @@ body.is-playing .orb {
 
 .nav-section {
   margin-top: 12px;
-  padding: 0 12px 6px;
+  padding: 0 14px 6px;
   font-size: 0.68rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
