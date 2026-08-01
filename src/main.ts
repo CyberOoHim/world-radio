@@ -50,6 +50,7 @@ import type {
   SleepMinutes,
   SortId,
   Station,
+  SurpriseMode,
   TimeOfDayMode,
   ViewId,
 } from './types';
@@ -97,6 +98,7 @@ const state: AppState = {
   userLat: null,
   userLon: null,
   timeOfDayMode: prefs.timeOfDayMode,
+  surpriseMode: null,
 };
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -372,6 +374,7 @@ function closePlayerAndCleanActivity() {
 
   // Clear Near me findings / mode entirely.
   state.nearMe = false;
+  state.surpriseMode = null;
   state.userLat = null;
   state.userLon = null;
   state.loading = false;
@@ -458,8 +461,6 @@ async function playRelative(delta: number) {
 
   await playStation(list[next]);
 }
-
-type SurpriseMode = 'anywhere' | 'here';
 
 type SurpriseAttemptResult = 'played' | 'blocked' | 'failed' | 'cancelled';
 
@@ -885,8 +886,10 @@ async function runSurpriseAttempts(
 }
 
 function restoreSurprisePrevious(previous: Station | null) {
+  state.surpriseMode = null;
   state.current = previous;
   renderPlayer();
+  renderMain();
   updatePlaybackUI();
 }
 
@@ -904,6 +907,10 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
 
   const seq = ++surpriseSeq;
   surpriseBusy = true;
+  state.surpriseMode = mode;
+  state.nearMe = false;
+  renderMain();
+
   const previous = state.current;
   const excludeId = previous?.stationuuid ?? null;
   const deadlineMs = Date.now() + SURPRISE_TOTAL_MS;
@@ -913,6 +920,8 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
       const ctx = getSurpriseContext();
 
       if (ctx.localPool && ctx.localPool.length === 0) {
+        state.surpriseMode = null;
+        renderMain();
         showToast(
           ctx.label === 'favorites'
             ? 'No favorites yet — heart a station first'
@@ -990,15 +999,17 @@ function surpriseActionsHtml(opts?: { compact?: boolean }): string {
   const hereTitle = `Surprise within: ${ctx.summary}`;
   const hereMuted = ctx.hasStrongCondition ? '' : ' chip-muted';
   const icon = icons.surprise;
+  const activeAnywhere = state.surpriseMode === 'anywhere' ? ' active' : '';
+  const activeHere = state.surpriseMode === 'here' ? ' active' : '';
   if (opts?.compact) {
     return `
-      <button type="button" class="chip" data-action="surprise" data-mode="anywhere" title="Random station from anywhere">${icon} Anywhere</button>
-      <button type="button" class="chip${hereMuted}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+      <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Random station from anywhere">${icon} Anywhere</button>
+      <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
     `;
   }
   return `
-    <button type="button" class="chip active" data-action="surprise" data-mode="anywhere" title="Random station from all stations">${icon} Anywhere</button>
-    <button type="button" class="chip${hereMuted}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+    <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Random station from all stations">${icon} Anywhere</button>
+    <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
   `;
 }
 
@@ -1226,6 +1237,7 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   state.view = view;
   state.selectedCountry = null;
   state.nearMe = false;
+  state.surpriseMode = null;
   if (view !== 'discover') state.selectedTag = null;
   if (view !== 'countries' && view !== 'genres') state.browseFilter = '';
   navOpen = false;
@@ -1288,6 +1300,7 @@ function openCountry(code: string, opts?: { skipHash?: boolean }) {
   state.view = 'countries';
   state.selectedCountry = code;
   state.nearMe = false;
+  state.surpriseMode = null;
   navOpen = false;
   if (!opts?.skipHash && !applyingRoute) {
     setHash({ kind: 'country', code });
@@ -1301,6 +1314,7 @@ function openTag(tag: string, opts?: { skipHash?: boolean }) {
   state.view = 'discover';
   state.selectedTag = tag;
   state.nearMe = false;
+  state.surpriseMode = null;
   state.selectedCountry = null;
   navOpen = false;
   if (!opts?.skipHash && !applyingRoute) {
@@ -1324,6 +1338,7 @@ function openNearMe() {
       state.userLat = pos.coords.latitude;
       state.userLon = pos.coords.longitude;
       state.nearMe = true;
+      state.surpriseMode = null;
       state.selectedTag = null;
       state.selectedCountry = null;
       state.view = 'discover';
@@ -1666,7 +1681,7 @@ function renderDiscover(): string {
     </div>
     <div class="section-head sticky-section"><h3>Moods &amp; genres</h3></div>
     <div class="chip-row chip-row-scroll chip-fade">
-      <button type="button" class="chip ${!state.selectedTag && !state.nearMe ? 'active' : ''}" data-action="tag" data-tag="">
+      <button type="button" class="chip ${!state.selectedTag && !state.nearMe && !state.surpriseMode ? 'active' : ''}" data-action="tag" data-tag="">
         ✨ Popular
       </button>
       ${MOOD_TAGS.map(
@@ -2450,6 +2465,7 @@ function ensureAppEvents() {
         if (!tag) {
           state.selectedTag = null;
           state.nearMe = false;
+          state.surpriseMode = null;
           state.view = 'discover';
           if (!applyingRoute) setHash({ kind: 'view', view: 'discover' });
           void loadDiscover(true);

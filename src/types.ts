@@ -56,6 +56,7 @@ export type SleepMinutes = 15 | 30 | 45 | 60 | 90;
 /** Discover "Right now" period: follow clock, or a fixed bucket. */
 export type TimeOfDayPeriod = 'morning' | 'day' | 'evening' | 'night';
 export type TimeOfDayMode = 'auto' | TimeOfDayPeriod;
+export type SurpriseMode = 'anywhere' | 'here';
 
 export interface AppState {
   view: ViewId;
@@ -89,6 +90,7 @@ export interface AppState {
   userLon: number | null;
   /** Right now strip: auto follows local clock, or a pinned period */
   timeOfDayMode: TimeOfDayMode;
+  surpriseMode: SurpriseMode | null;
 }
 
 export interface AppPrefs {
