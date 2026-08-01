@@ -346,6 +346,10 @@ class AudioPlayer {
     this.audio.pause();
   }
 
+  /**
+   * Hard-stop: cancel in-flight play generations, detach stream, clear station.
+   * Any pending resolve/play/error handlers see a stale generation and no-op.
+   */
   stop() {
     this.playGeneration++;
     this.mediaGeneration = 0;
@@ -359,8 +363,10 @@ class AudioPlayer {
     }
     this.activeStreamUrl = null;
     this.triedOriginalFallback = false;
+    this._station = null;
     this._playing = false;
     this._loading = false;
+    this._error = null;
     this.emit();
   }
 }

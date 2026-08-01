@@ -112,6 +112,8 @@ let infiniteObserver: IntersectionObserver | null = null;
 /** Guards concurrent Surprise Me runs; bumped to cancel in-flight retries. */
 let surpriseSeq = 0;
 let surpriseBusy = false;
+/** Bumped to abandon in-flight Near me geolocation + list loads. */
+let nearMeSeq = 0;
 
 const SURPRISE_BATCH = 16;
 const SURPRISE_MAX_TRIES = 6;
@@ -269,6 +271,7 @@ function syncMediaSession() {
     pause: () => player.pause(),
     next: () => void playRelative(1),
     previous: () => void playRelative(-1),
+    stop: () => closePlayerAndCleanActivity(),
   });
 }
 
@@ -315,6 +318,70 @@ function togglePlayback() {
   player.toggle();
   syncMediaSession();
   updatePlaybackUI();
+}
+
+/**
+ * Close the player bar: stop stream, cancel Surprise/Near me hunts,
+ * drop current station, clear near-me mode, abandon in-flight list loads.
+ */
+function closePlayerAndCleanActivity() {
+  const wasNearMe = state.nearMe;
+  const hadStation = Boolean(state.current);
+  const hadSurprise = surpriseBusy;
+  const wasLoadingList = state.loading || state.loadingMore;
+
+  // Cancel Surprise · Anywhere / Here retries and stream attempts.
+  surpriseSeq++;
+  surpriseBusy = false;
+
+  // Cancel Near me geolocation callback + any in-flight discover/search loads.
+  nearMeSeq++;
+  loadSeq++;
+
+  // Hard-stop audio (invalidates playGeneration so in-flight play() no-ops).
+  player.stop();
+
+  state.current = null;
+  state.detailStation = null;
+  sleepMenuOpen = false;
+  sleepTimer.cancel();
+  saveLastStation(null);
+
+  // Clear Near me findings / mode entirely.
+  state.nearMe = false;
+  state.userLat = null;
+  state.userLon = null;
+  state.loading = false;
+  state.loadingMore = false;
+
+  // Leave station / near deep links.
+  if (!applyingRoute) {
+    const route = parseHash();
+    if (!route || route.kind === 'station' || route.kind === 'near') {
+      setHash({ kind: 'view', view: state.view === 'search' ? 'search' : 'discover' });
+    }
+  }
+
+  if (wasNearMe && state.view === 'discover') {
+    // Drop near-me list and reload popular (fresh loadSeq path).
+    state.error = null;
+    void loadDiscover(true);
+  } else {
+    renderPlayer();
+    renderMain();
+    renderNav();
+    renderMobileTabs();
+    renderDetail();
+    updatePlaybackUI();
+  }
+
+  syncMediaSession();
+  announce('Playback stopped');
+  if (hadStation || wasNearMe || hadSurprise || wasLoadingList) {
+    showToast('Stopped — all connections cleared');
+  } else {
+    showToast('Stopped');
+  }
 }
 
 function queueList(): Station[] {
@@ -1122,9 +1189,11 @@ function openNearMe() {
     showToast('Geolocation not available on this device');
     return;
   }
+  const seq = ++nearMeSeq;
   showToast('Finding stations near you…');
   navigator.geolocation.getCurrentPosition(
     (pos) => {
+      if (seq !== nearMeSeq) return;
       state.userLat = pos.coords.latitude;
       state.userLon = pos.coords.longitude;
       state.nearMe = true;
@@ -1135,6 +1204,7 @@ function openNearMe() {
       renderNav();
       renderMobileTabs();
       void loadDiscover(true).then(() => {
+        if (seq !== nearMeSeq) return;
         if (state.nearMe && !state.loading) {
           if (state.stations.length) {
             const n = state.stations.length;
@@ -1149,6 +1219,7 @@ function openNearMe() {
       });
     },
     (err) => {
+      if (seq !== nearMeSeq) return;
       const msg =
         err.code === err.PERMISSION_DENIED
           ? 'Location permission denied'
@@ -1692,6 +1763,9 @@ function renderPlayerHtml(): string {
             : ''
         }
       </div>
+      <button type="button" class="btn-icon btn-close-station" data-action="close-station" title="Close station and stop all connections" aria-label="Close station">
+        ${icons.close}
+      </button>
     </div>
     <div class="player-controls">
       <div class="eq ${playing ? 'on' : ''}" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
@@ -2151,6 +2225,9 @@ function ensureAppEvents() {
       }
       case 'toggle-play':
         togglePlayback();
+        break;
+      case 'close-station':
+        closePlayerAndCleanActivity();
         break;
       case 'prev':
         void playRelative(-1);

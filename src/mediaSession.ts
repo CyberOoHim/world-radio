@@ -5,6 +5,7 @@ export interface MediaSessionHandlers {
   pause: () => void;
   next?: () => void;
   previous?: () => void;
+  stop?: () => void;
 }
 
 export function updateMediaSession(
@@ -60,7 +61,10 @@ export function updateMediaSession(
     ms.setActionHandler('pause', () => handlers.pause());
     ms.setActionHandler('nexttrack', handlers.next ? () => handlers.next!() : null);
     ms.setActionHandler('previoustrack', handlers.previous ? () => handlers.previous!() : null);
-    ms.setActionHandler('stop', () => handlers.pause());
+    ms.setActionHandler('stop', () => {
+      if (handlers.stop) handlers.stop();
+      else handlers.pause();
+    });
   } catch {
     // setActionHandler can throw if action unsupported
   }

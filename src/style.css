@@ -1033,6 +1033,19 @@ button.browse-card:hover,
   align-items: center;
   gap: 14px;
   min-width: 0;
+  position: relative;
+}
+
+.player-now .btn-close-station {
+  flex-shrink: 0;
+  margin-left: auto;
+  opacity: 0.72;
+}
+
+.player-now .btn-close-station:hover {
+  opacity: 1;
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.45);
 }
 
 .player-art {
