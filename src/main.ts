@@ -257,12 +257,7 @@ function pushRecent(station: Station) {
 
 function syncMediaSession() {
   updateMediaSession(state.current, player.playing, {
-    play: () => {
-      if (state.current) {
-        if (player.station?.stationuuid === state.current.stationuuid) player.toggle();
-        else void playStation(state.current);
-      }
-    },
+    play: () => togglePlayback(),
     pause: () => player.pause(),
     next: () => void playRelative(1),
     previous: () => void playRelative(-1),
@@ -284,6 +279,34 @@ async function playStation(station: Station) {
   }
   await player.play(station);
   syncMediaSession();
+}
+
+/**
+ * Play / pause for the restored or current station.
+ * After a reload, state.current exists but the audio player has no station yet —
+ * player.toggle() alone is a no-op in that case, so we start a full play().
+ */
+function togglePlayback() {
+  if (!state.current) return;
+
+  const sameStation =
+    player.station?.stationuuid === state.current.stationuuid;
+
+  // Player never loaded this station (typical after page reload).
+  if (!sameStation) {
+    void playStation(state.current);
+    return;
+  }
+
+  // Same station, but stream was never attached (edge: station set without play).
+  if (!player.hasSource && !player.playing) {
+    void playStation(state.current);
+    return;
+  }
+
+  player.toggle();
+  syncMediaSession();
+  updatePlaybackUI();
 }
 
 function queueList(): Station[] {
@@ -1320,15 +1343,23 @@ function renderPlayerHtml(): string {
   const playing = player.playing;
   const loading = player.loading;
   const err = player.error;
+  const hydrated = player.station?.stationuuid === s.stationuuid;
   const country = s.country || s.countrycode || '';
   const sleepLabel = formatSleepRemaining(sleepTimer.remainingMs);
   const sleepActive = sleepTimer.active;
+  const nowLabel = loading
+    ? 'Connecting…'
+    : playing
+      ? 'Now playing'
+      : hydrated
+        ? 'Paused'
+        : 'Ready';
 
   return `
     <div class="player-now">
       ${stationArtHtml(s, `player-art ${playing ? 'live' : ''}`)}
       <div class="player-meta">
-        <div class="now-label">${loading ? 'Connecting…' : playing ? 'Now playing' : 'Paused'}</div>
+        <div class="now-label">${nowLabel}</div>
         <div class="now-name" title="${escapeHtml(s.name)}" data-action="detail" data-id="${escapeHtml(s.stationuuid)}">${escapeHtml(s.name)}</div>
         <div class="now-sub">${countryFlag(s.countrycode)} ${escapeHtml(country)}${s.bitrate ? ` · ${s.bitrate} kbps` : ''}${s.codec ? ` · ${escapeHtml(s.codec)}` : ''}</div>
         ${
@@ -1780,8 +1811,8 @@ function ensureAppEvents() {
         if (!id) return;
         const station = findStation(id);
         if (!station) return;
-        if (state.current?.stationuuid === id && player.playing) {
-          player.toggle();
+        if (state.current?.stationuuid === id) {
+          togglePlayback();
         } else {
           void playStation(station);
         }
@@ -1794,12 +1825,12 @@ function ensureAppEvents() {
         if (!id) return;
         const station = findStation(id);
         if (!station) return;
-        if (state.current?.stationuuid === id) player.toggle();
+        if (state.current?.stationuuid === id) togglePlayback();
         else void playStation(station);
         break;
       }
       case 'toggle-play':
-        player.toggle();
+        togglePlayback();
         break;
       case 'prev':
         void playRelative(-1);
@@ -2094,7 +2125,7 @@ function bindGlobalKeys() {
     switch (e.key) {
       case ' ':
         e.preventDefault();
-        if (state.current) player.toggle();
+        togglePlayback();
         break;
       case 'm':
       case 'M':

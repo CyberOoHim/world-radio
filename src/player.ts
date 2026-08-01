@@ -91,6 +91,11 @@ class AudioPlayer {
     return this._muted;
   }
 
+  /** True when an audio element has a stream URL assigned (may still be paused). */
+  get hasSource() {
+    return Boolean(this.audio.src);
+  }
+
   subscribe(fn: PlayerListener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
@@ -308,24 +313,33 @@ class AudioPlayer {
     });
   }
 
-  toggle() {
-    if (!this._station) return;
+  /**
+   * Pause if playing; otherwise resume or start the loaded station.
+   * When nothing is loaded, pass `fallback` to start that station
+   * (used after reload when UI still shows last station).
+   */
+  toggle(fallback?: Station | null) {
+    if (!this._station) {
+      if (fallback) void this.play(fallback);
+      return;
+    }
     if (this._playing) {
       this.audio.pause();
-    } else if (this.audio.src) {
+      return;
+    }
+    if (this.audio.src) {
       this._loading = true;
       this._error = null;
       this.emit();
       const gen = this.playGeneration;
       void this.audio.play().catch(() => {
         if (gen !== this.playGeneration) return;
-        this._loading = false;
-        this._error = 'Could not resume playback.';
-        this.emit();
+        // Stale src after long pause / network loss — full reconnect.
+        void this.play(this._station!);
       });
-    } else {
-      void this.play(this._station);
+      return;
     }
+    void this.play(this._station);
   }
 
   pause() {
