@@ -7,45 +7,111 @@ const MIRRORS = [
   'https://fr1.api.radio-browser.info',
 ];
 
+const FETCH_TIMEOUT_MS = 15_000;
+const MIRROR_PROBE_MS = 4_000;
+
 let baseUrl = MIRRORS[0];
 let baseReady: Promise<void> | null = null;
+let pickGeneration = 0;
 
-async function pickMirror(): Promise<void> {
-  if (baseReady) return baseReady;
+async function probeMirror(mirror: string): Promise<boolean> {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), MIRROR_PROBE_MS);
+    const res = await fetch(`${mirror}/json/stats`, { signal: ctrl.signal });
+    clearTimeout(t);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Select a healthy mirror. When `force` is true, re-probe even if already ready. */
+async function pickMirror(force = false): Promise<void> {
+  if (!force && baseReady) return baseReady;
+
+  const gen = ++pickGeneration;
   baseReady = (async () => {
-    for (const mirror of MIRRORS) {
-      try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 4000);
-        const res = await fetch(`${mirror}/json/stats`, { signal: ctrl.signal });
-        clearTimeout(t);
-        if (res.ok) {
-          baseUrl = mirror;
-          return;
-        }
-      } catch {
-        // try next mirror
+    // Prefer a different mirror when re-picking after failure
+    const order = force
+      ? [...MIRRORS.filter((m) => m !== baseUrl), baseUrl]
+      : [...MIRRORS];
+
+    for (const mirror of order) {
+      if (gen !== pickGeneration) return;
+      if (await probeMirror(mirror)) {
+        if (gen !== pickGeneration) return;
+        baseUrl = mirror;
+        return;
       }
     }
-    baseUrl = MIRRORS[0];
+    if (gen !== pickGeneration) return;
+    // Last resort: keep current baseUrl (or first mirror) so callers still try
+    if (!force) baseUrl = MIRRORS[0];
   })();
+
   return baseReady;
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  await pickMirror();
-  const url = `${baseUrl}${path}`;
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`Radio API error ${res.status}: ${res.statusText}`);
+function withTimeoutSignal(
+  external?: AbortSignal | null,
+  ms = FETCH_TIMEOUT_MS
+): { signal: AbortSignal; clear: () => void } {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+
+  const onExternalAbort = () => ctrl.abort();
+  if (external) {
+    if (external.aborted) ctrl.abort();
+    else external.addEventListener('abort', onExternalAbort, { once: true });
   }
-  return res.json() as Promise<T>;
+
+  return {
+    signal: ctrl.signal,
+    clear: () => {
+      clearTimeout(timer);
+      if (external) external.removeEventListener('abort', onExternalAbort);
+    },
+  };
+}
+
+async function fetchOnce<T>(path: string, init?: RequestInit): Promise<T> {
+  const { signal, clear } = withTimeoutSignal(init?.signal ?? null);
+  try {
+    const url = `${baseUrl}${path}`;
+    const res = await fetch(url, {
+      ...init,
+      signal,
+      headers: {
+        Accept: 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`Radio API error ${res.status}: ${res.statusText}`);
+    }
+    return (await res.json()) as T;
+  } finally {
+    clear();
+  }
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  await pickMirror(false);
+  try {
+    return await fetchOnce<T>(path, init);
+  } catch (err) {
+    // Do not retry if the caller aborted
+    if (init?.signal?.aborted) throw err;
+    if (err instanceof DOMException && err.name === 'AbortError' && init?.signal?.aborted) {
+      throw err;
+    }
+
+    // Re-pick mirror and retry once on network / 5xx-style failure
+    baseReady = null;
+    await pickMirror(true);
+    return fetchOnce<T>(path, init);
+  }
 }
 
 export interface SearchParams {
@@ -105,7 +171,7 @@ export async function getStationsByTag(
 }
 
 export async function getStationsByUuid(uuid: string): Promise<Station[]> {
-  return apiFetch<Station[]>(`/json/stations/byuuid/${uuid}`);
+  return apiFetch<Station[]>(`/json/stations/byuuid/${encodeURIComponent(uuid)}`);
 }
 
 export async function getCountries(): Promise<Country[]> {
@@ -126,7 +192,7 @@ export async function getTags(limit = 120): Promise<Tag[]> {
 export async function resolveStream(stationuuid: string): Promise<string | null> {
   try {
     const data = await apiFetch<{ url?: string; name?: string } | Array<{ url?: string }>>(
-      `/json/url/${stationuuid}`
+      `/json/url/${encodeURIComponent(stationuuid)}`
     );
     if (Array.isArray(data)) return data[0]?.url ?? null;
     return data.url ?? null;
