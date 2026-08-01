@@ -8,7 +8,7 @@ Stations come from the free community [Radio Browser](https://www.radio-browser.
 
 ## Features
 
-- **Discover** — popular stations, mood chips, time-of-day picks, **Surprise me**, **Near me**
+- **Discover** — popular stations, mood chips, time-of-day picks, **Surprise · Anywhere** / **Here**, **Near me**
 - **Countries** — browse by continent and country (filterable)
 - **Genres** — full tag directory with local search
 - **Search** — stations by name, city, or keyword

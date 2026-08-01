@@ -499,6 +499,15 @@ button.chip.chip-period.active {
   opacity: 1;
 }
 
+/* Surprise · Here when only soft context (e.g. time of day) */
+button.chip.chip-muted {
+  opacity: 0.78;
+}
+
+button.chip.chip-muted:hover {
+  opacity: 0.95;
+}
+
 .chip-row {
   display: flex;
   flex-wrap: wrap;

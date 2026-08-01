@@ -330,6 +330,27 @@ async function playRelative(delta: number) {
   await playStation(list[next]);
 }
 
+type SurpriseMode = 'anywhere' | 'here';
+
+type SurpriseAttemptResult = 'played' | 'blocked' | 'failed' | 'cancelled';
+
+interface SurpriseContext {
+  /** Short scope for toasts, e.g. "jazz", "near you" */
+  label: string;
+  /** Human summary for tooltips */
+  summary: string;
+  /** True when user has an explicit browse filter (not just time-of-day soft focus) */
+  hasStrongCondition: boolean;
+  filters: SearchParams;
+  localPool: Station[] | null;
+  tag: string | null;
+  countrycode: string | null;
+  near: { lat: number; lon: number } | null;
+  nameQuery: string | null;
+  /** Soft tags when Discover has no genre selected */
+  periodTags: string[] | null;
+}
+
 function shuffleInPlace<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -340,10 +361,9 @@ function shuffleInPlace<T>(arr: T[]): T[] {
   return arr;
 }
 
-/** Filters shared by Surprise Me (not list sort order — that broke true random). */
-function surpriseSoftFilters(): SearchParams {
+function surpriseHttpsFilter(): SearchParams {
   const filters: SearchParams = { hidebroken: true };
-  if (state.languageFilter) filters.language = state.languageFilter;
+  // Global safety pref only — not a browse "condition".
   if (state.httpsOnly) filters.is_https = true;
   return filters;
 }
@@ -353,49 +373,252 @@ function isSurpriseCandidate(station: Station, excludeId: string | null): boolea
   return isLikelyPlayable(station, { httpsOnly: state.httpsOnly });
 }
 
-/**
- * Build a pool of random playable stations.
- * Strategies: pure random → context tag → popular random offset (fallback).
- */
-async function fetchSurprisePool(excludeId: string | null): Promise<Station[]> {
-  const soft = surpriseSoftFilters();
+function collectSurprisePool(
+  lists: Station[][],
+  excludeId: string | null
+): Station[] {
   const seen = new Set<string>();
   const pool: Station[] = [];
-
-  const add = (list: Station[]) => {
+  for (const list of lists) {
     for (const s of list) {
       if (seen.has(s.stationuuid)) continue;
       if (!isSurpriseCandidate(s, excludeId)) continue;
       seen.add(s.stationuuid);
       pool.push(s);
     }
+  }
+  return shuffleInPlace(pool);
+}
+
+async function runSurpriseStrategies(
+  strategies: Array<() => Promise<Station[]>>,
+  excludeId: string | null,
+  minPool = 8
+): Promise<Station[]> {
+  const gathered: Station[][] = [];
+  for (const run of strategies) {
+    try {
+      gathered.push(await run());
+    } catch {
+      // try next strategy
+    }
+    const pool = collectSurprisePool(gathered, excludeId);
+    if (pool.length >= minPool) return pool;
+  }
+  return collectSurprisePool(gathered, excludeId);
+}
+
+/** Snapshot of current browse conditions for Surprise · Here */
+function getSurpriseContext(): SurpriseContext {
+  const filters = surpriseHttpsFilter();
+  if (state.languageFilter) filters.language = state.languageFilter;
+
+  if (state.view === 'favorites') {
+    return {
+      label: 'favorites',
+      summary: 'Your favorites',
+      hasStrongCondition: state.favorites.length > 0,
+      filters,
+      localPool: state.favorites,
+      tag: null,
+      countrycode: null,
+      near: null,
+      nameQuery: null,
+      periodTags: null,
+    };
+  }
+
+  if (state.view === 'recent') {
+    return {
+      label: 'recent',
+      summary: 'Recently played',
+      hasStrongCondition: state.recent.length > 0,
+      filters,
+      localPool: state.recent,
+      tag: null,
+      countrycode: null,
+      near: null,
+      nameQuery: null,
+      periodTags: null,
+    };
+  }
+
+  const parts: string[] = [];
+  let hasStrongCondition = false;
+
+  const countrycode = state.selectedCountry;
+  if (countrycode) {
+    hasStrongCondition = true;
+    const c = state.countries.find((x) => x.iso_3166_1 === countrycode);
+    parts.push(c?.name || countrycode);
+  }
+
+  const near =
+    state.nearMe && state.userLat != null && state.userLon != null
+      ? { lat: state.userLat, lon: state.userLon }
+      : null;
+  if (near) {
+    hasStrongCondition = true;
+    parts.push('near you');
+  }
+
+  const tag = state.selectedTag;
+  if (tag) {
+    hasStrongCondition = true;
+    const mood = MOOD_TAGS.find((t) => t.id === tag);
+    parts.push(mood?.label || titleCaseTag(tag));
+  }
+
+  const nameQuery =
+    state.view === 'search' && state.query.trim() ? state.query.trim() : null;
+  if (nameQuery) {
+    hasStrongCondition = true;
+    parts.push(`“${nameQuery}”`);
+  }
+
+  if (state.languageFilter) {
+    hasStrongCondition = true;
+    parts.push(titleCaseTag(state.languageFilter));
+  }
+
+  let periodTags: string[] | null = null;
+  if (!hasStrongCondition) {
+    const period = resolveTimeOfDayPeriod(state.timeOfDayMode);
+    periodTags = timeOfDayMoods(period).map((t) => t.id);
+    parts.push(timeOfDayPeriodLabel(period).toLowerCase());
+  }
+
+  return {
+    label: parts[0]?.replace(/^“|”$/g, '') || 'here',
+    summary: parts.join(' · ') || 'Current filters',
+    hasStrongCondition,
+    filters,
+    localPool: null,
+    tag,
+    countrycode,
+    near,
+    nameQuery,
+    periodTags,
   };
+}
 
-  const strategies: Array<() => Promise<Station[]>> = [
-    () => getRandomStations(SURPRISE_BATCH, soft),
-  ];
+/** Pure worldwide random (HTTPS-only pref only). */
+async function fetchSurprisePoolAnywhere(excludeId: string | null): Promise<Station[]> {
+  const soft = surpriseHttpsFilter();
+  const randomMood = MOOD_TAGS[Math.floor(Math.random() * MOOD_TAGS.length)]?.id;
 
-  // Prefer current Discover tag / time-of-day mood when set, else a random mood.
-  const contextTag =
-    state.selectedTag ||
-    (state.view === 'discover'
-      ? timeOfDayMoods(resolveTimeOfDayPeriod(state.timeOfDayMode))[
-          Math.floor(Math.random() * 4)
-        ]?.id
-      : null) ||
-    MOOD_TAGS[Math.floor(Math.random() * MOOD_TAGS.length)]?.id;
+  return runSurpriseStrategies(
+    [
+      () => getRandomStations(SURPRISE_BATCH, soft),
+      ...(randomMood
+        ? [() => getRandomStations(SURPRISE_BATCH, { ...soft, tag: randomMood })]
+        : []),
+      async () => {
+        const offset = Math.floor(Math.random() * 500);
+        return searchStations({
+          ...soft,
+          limit: SURPRISE_BATCH,
+          offset,
+          order: 'clickcount',
+          reverse: true,
+        });
+      },
+    ],
+    excludeId
+  );
+}
 
-  if (contextTag) {
-    strategies.push(() =>
-      getRandomStations(SURPRISE_BATCH, { ...soft, tag: contextTag })
+/** Random within current browse conditions / list. */
+async function fetchSurprisePoolHere(
+  excludeId: string | null,
+  ctx: SurpriseContext
+): Promise<Station[]> {
+  if (ctx.localPool) {
+    return shuffleInPlace(
+      ctx.localPool.filter((s) => isSurpriseCandidate(s, excludeId))
     );
   }
 
-  // Fallback if order=random is empty/broken on a mirror: random window of popular.
+  const soft = { ...ctx.filters };
+  const strategies: Array<() => Promise<Station[]>> = [];
+
+  if (ctx.near) {
+    const { lat, lon } = ctx.near;
+    strategies.push(() =>
+      getStationsNear(lat, lon, SURPRISE_BATCH, 0, {
+        ...soft,
+        order: 'distance',
+        reverse: false,
+      })
+    );
+  }
+
+  if (ctx.countrycode) {
+    strategies.push(() =>
+      getRandomStations(SURPRISE_BATCH, {
+        ...soft,
+        countrycode: ctx.countrycode!,
+      })
+    );
+  }
+
+  if (ctx.tag) {
+    strategies.push(() =>
+      getRandomStations(SURPRISE_BATCH, { ...soft, tag: ctx.tag! })
+    );
+  }
+
+  if (ctx.nameQuery) {
+    strategies.push(() =>
+      searchStations({
+        ...soft,
+        name: ctx.nameQuery!,
+        limit: SURPRISE_BATCH,
+        offset: 0,
+        order: 'random',
+        reverse: false,
+      })
+    );
+    // Fallback: name search by popularity if random+name is sparse
+    strategies.push(() =>
+      searchStations({
+        ...soft,
+        name: ctx.nameQuery!,
+        limit: SURPRISE_BATCH,
+        offset: 0,
+        order: 'clickcount',
+        reverse: true,
+      })
+    );
+  }
+
+  if (ctx.periodTags?.length) {
+    const pick =
+      ctx.periodTags[Math.floor(Math.random() * ctx.periodTags.length)]!;
+    strategies.push(() => getRandomStations(SURPRISE_BATCH, { ...soft, tag: pick }));
+    // Second period tag if the first is thin
+    const pick2 =
+      ctx.periodTags[Math.floor(Math.random() * ctx.periodTags.length)]!;
+    if (pick2 !== pick) {
+      strategies.push(() =>
+        getRandomStations(SURPRISE_BATCH, { ...soft, tag: pick2 })
+      );
+    }
+  }
+
+  // Language-only (or residual soft filters): pure random inside filters
+  if (!strategies.length || state.languageFilter) {
+    strategies.push(() => getRandomStations(SURPRISE_BATCH, soft));
+  }
+
+  // Scoped popular window as last resort inside the same filters
   strategies.push(async () => {
-    const offset = Math.floor(Math.random() * 500);
+    const offset = Math.floor(Math.random() * 200);
     return searchStations({
       ...soft,
+      ...(ctx.tag ? { tag: ctx.tag } : {}),
+      ...(ctx.countrycode ? { countrycode: ctx.countrycode } : {}),
+      ...(ctx.nameQuery ? { name: ctx.nameQuery } : {}),
       limit: SURPRISE_BATCH,
       offset,
       order: 'clickcount',
@@ -403,23 +626,85 @@ async function fetchSurprisePool(excludeId: string | null): Promise<Station[]> {
     });
   });
 
-  for (const run of strategies) {
-    try {
-      add(await run());
-    } catch {
-      // try next strategy
-    }
-    if (pool.length >= 8) break;
-  }
-
-  return shuffleInPlace(pool);
+  return runSurpriseStrategies(strategies, excludeId);
 }
 
 /**
- * Surprise Me: pick a truly random station (not current sort), skip dead streams,
- * and retry a few candidates until one actually starts playing.
+ * Try candidates until one plays. Does not restore previous on failure
+ * (caller may fall back to another mode).
  */
-async function playSurprise() {
+async function runSurpriseAttempts(
+  pool: Station[],
+  seq: number,
+  scopeLabel: string
+): Promise<SurpriseAttemptResult> {
+  if (!pool.length) return 'failed';
+
+  const tries = pool.slice(0, SURPRISE_MAX_TRIES);
+  let attempt = 0;
+
+  for (const station of tries) {
+    if (seq !== surpriseSeq) return 'cancelled';
+    attempt++;
+    if (attempt > 1) {
+      showToast(`Trying another… (${attempt}/${tries.length})`);
+    }
+
+    state.current = station;
+    state.detailStation = null;
+    sleepMenuOpen = false;
+    renderPlayer();
+    renderDetail();
+    updatePlaybackUI();
+    announce(`Trying ${station.name}`);
+
+    await player.play(station);
+    if (seq !== surpriseSeq) return 'cancelled';
+
+    const outcome = await player.waitForOutcome(SURPRISE_PLAY_TIMEOUT_MS);
+    if (seq !== surpriseSeq) return 'cancelled';
+    if (outcome === 'cancelled') return 'cancelled';
+
+    if (outcome === 'playing') {
+      pushRecent(station);
+      saveLastStation(station);
+      if (!applyingRoute) {
+        setHash({ kind: 'station', uuid: station.stationuuid });
+      }
+      syncMediaSession();
+      updatePlaybackUI();
+      announce(`Playing ${station.name}`);
+      const short =
+        station.name.slice(0, 40) + (station.name.length > 40 ? '…' : '');
+      showToast(`Surprise (${scopeLabel}): ${short}`, 3200);
+      return 'played';
+    }
+
+    if (player.error?.includes('Click play')) {
+      pushRecent(station);
+      saveLastStation(station);
+      if (!applyingRoute) {
+        setHash({ kind: 'station', uuid: station.stationuuid });
+      }
+      showToast('Tap play to start the surprise station');
+      return 'blocked';
+    }
+  }
+
+  return 'failed';
+}
+
+function restoreSurprisePrevious(previous: Station | null) {
+  state.current = previous;
+  renderPlayer();
+  updatePlaybackUI();
+}
+
+/**
+ * Surprise · Anywhere — worldwide random.
+ * Surprise · Here — respect current filters/list; one auto-fallback to Anywhere.
+ */
+async function playSurprise(mode: SurpriseMode = 'anywhere') {
   if (surpriseBusy) {
     showToast('Still finding a surprise…');
     return;
@@ -428,96 +713,91 @@ async function playSurprise() {
   const seq = ++surpriseSeq;
   surpriseBusy = true;
   const previous = state.current;
-  showToast('Finding a surprise…');
+  const excludeId = previous?.stationuuid ?? null;
 
   try {
-    const pool = await fetchSurprisePool(previous?.stationuuid ?? null);
-    if (seq !== surpriseSeq) return;
+    if (mode === 'here') {
+      const ctx = getSurpriseContext();
 
-    if (!pool.length) {
-      showToast('No surprise stations available — try again');
-      return;
-    }
-
-    const tries = pool.slice(0, SURPRISE_MAX_TRIES);
-    let attempt = 0;
-
-    for (const station of tries) {
-      if (seq !== surpriseSeq) return;
-      attempt++;
-      if (attempt > 1) {
-        showToast(`Trying another… (${attempt}/${tries.length})`);
-      }
-
-      // Update UI without committing to recent until playback succeeds.
-      state.current = station;
-      state.detailStation = null;
-      sleepMenuOpen = false;
-      renderPlayer();
-      renderDetail();
-      updatePlaybackUI();
-      announce(`Trying ${station.name}`);
-
-      await player.play(station);
-      if (seq !== surpriseSeq) return;
-
-      const outcome = await player.waitForOutcome(SURPRISE_PLAY_TIMEOUT_MS);
-      if (seq !== surpriseSeq) return;
-
-      // Superseded by another play (user picked a station) — stop the hunt.
-      if (outcome === 'cancelled') return;
-
-      if (outcome === 'playing') {
-        pushRecent(station);
-        saveLastStation(station);
-        if (!applyingRoute) {
-          setHash({ kind: 'station', uuid: station.stationuuid });
-        }
-        syncMediaSession();
-        updatePlaybackUI();
-        announce(`Playing ${station.name}`);
+      if (ctx.localPool && ctx.localPool.length === 0) {
         showToast(
-          `Surprise: ${station.name.slice(0, 42)}${station.name.length > 42 ? '…' : ''}`,
-          3200
+          ctx.label === 'favorites'
+            ? 'No favorites yet — heart a station first'
+            : 'No recent stations yet — play something first'
         );
         return;
       }
 
-      // Autoplay blocked — keep this station selected; user can tap play.
-      if (player.error?.includes('Click play')) {
-        pushRecent(station);
-        saveLastStation(station);
-        if (!applyingRoute) {
-          setHash({ kind: 'station', uuid: station.stationuuid });
+      showToast(`Finding a surprise (${ctx.label})…`);
+      let pool = await fetchSurprisePoolHere(excludeId, ctx);
+      if (seq !== surpriseSeq) return;
+
+      if (!pool.length) {
+        showToast('Nothing in this filter — trying anywhere…');
+        pool = await fetchSurprisePoolAnywhere(excludeId);
+        if (seq !== surpriseSeq) return;
+        const result = await runSurpriseAttempts(pool, seq, 'anywhere');
+        if (result === 'failed') {
+          restoreSurprisePrevious(previous);
+          showToast('No working surprise found — try again');
         }
-        showToast('Tap play to start the surprise station');
         return;
       }
+
+      let result = await runSurpriseAttempts(pool, seq, ctx.label);
+      if (result === 'cancelled' || result === 'played' || result === 'blocked') {
+        return;
+      }
+
+      // Scoped streams all dead — one-shot global fallback
+      showToast('Those streams failed — trying anywhere…');
+      const anywherePool = await fetchSurprisePoolAnywhere(excludeId);
+      if (seq !== surpriseSeq) return;
+      result = await runSurpriseAttempts(anywherePool, seq, 'anywhere');
+      if (result === 'failed') {
+        restoreSurprisePrevious(previous);
+        showToast('No working surprise found — try again');
+      }
+      return;
     }
 
-    // All candidates failed — restore previous selection for a calmer recovery.
-    if (previous) {
-      state.current = previous;
-      renderPlayer();
-      updatePlaybackUI();
-      showToast('Those streams failed — try Surprise me again');
-    } else {
-      state.current = null;
-      renderPlayer();
-      updatePlaybackUI();
-      showToast('No working surprise found — try again');
+    // Anywhere
+    showToast('Finding a surprise (anywhere)…');
+    const pool = await fetchSurprisePoolAnywhere(excludeId);
+    if (seq !== surpriseSeq) return;
+    const result = await runSurpriseAttempts(pool, seq, 'anywhere');
+    if (result === 'failed') {
+      restoreSurprisePrevious(previous);
+      if (!pool.length) showToast('No surprise stations available — try again');
+      else showToast('Those streams failed — try again');
     }
   } catch {
     if (seq !== surpriseSeq) return;
     showToast('Could not load a random station');
     if (previous && state.current?.stationuuid !== previous.stationuuid) {
-      state.current = previous;
-      renderPlayer();
-      updatePlaybackUI();
+      restoreSurprisePrevious(previous);
     }
   } finally {
     if (seq === surpriseSeq) surpriseBusy = false;
   }
+}
+
+/** Dual surprise chips for hero / idle player */
+function surpriseActionsHtml(opts?: { compact?: boolean }): string {
+  const ctx = getSurpriseContext();
+  const hereTitle = `Surprise within: ${ctx.summary}`;
+  const hereMuted = ctx.hasStrongCondition ? '' : ' chip-muted';
+  const icon = icons.surprise;
+  if (opts?.compact) {
+    return `
+      <button type="button" class="chip" data-action="surprise" data-mode="anywhere" title="Random station from anywhere">${icon} Anywhere</button>
+      <button type="button" class="chip${hereMuted}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+    `;
+  }
+  return `
+    <button type="button" class="chip active" data-action="surprise" data-mode="anywhere" title="Random station from all stations">${icon} Anywhere</button>
+    <button type="button" class="chip${hereMuted}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+  `;
 }
 
 function announce(text: string) {
@@ -1096,7 +1376,7 @@ function renderDiscover(): string {
         ${state.tags.length ? `<span>${state.tags.length}+ genres</span>` : ''}
       </div>
       <div class="hero-actions">
-        <button type="button" class="chip active" data-action="surprise">${icons.surprise} Surprise me</button>
+        ${surpriseActionsHtml()}
         <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me">${icons.pin} Near me</button>
         ${
           last
@@ -1335,7 +1615,7 @@ function renderPlayerHtml(): string {
         <div class="player-quick">
           <button type="button" class="chip" data-action="tag" data-tag="jazz">🎷 Jazz</button>
           <button type="button" class="chip" data-action="tag" data-tag="ambient">🌙 Ambient</button>
-          <button type="button" class="chip" data-action="surprise">${icons.surprise} Surprise</button>
+          ${surpriseActionsHtml({ compact: true })}
         </div>
       </div>`;
   }
@@ -1897,9 +2177,11 @@ function ensureAppEvents() {
         }
         break;
       }
-      case 'surprise':
-        void playSurprise();
+      case 'surprise': {
+        const mode: SurpriseMode = t.dataset.mode === 'here' ? 'here' : 'anywhere';
+        void playSurprise(mode);
         break;
+      }
       case 'time-of-day': {
         const mode = t.dataset.mode as TimeOfDayMode | undefined;
         if (
