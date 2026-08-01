@@ -4,10 +4,12 @@
   "version": "1.0.0",
   "description": "Relaxing world radio player with thousands of global stations",
   "type": "module",
+  "homepage": "https://CyberOoHim.github.io/world_radioX/",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:check": "npm run build && node -e \"const fs=require('fs');const h=fs.readFileSync('dist/index.html','utf8');if(h.includes('/src/main.ts')||h.includes('src=\\\"/assets')){console.error('Bad asset paths in dist/index.html');process.exit(1)}console.log('dist OK');\""
   },
   "devDependencies": {
     "typescript": "~6.0.2",

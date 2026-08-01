@@ -4,6 +4,8 @@ A calm, ambient web app for listening to **thousands of live radio stations** fr
 
 Stations come from the free community [Radio Browser](https://www.radio-browser.info/) directory (30k+ streams across every continent).
 
+**Live:** [https://CyberOoHim.github.io/world_radioX/](https://CyberOoHim.github.io/world_radioX/)
+
 ## Features
 
 - **Discover** — popular stations and relaxing mood chips (jazz, ambient, classical, chillout…)
@@ -13,30 +15,24 @@ Stations come from the free community [Radio Browser](https://www.radio-browser.
 - **Favorites & recent** — saved in your browser
 - **Soft player** — volume, mute, live equalizer pulse, ambient orbs
 
-## iPad / offline single file
-
-Open **`world-radio.html`** directly in Safari (or any browser).  
-No install, no build — one self-contained file.
-
-### On iPad
-1. AirDrop / copy `world-radio.html` to **Files** (e.g. On My iPad or iCloud Drive)
-2. Tap the file → **Share** → **Open in Safari** (or open from Files)
-3. Optional: Share → **Add to Home Screen** for an app-like icon
-4. Needs **Wi‑Fi** (loads stations from Radio Browser + streams)
-
-## Dev app (Vite)
+## Develop
 
 ```bash
 npm install
-npm run dev
+npm run dev      # http://localhost:5173
+npm run build    # production → dist/
+npm run preview  # preview dist/
 ```
 
-Then open the URL Vite prints (usually `http://localhost:5173`).
+There is a **single** HTML entry: `index.html` (Vite + TypeScript in `src/`). GitHub Actions builds and deploys `dist/`.
 
-```bash
-npm run build    # production build → dist/
-npm run preview  # preview production build
-```
+## Deploy (GitHub Pages)
+
+Push to `main`. Workflow: `.github/workflows/deploy-pages.yml`.
+
+Repo settings: **Pages → Source: GitHub Actions**.
+
+`vite.config.ts` uses `base: './'` so assets work under `/world_radioX/`.
 
 ## Stack
 
