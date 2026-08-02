@@ -34,6 +34,14 @@ function getAudioContextClass(): typeof AudioContext {
   );
 }
 
+/** iPhone / iPad / iPod (incl. iPadOS desktop UA). */
+function isAppleTouchDevice(): boolean {
+  const ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  // iPadOS 13+ reports as MacIntel with touch
+  return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+}
+
 class AudioPlayer {
   private audio = new Audio();
   private listeners = new Set<PlayerListener>();
@@ -43,40 +51,36 @@ class AudioPlayer {
   private _error: string | null = null;
   private _volume = 0.75;
   private _muted = false;
-  /** Bumps on every play/stop so in-flight work and stale media events are ignored. */
   private playGeneration = 0;
-  /** Generation that currently owns `audio.src` (media events must match this). */
   private mediaGeneration = 0;
-  /** Stream URL currently assigned for this generation (used for HTTPS fallback). */
   private activeStreamUrl: string | null = null;
   private triedOriginalFallback = false;
   /** True after we already fell back from CORS/WebAudio → dry for this generation. */
   private triedDryFallback = false;
   private fadeTimer: ReturnType<typeof setInterval> | null = null;
   private _userVolume = 0.75;
+  /** True only when the user intentionally paused (not a stream stall). */
+  private userPaused = false;
+  /** Guard against concurrent dry-fallback attempts. */
+  private dryFallbackInFlight = false;
 
-  // Web Audio FX engine state
   private audioCtx: AudioContext | null = null;
   private mediaSourceNode: MediaElementAudioSourceNode | null = null;
-  /** Master output gain after FX/EQ — preferred volume path when Web Audio is active. */
   private masterGain: GainNode | null = null;
   private fxChain: FxChain | null = null;
   private _fxEnabled = false;
   private _fxPresetId: string | null = 'radio';
   private _customFx: Record<string, number> = {};
-  /** Tracks which FX/EQ enable combo the current graph was built for. */
   private pipelineKey: string | null = null;
-  /** True when MediaElementSource is connected into a live graph. */
   private _webAudioRouted = false;
-  /** User wants FX/EQ, but this stream is playing dry (CORS/process failure). */
   private _dryBecauseFxBlocked = false;
   private visibilityBound = false;
   private unlockBound = false;
   private noticeListeners = new Set<NoticeListener>();
   private lastDryNoticeAt = 0;
   private verifyTimer: ReturnType<typeof setTimeout> | null = null;
+  private pauseWatchTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Graphic Equalizer state
   private eqChain: EqChain | null = null;
   private _eqEnabled = false;
   private _eqPresetId = 'flat';
@@ -95,16 +99,11 @@ class AudioPlayer {
     this._eqBands = savedEq.bands || { ...DEFAULT_EQ_BANDS };
     this._customEqPresets = loadCustomEqPresets();
 
-    // Always start with a plain (non-CORS) element so stations connect reliably.
-    // Web Audio / CORS is applied only after a successful connect attempt.
+    // Always a plain non-CORS element by default (reliable live radio).
     this.initAudioElement(false);
     this.bindVisibilityResume();
   }
 
-  /**
-   * Call from a user gesture (pointer/touch/click) so iOS/Android unlock
-   * Web Audio. Safe to call repeatedly. Mirrors voice-changer unlock pattern.
-   */
   async unlockAudio(): Promise<void> {
     try {
       if (!this.audioCtx) {
@@ -113,7 +112,6 @@ class AudioPlayer {
       if (this.audioCtx.state === 'suspended') {
         await this.audioCtx.resume();
       }
-      // Silent one-shot buffer helps fully unlock WebKit audio on iPad/iPhone.
       if (this.audioCtx.state === 'running') {
         const buf = this.audioCtx.createBuffer(1, 1, this.audioCtx.sampleRate || 44100);
         const src = this.audioCtx.createBufferSource();
@@ -131,14 +129,10 @@ class AudioPlayer {
         }
       }
     } catch {
-      // ignore — unlock is best-effort
+      // ignore
     }
   }
 
-  /**
-   * Install once: first pointer/touch/key gesture unlocks AudioContext
-   * (required on iPad Safari before FX/EQ can be heard).
-   */
   installGestureUnlock(): void {
     if (this.unlockBound) return;
     this.unlockBound = true;
@@ -154,8 +148,12 @@ class AudioPlayer {
     if (this.visibilityBound || typeof document === 'undefined') return;
     this.visibilityBound = true;
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === 'visible' && !this.userPaused) {
         void this.resumeAudioContext();
+        // If stream died while backgrounded under CORS, recover dry.
+        if (this.wantsWebAudio() && this.audio.paused && this.activeStreamUrl && this._station) {
+          void this.forceDryFallback('unavailable');
+        }
       }
     });
     window.addEventListener('pageshow', () => {
@@ -174,7 +172,6 @@ class AudioPlayer {
     }
   }
 
-  /** Keep the media element in the document — more reliable for WebKit routing. */
   private mountAudioElement(el: HTMLAudioElement) {
     if (typeof document === 'undefined' || !document.body) return;
     if (el.isConnected) return;
@@ -190,6 +187,11 @@ class AudioPlayer {
 
   private wantsWebAudio(): boolean {
     return this._fxEnabled || this._eqEnabled;
+  }
+
+  /** True when the current element is on the risky CORS / Web Audio path. */
+  private isProcessedElement(): boolean {
+    return Boolean(this.audio.crossOrigin) || this._webAudioRouted;
   }
 
   private initAudioElement(useCors = false, forceRecreate = false) {
@@ -214,7 +216,6 @@ class AudioPlayer {
       }
     }
 
-    // Detach any prior MediaElementSource — a new element needs a new source node.
     this.mediaSourceNode = null;
     this.pipelineKey = null;
     this._webAudioRouted = false;
@@ -227,7 +228,6 @@ class AudioPlayer {
     (this.audio as HTMLAudioElement & { playsInline?: boolean }).playsInline = true;
 
     if (useCors) {
-      // Required for createMediaElementSource on cross-origin radio streams.
       this.audio.crossOrigin = 'anonymous';
     }
 
@@ -241,95 +241,210 @@ class AudioPlayer {
       this._playing = true;
       this._loading = false;
       this._error = null;
-      // Resume only — never rebuild graph here (rebuilds stall live streams on iPad).
+      this.userPaused = false;
       if (this._webAudioRouted) {
         void this.resumeAudioContext();
       }
       this.emit();
     });
+
     this.audio.addEventListener('pause', () => {
       if (!this.isActiveGeneration()) return;
+      // Intentional user pause — stay paused.
+      if (this.userPaused) {
+        this._playing = false;
+        this._loading = false;
+        this.emit();
+        return;
+      }
+      // Unexpected pause under CORS/Web Audio (very common on iPad) → dry recover.
+      if (
+        this.wantsWebAudio() &&
+        this.isProcessedElement() &&
+        !this.triedDryFallback &&
+        this.activeStreamUrl
+      ) {
+        void this.forceDryFallback('cors');
+        return;
+      }
       this._playing = false;
       this._loading = false;
       this.emit();
     });
+
     this.audio.addEventListener('waiting', () => {
       if (!this.isActiveGeneration()) return;
       this._loading = true;
       this.emit();
+      // Long buffer under processed path often never recovers on iPad.
+      this.armPauseWatch();
     });
+
     this.audio.addEventListener('error', () => {
       if (!this.isActiveGeneration()) return;
       void this.handleMediaError();
     });
+
     this.audio.addEventListener('ended', () => {
       if (!this.isActiveGeneration()) return;
+      // Live streams shouldn't end; if they do under FX path, recover dry.
+      if (
+        this.wantsWebAudio() &&
+        this.isProcessedElement() &&
+        !this.triedDryFallback &&
+        this.activeStreamUrl &&
+        !this.userPaused
+      ) {
+        void this.forceDryFallback('cors');
+        return;
+      }
       this._playing = false;
       this.emit();
     });
+
     this.audio.addEventListener('stalled', () => {
-      // Live streams often stall briefly; resume Web Audio if routed.
-      if (!this.isActiveGeneration()) return;
+      if (!this.isActiveGeneration() || this.userPaused) return;
       if (this._webAudioRouted) void this.resumeAudioContext();
+      this.armPauseWatch();
     });
   }
 
   /**
-   * Media error while using CORS/Web Audio: fall back to dry so the station
-   * still plays (common on iPad when redirects lack CORS). Always toast.
+   * If the stream stays paused/waiting under processed mode, force dry.
+   * Catches iPad cases that fire pause/waiting without a hard error.
+   * @param ms — shorter on Apple touch (processed path dies faster there).
    */
-  private async handleMediaError() {
-    // Prefer dry fallback when FX was requested and we were on a CORS element.
-    if (
-      this.wantsWebAudio() &&
-      this.audio.crossOrigin &&
-      !this.triedDryFallback &&
-      this.activeStreamUrl
-    ) {
-      const url = this.activeStreamUrl;
-      const gen = this.playGeneration;
-      this.triedDryFallback = true;
-      this.clearVerifyTimer();
+  private armPauseWatch(ms?: number) {
+    if (this.pauseWatchTimer != null) {
+      clearTimeout(this.pauseWatchTimer);
+    }
+    const delay = ms ?? (isAppleTouchDevice() ? 1600 : 2500);
+    this.pauseWatchTimer = setTimeout(() => {
+      this.pauseWatchTimer = null;
+      if (!this.isActiveGeneration() || this.userPaused) return;
+      if (!this.wantsWebAudio() || this.triedDryFallback || !this.activeStreamUrl) return;
+      if (!this.isProcessedElement()) return;
+      // Still not actually playing after stall/wait → dry recover.
+      if (this.audio.paused || this.audio.readyState < 2) {
+        void this.forceDryFallback('cors');
+      }
+    }, delay);
+  }
+
+  private clearPauseWatch() {
+    if (this.pauseWatchTimer != null) {
+      clearTimeout(this.pauseWatchTimer);
+      this.pauseWatchTimer = null;
+    }
+  }
+
+  /**
+   * Hard switch to non-CORS dry playback and keep audio going.
+   * Always toasts when FX/EQ was wanted. Safe to call from event handlers.
+   */
+  private async forceDryFallback(reason: DryPlaybackReason): Promise<boolean> {
+    if (this.dryFallbackInFlight) return false;
+    if (this.triedDryFallback && !this.isProcessedElement() && !this.audio.paused) {
+      return true;
+    }
+
+    const url = this.activeStreamUrl;
+    if (!url) return false;
+
+    const gen = this.playGeneration;
+    this.dryFallbackInFlight = true;
+    this.triedDryFallback = true;
+    this.clearVerifyTimer();
+    this.clearPauseWatch();
+
+    try {
       this.teardownGraphNodesOnly();
       this.mediaSourceNode = null;
       this.initAudioElement(false, true);
+      this.activeStreamUrl = url;
       this.audio.src = url;
       this.applyOutputVolume();
-      try {
-        await this.audio.play();
-        if (gen !== this.playGeneration) return;
-        this._playing = true;
-        this._loading = false;
-        this._error = null;
-        this._dryBecauseFxBlocked = true;
-        this.softFadeIn();
-        this.notifyDryPlayback('cors');
-        this.emit();
-        return;
-      } catch {
-        // fall through to original-url / fail
+      this.userPaused = false;
+
+      await this.raceTimeout(this.audio.play(), 8_000);
+      if (gen !== this.playGeneration) return false;
+
+      this._playing = true;
+      this._loading = false;
+      this._error = null;
+      this._dryBecauseFxBlocked = this.wantsWebAudio();
+      this.softFadeIn();
+      if (this.wantsWebAudio()) {
+        this.notifyDryPlayback(reason);
       }
+      this.emit();
+      return true;
+    } catch {
+      // Try original station URL once more.
+      if (this._station && gen === this.playGeneration) {
+        const original = this._station.url_resolved || this._station.url;
+        if (original && original !== url) {
+          try {
+            this.activeStreamUrl = original;
+            this.audio.src = original;
+            this.applyOutputVolume();
+            await this.raceTimeout(this.audio.play(), 8_000);
+            if (gen !== this.playGeneration) return false;
+            this._playing = true;
+            this._loading = false;
+            this._error = null;
+            this._dryBecauseFxBlocked = this.wantsWebAudio();
+            this.softFadeIn();
+            if (this.wantsWebAudio()) {
+              this.notifyDryPlayback(reason);
+            }
+            this.emit();
+            return true;
+          } catch {
+            // fall through
+          }
+        }
+      }
+      if (gen === this.playGeneration) {
+        this.failPlayback('Could not play this station. Try another.');
+      }
+      return false;
+    } finally {
+      this.dryFallbackInFlight = false;
+    }
+  }
+
+  private async handleMediaError() {
+    if (this.wantsWebAudio() && this.isProcessedElement() && !this.triedDryFallback && this.activeStreamUrl) {
+      const ok = await this.forceDryFallback('cors');
+      if (ok) return;
     }
 
+    // Dry element error: try alternate URL, else fail.
     if (!this.triedOriginalFallback && this._station) {
       const original = this._station.url_resolved || this._station.url;
       if (original && original !== this.activeStreamUrl) {
         this.triedOriginalFallback = true;
         this.activeStreamUrl = original;
-        // Stay on current CORS mode of the element.
         this.audio.src = original;
-        const gen = this.mediaGeneration;
-        void this.audio.play().catch(() => {
+        const gen = this.playGeneration;
+        try {
+          await this.audio.play();
           if (gen !== this.playGeneration) return;
-          this.failPlayback('Could not play this station. Try another.');
-        });
-        return;
+          this._playing = true;
+          this._loading = false;
+          this._error = null;
+          this.softFadeIn();
+          this.emit();
+          return;
+        } catch {
+          // fall through
+        }
       }
     }
     this.failPlayback('Could not play this station. Try another.');
   }
 
-  /** Disconnect FX/EQ/master nodes without disposing the AudioContext. */
   private teardownGraphNodesOnly() {
     if (this.fxChain) {
       try {
@@ -406,35 +521,28 @@ class AudioPlayer {
   get customEqPresets() {
     return this._customEqPresets;
   }
-  /** Whether audio is currently routed through the Web Audio FX/EQ graph. */
   get webAudioRouted() {
     return this._webAudioRouted;
   }
-  /** FX/EQ is enabled but this stream is playing original audio (CORS/process blocked). */
   get dryBecauseFxBlocked() {
     return this._dryBecauseFxBlocked;
   }
 
-  /**
-   * Subscribe to one-shot user notices (e.g. dry playback when FX/EQ cannot run).
-   * Returns an unsubscribe function.
-   */
   onNotice(fn: NoticeListener): () => void {
     this.noticeListeners.add(fn);
     return () => this.noticeListeners.delete(fn);
   }
 
   private notifyDryPlayback(reason: DryPlaybackReason) {
-    // Debounce so overlapping fallbacks don't spam toasts.
     const now = Date.now();
-    if (now - this.lastDryNoticeAt < 2000) return;
+    if (now - this.lastDryNoticeAt < 1800) return;
     this.lastDryNoticeAt = now;
     const message = DRY_PLAYBACK_MESSAGES[reason];
     for (const fn of this.noticeListeners) {
       try {
         fn(message);
       } catch {
-        // ignore listener errors
+        // ignore
       }
     }
   }
@@ -483,10 +591,6 @@ class AudioPlayer {
     return `fx:${this._fxEnabled ? 1 : 0}|eq:${this._eqEnabled ? 1 : 0}`;
   }
 
-  /**
-   * Attach MediaElementSource + FX/EQ graph. Call only after media is playing
-   * on a CORS-enabled element. Avoid force-rebuild mid-stream.
-   */
   async ensureAudioContext(forceRebuild = false): Promise<AudioContext | null> {
     if (!this.wantsWebAudio()) return null;
 
@@ -550,7 +654,6 @@ class AudioPlayer {
       }
       this.fxChain = null;
     }
-
     if (this.eqChain) {
       try {
         this.eqChain.input.disconnect();
@@ -561,7 +664,6 @@ class AudioPlayer {
       }
       this.eqChain = null;
     }
-
     if (this.masterGain) {
       try {
         this.masterGain.disconnect();
@@ -570,7 +672,6 @@ class AudioPlayer {
       }
       this.masterGain = null;
     }
-
     try {
       this.mediaSourceNode.disconnect();
     } catch {
@@ -584,7 +685,6 @@ class AudioPlayer {
         this.fxChain = null;
       }
     }
-
     if (this._eqEnabled) {
       try {
         this.eqChain = buildEqChain(this.audioCtx, this._eqBands);
@@ -647,15 +747,13 @@ class AudioPlayer {
   }
 
   setFxEnabled(enabled: boolean) {
-    const prevWebAudio = this.wantsWebAudio();
+    const prev = this.wantsWebAudio();
     this._fxEnabled = enabled;
     saveFxState({ enabled: this._fxEnabled, presetId: this._fxPresetId, customFx: this._customFx });
-
-    const nextWebAudio = this.wantsWebAudio();
-    if (prevWebAudio !== nextWebAudio) {
-      void this.handleWebAudioToggle(nextWebAudio);
+    const next = this.wantsWebAudio();
+    if (prev !== next) {
+      void this.handleWebAudioToggle(next);
     } else if (enabled && this._webAudioRouted) {
-      // Already on Web Audio with EQ — rebuild to include FX chain.
       void this.ensureAudioContext(true);
     } else if (!enabled && this._webAudioRouted && this._eqEnabled) {
       void this.ensureAudioContext(true);
@@ -674,13 +772,12 @@ class AudioPlayer {
   }
 
   setEqEnabled(enabled: boolean) {
-    const prevWebAudio = this.wantsWebAudio();
+    const prev = this.wantsWebAudio();
     this._eqEnabled = enabled;
     saveEqState({ enabled: this._eqEnabled, presetId: this._eqPresetId, bands: this._eqBands });
-
-    const nextWebAudio = this.wantsWebAudio();
-    if (prevWebAudio !== nextWebAudio) {
-      void this.handleWebAudioToggle(nextWebAudio);
+    const next = this.wantsWebAudio();
+    if (prev !== next) {
+      void this.handleWebAudioToggle(next);
     } else if (enabled && this._webAudioRouted) {
       void this.ensureAudioContext(true);
     } else if (!enabled && this._webAudioRouted && this._fxEnabled) {
@@ -700,41 +797,31 @@ class AudioPlayer {
     this.emit();
   }
 
-  /**
-   * Toggle Web Audio on/off while preserving playback when possible.
-   * Enabling: try processed path once; on any failure → dry + toast.
-   * Disabling: return to reliable dry element.
-   */
   private async handleWebAudioToggle(enableWebAudio: boolean) {
-    const wasPlaying = this._playing;
+    const wasPlaying = this._playing || (!this.userPaused && !!this.activeStreamUrl && !this.audio.paused);
     const currentUrl = this.activeStreamUrl;
     this.clearVerifyTimer();
+    this.clearPauseWatch();
     this._dryBecauseFxBlocked = false;
+    this.triedDryFallback = false;
 
     this.teardownGraphNodesOnly();
-    if (this.mediaSourceNode) {
-      try {
-        this.mediaSourceNode.disconnect();
-      } catch {
-        // ignore
-      }
-      this.mediaSourceNode = null;
-    }
+    this.mediaSourceNode = null;
 
     if (!currentUrl || !wasPlaying) {
-      // Not playing — just set preferred element mode for next play.
       this.initAudioElement(false, true);
       if (enableWebAudio) await this.unlockAudio();
       return;
     }
 
     if (!enableWebAudio) {
-      // Back to dry — most reliable for live radio.
+      // Back to dry — most reliable.
+      this.userPaused = false;
       this.initAudioElement(false, true);
       this.audio.src = currentUrl;
       this.applyOutputVolume();
       try {
-        await this.audio.play();
+        await this.raceTimeout(this.audio.play(), 8_000);
         this._playing = true;
         this._loading = false;
         this._error = null;
@@ -746,35 +833,41 @@ class AudioPlayer {
       return;
     }
 
-    // Enabling FX/EQ while playing: try processed, else dry + toast.
+    // Enabling FX while playing:
+    // 1) Restore dry immediately so user never sits paused.
+    // 2) Careful processed upgrade (iPad included); instant dry recover on failure.
     await this.unlockAudio();
-    const processed = await this.tryStartProcessed(currentUrl, this.playGeneration);
-    if (processed) {
-      this._playing = true;
-      this._loading = false;
-      this._error = null;
+    this.userPaused = false;
+
+    const dryOk = await this.tryStartDry(currentUrl, this.playGeneration);
+    if (!dryOk) {
+      this.failPlayback('Could not play this station. Try another.');
+      return;
+    }
+    this._playing = true;
+    this._loading = false;
+    this._error = null;
+    this.softFadeIn();
+    this.emit();
+
+    const upgraded = await this.tryUpgradeToProcessed(currentUrl, this.playGeneration);
+    if (upgraded && !this.audio.paused && this._webAudioRouted) {
       this._dryBecauseFxBlocked = false;
       this.softFadeIn();
       this.emit();
       return;
     }
 
-    const dryOk = await this.tryStartDry(currentUrl, this.playGeneration);
-    if (dryOk) {
-      this._playing = true;
-      this._loading = false;
-      this._error = null;
+    // Upgrade failed — ensure dry is playing + toast.
+    if (this.audio.paused || this.isProcessedElement()) {
+      await this.forceDryFallback('cors');
+    } else {
       this._dryBecauseFxBlocked = true;
-      this.softFadeIn();
+      this.triedDryFallback = true;
       this.notifyDryPlayback('cors');
-      this.emit();
-      return;
     }
-
-    this.failPlayback('Could not play this station. Try another.');
   }
 
-  /** True when an audio element has a stream URL assigned (may still be paused). */
   get hasSource() {
     return Boolean(this.audio.src);
   }
@@ -827,7 +920,7 @@ class AudioPlayer {
         const now = this.audioCtx.currentTime;
         g.cancelScheduledValues(now);
         g.setValueAtTime(0, now);
-        g.linearRampToValueAtTime(target, now + 0.4);
+        g.linearRampToValueAtTime(target, now + 0.35);
         this.audio.volume = 1;
         return;
       } catch {
@@ -840,7 +933,7 @@ class AudioPlayer {
     } else {
       this.audio.volume = 0;
     }
-    const steps = 8;
+    const steps = 7;
     let i = 0;
     this.fadeTimer = setInterval(() => {
       i++;
@@ -852,7 +945,7 @@ class AudioPlayer {
         this.audio.volume = level;
       }
       if (i >= steps) this.cancelFade();
-    }, 50);
+    }, 45);
   }
 
   fadeOutThen(ms: number, done: () => void) {
@@ -931,144 +1024,186 @@ class AudioPlayer {
     return sumDev / data.length;
   }
 
-  /**
-   * After processed play starts, confirm Web Audio actually has signal.
-   * If silent (CORS-tainted MES), switch to dry once and toast.
-   * Does not rebuild the graph mid-stream (that pauses live radio on iPad).
-   */
-  private scheduleProcessedVerification(gen: number) {
-    this.clearVerifyTimer();
-    this.verifyTimer = setTimeout(() => {
-      void (async () => {
-        this.verifyTimer = null;
-        if (gen !== this.playGeneration) return;
-        if (!this.wantsWebAudio()) return;
-        if (!this._webAudioRouted || !this.audioCtx || !this.mediaSourceNode) {
-          // Wanted FX but never routed — toast if still playing dry.
-          if (this._playing && !this.audio.paused) {
-            this._dryBecauseFxBlocked = true;
-            this.notifyDryPlayback('unavailable');
-          }
-          return;
-        }
-
-        await this.resumeAudioContext();
-
-        let analyser: AnalyserNode | null = null;
-        try {
-          analyser = this.audioCtx.createAnalyser();
-          analyser.fftSize = 256;
-          (this.masterGain || this.mediaSourceNode).connect(analyser);
-
-          // Two samples ~250ms apart so we don't false-trigger during buffer fill.
-          let level = this.measureGraphLevel(analyser);
-          if (level < 0.8) {
-            await new Promise((r) => setTimeout(r, 400));
-            if (gen !== this.playGeneration) {
-              analyser.disconnect();
-              return;
-            }
-            await this.resumeAudioContext();
-            level = this.measureGraphLevel(analyser);
-          }
-
-          try {
-            analyser.disconnect();
-          } catch {
-            // ignore
-          }
-
-          if (level >= 0.8) {
-            // FX is working.
-            this._dryBecauseFxBlocked = false;
-            return;
-          }
-
-          // Silent graph while element claims playing → dry fallback + toast.
-          if (!this.activeStreamUrl || this.audio.paused) return;
-          const url = this.activeStreamUrl;
-          this.triedDryFallback = true;
-          this.teardownGraphNodesOnly();
-          this.mediaSourceNode = null;
-          this.initAudioElement(false, true);
-          this.audio.src = url;
-          this.applyOutputVolume();
-          try {
-            await this.audio.play();
-            if (gen !== this.playGeneration) return;
-            this._playing = true;
-            this._loading = false;
-            this._error = null;
-            this._dryBecauseFxBlocked = true;
-            this.softFadeIn();
-            this.notifyDryPlayback('silent');
-            this.emit();
-          } catch {
-            // ignore — user can retry
-          }
-        } catch {
-          try {
-            analyser?.disconnect();
-          } catch {
-            // ignore
-          }
-        }
-      })();
-    }, 900);
+  /** Wait until the media element reports playing, or timeout. */
+  private waitForElementPlaying(timeoutMs: number): Promise<boolean> {
+    if (!this.audio.paused && this.audio.readyState >= 2) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.audio.removeEventListener('playing', onPlaying);
+        this.audio.removeEventListener('canplay', onPlaying);
+        resolve(ok);
+      };
+      const onPlaying = () => done(true);
+      const timer = setTimeout(() => done(!this.audio.paused), timeoutMs);
+      this.audio.addEventListener('playing', onPlaying);
+      this.audio.addEventListener('canplay', onPlaying);
+      // Already flowing?
+      if (!this.audio.paused && this.audio.readyState >= 2) done(true);
+    });
   }
 
   /**
-   * Try CORS + Web Audio processing for a URL.
-   * Returns true only if play() succeeded AND graph was attached.
-   * Does not toast (caller decides).
+   * Probe Web Audio graph for real audio (not silence).
+   * Used before accepting a processed upgrade — critical on iPad.
    */
-  private async tryStartProcessed(url: string, gen: number): Promise<boolean> {
-    if (gen !== this.playGeneration) return false;
+  private async probeWebAudioSignal(windowMs: number): Promise<boolean> {
+    if (!this.audioCtx || !this.mediaSourceNode || !this._webAudioRouted) return false;
+    if (this.audio.paused) return false;
+
+    await this.resumeAudioContext();
+
+    let analyser: AnalyserNode | null = null;
     try {
-      this.initAudioElement(true, true);
-      this.activeStreamUrl = url;
-      this.audio.src = url;
-      // Element volume at full; masterGain takes over after graph attaches.
-      this.audio.volume = this._muted ? 0 : this._userVolume;
-      await this.raceTimeout(this.audio.play(), 6_000);
-      if (gen !== this.playGeneration) return false;
+      analyser = this.audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      (this.masterGain || this.mediaSourceNode).connect(analyser);
 
-      // Attach graph only AFTER play succeeds — critical for iPad stability.
-      await this.unlockAudio();
-      await this.ensureAudioContext(true);
-      await this.resumeAudioContext();
-
-      if (!this._webAudioRouted) {
-        // Could not attach MES — treat as failure so caller goes dry.
-        try {
-          this.audio.pause();
-        } catch {
-          // ignore
+      const deadline = Date.now() + windowMs;
+      let best = 0;
+      while (Date.now() < deadline) {
+        if (this.audio.paused) {
+          analyser.disconnect();
+          return false;
         }
-        return false;
+        await this.resumeAudioContext();
+        const level = this.measureGraphLevel(analyser);
+        if (level > best) best = level;
+        // Real program audio is well above 0.8 average deviation from midpoint.
+        if (best >= 0.8) {
+          analyser.disconnect();
+          return true;
+        }
+        await new Promise((r) => setTimeout(r, 120));
       }
-
-      this.applyOutputVolume();
-      this.scheduleProcessedVerification(gen);
-      return true;
+      try {
+        analyser.disconnect();
+      } catch {
+        // ignore
+      }
+      return best >= 0.8;
     } catch {
+      try {
+        analyser?.disconnect();
+      } catch {
+        // ignore
+      }
       return false;
     }
   }
 
-  /** Reliable non-CORS element play (no FX processing). */
+  /**
+   * Ongoing watch after a successful upgrade. ALWAYS dry-fallback if silent
+   * or paused — never leave the user stuck (especially iPad).
+   */
+  private scheduleProcessedVerification(gen: number) {
+    this.clearVerifyTimer();
+    const firstCheckMs = isAppleTouchDevice() ? 700 : 900;
+    this.verifyTimer = setTimeout(() => {
+      void (async () => {
+        this.verifyTimer = null;
+        if (gen !== this.playGeneration || this.userPaused) return;
+        if (!this.wantsWebAudio()) return;
+        if (!this.isProcessedElement()) return;
+
+        if (this.audio.paused || !this._webAudioRouted) {
+          await this.forceDryFallback(this.audio.paused ? 'cors' : 'unavailable');
+          return;
+        }
+
+        const ok = await this.probeWebAudioSignal(isAppleTouchDevice() ? 900 : 600);
+        if (gen !== this.playGeneration || this.userPaused) return;
+
+        if (ok && !this.audio.paused) {
+          this._dryBecauseFxBlocked = false;
+          // Keep a light ongoing stall watch on Apple.
+          if (isAppleTouchDevice()) this.armPauseWatch(2000);
+          return;
+        }
+
+        await this.forceDryFallback('silent');
+      })();
+    }, firstCheckMs);
+  }
+
+  /** Reliable non-CORS element play. */
   private async tryStartDry(url: string, gen: number): Promise<boolean> {
     if (gen !== this.playGeneration) return false;
     try {
       this.clearVerifyTimer();
+      this.clearPauseWatch();
       this.teardownGraphNodesOnly();
       this.mediaSourceNode = null;
       this.initAudioElement(false, true);
       this.activeStreamUrl = url;
       this.audio.src = url;
       this.applyOutputVolume();
-      await this.raceTimeout(this.audio.play(), 6_000);
-      return gen === this.playGeneration;
+      this.userPaused = false;
+      await this.raceTimeout(this.audio.play(), 8_000);
+      return gen === this.playGeneration && !this.audio.paused;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Careful upgrade from dry → CORS + Web Audio (iPad included).
+   *
+   * Rules:
+   * 1. Never report success without a verified non-silent graph.
+   * 2. Fail fast so the caller can restore dry immediately.
+   * 3. Keep pause/stall watches so mid-stream death recovers to dry + toast.
+   */
+  private async tryUpgradeToProcessed(url: string, gen: number): Promise<boolean> {
+    if (gen !== this.playGeneration || !this.wantsWebAudio()) return false;
+
+    const apple = isAppleTouchDevice();
+
+    try {
+      // Gesture unlock again before CORS play (iPad often re-suspends after await).
+      await this.unlockAudio();
+
+      this.clearVerifyTimer();
+      this.clearPauseWatch();
+      this.initAudioElement(true, true);
+      this.activeStreamUrl = url;
+      this.audio.src = url;
+      this.audio.volume = this._muted ? 0 : this._userVolume;
+      this.userPaused = false;
+
+      // Fail fast on Apple so dry restore is quick.
+      await this.raceTimeout(this.audio.play(), apple ? 4_500 : 6_000);
+      if (gen !== this.playGeneration) return false;
+
+      // iPad often resolves play() before media is actually flowing.
+      const flowing = await this.waitForElementPlaying(apple ? 1800 : 1000);
+      if (gen !== this.playGeneration || !flowing || this.audio.paused) {
+        return false;
+      }
+
+      await this.unlockAudio();
+      await this.ensureAudioContext(true);
+      await this.resumeAudioContext();
+
+      if (!this._webAudioRouted || this.audio.paused) {
+        return false;
+      }
+
+      this.applyOutputVolume();
+
+      // Require real signal before accepting the upgrade (prevents silent "pause").
+      const hasSignal = await this.probeWebAudioSignal(apple ? 1100 : 700);
+      if (gen !== this.playGeneration || !hasSignal || this.audio.paused) {
+        return false;
+      }
+
+      this._dryBecauseFxBlocked = false;
+      this.scheduleProcessedVerification(gen);
+      this.armPauseWatch(apple ? 1500 : 2500);
+      return true;
     } catch {
       return false;
     }
@@ -1084,7 +1219,10 @@ class AudioPlayer {
     this.triedOriginalFallback = false;
     this.triedDryFallback = false;
     this._dryBecauseFxBlocked = false;
+    this.userPaused = false;
+    this.dryFallbackInFlight = false;
     this.clearVerifyTimer();
+    this.clearPauseWatch();
     this.cancelFade();
     this.emit();
 
@@ -1095,7 +1233,6 @@ class AudioPlayer {
       await this.unlockAudio();
     }
 
-    // Prefer click-counted resolve URL, but never hang on a dead API.
     let streamUrl: string | null = null;
     try {
       const resolved = await this.raceTimeout(resolveStream(station.stationuuid), 6_000);
@@ -1126,39 +1263,21 @@ class AudioPlayer {
       if (u && !urls.includes(u)) urls.push(u);
     }
 
-    // ── Path A: FX/EQ requested → try processed, then dry with toast ──
-    if (wantFx) {
-      for (const url of urls) {
-        if (gen !== this.playGeneration) return;
-        const ok = await this.tryStartProcessed(url, gen);
-        if (ok) {
-          this._playing = true;
-          this._loading = false;
-          this._error = null;
-          this._dryBecauseFxBlocked = false;
-          this.softFadeIn();
-          this.emit();
-          return;
-        }
+    // ─────────────────────────────────────────────────────────────
+    // ALWAYS dry-first: connection reliability over FX.
+    // This is the only way to avoid iPad "stuck paused" with CORS.
+    // ─────────────────────────────────────────────────────────────
+    let dryUrl: string | null = null;
+    for (const url of urls) {
+      if (gen !== this.playGeneration) return;
+      const ok = await this.tryStartDry(url, gen);
+      if (ok) {
+        dryUrl = url;
+        break;
       }
+    }
 
-      // Processed failed for all URLs — reliable dry play + always notify.
-      this.triedDryFallback = true;
-      for (const url of urls) {
-        if (gen !== this.playGeneration) return;
-        const ok = await this.tryStartDry(url, gen);
-        if (ok) {
-          this._playing = true;
-          this._loading = false;
-          this._error = null;
-          this._dryBecauseFxBlocked = true;
-          this.softFadeIn();
-          this.notifyDryPlayback('cors');
-          this.emit();
-          return;
-        }
-      }
-
+    if (!dryUrl) {
       this._loading = false;
       this._playing = false;
       this._error = 'Could not play this station. Try another.';
@@ -1166,30 +1285,58 @@ class AudioPlayer {
       return;
     }
 
-    // ── Path B: FX/EQ off → plain dry play (most reliable) ──
-    for (const url of urls) {
-      if (gen !== this.playGeneration) return;
-      const ok = await this.tryStartDry(url, gen);
-      if (ok) {
-        this._playing = true;
-        this._loading = false;
-        this._error = null;
-        this.softFadeIn();
-        this.emit();
-        return;
-      }
+    // Dry is playing — user hears radio. Never leave this state paused.
+    this._playing = true;
+    this._loading = false;
+    this._error = null;
+    this.softFadeIn();
+    this.emit();
+
+    if (!wantFx) {
+      return;
     }
 
-    this._loading = false;
-    this._playing = false;
-    this._error = 'Could not play this station. Try another.';
-    this.emit();
+    // ── FX/EQ requested (all platforms, incl. careful iPad attempt) ──
+    // Dry is already playing. Try CORS + Web Audio; require verified signal.
+    // On any failure → restore dry immediately + toast. Never leave paused.
+    const upgraded = await this.tryUpgradeToProcessed(dryUrl, gen);
+    if (gen !== this.playGeneration) return;
+
+    if (upgraded && !this.audio.paused && this._webAudioRouted) {
+      this._playing = true;
+      this._loading = false;
+      this._error = null;
+      this._dryBecauseFxBlocked = false;
+      this.softFadeIn();
+      this.emit();
+      return;
+    }
+
+    // Upgrade failed or unstable — ensure dry is playing + toast.
+    if (this.audio.paused || this.isProcessedElement() || !this._playing) {
+      const recovered = await this.forceDryFallback('cors');
+      if (!recovered && gen === this.playGeneration) {
+        for (const url of urls) {
+          if (await this.tryStartDry(url, gen)) {
+            this._playing = true;
+            this._loading = false;
+            this._error = null;
+            this._dryBecauseFxBlocked = true;
+            this.softFadeIn();
+            this.notifyDryPlayback('cors');
+            this.emit();
+            return;
+          }
+        }
+      }
+    } else {
+      // Still on dry and playing — notify that FX could not be applied.
+      this._dryBecauseFxBlocked = true;
+      this.triedDryFallback = true;
+      this.notifyDryPlayback('cors');
+    }
   }
 
-  /**
-   * Wait until the current play attempt is clearly playing, has failed,
-   * was superseded, or times out. Used by Surprise Me retries.
-   */
   waitForOutcome(
     timeoutMs = 8_000
   ): Promise<'playing' | 'error' | 'timeout' | 'cancelled'> {
@@ -1251,30 +1398,24 @@ class AudioPlayer {
       if (fallback) void this.play(fallback);
       return;
     }
-    if (this._playing) {
+    if (this._playing && !this.audio.paused) {
+      this.userPaused = true;
+      this.clearPauseWatch();
       this.audio.pause();
       return;
     }
-    if (this.audio.src) {
+    // Resume or reconnect.
+    this.userPaused = false;
+    if (this.audio.src && !this.isProcessedElement()) {
+      // Dry element resume — most reliable.
       this._loading = true;
       this._error = null;
       this.emit();
       const gen = this.playGeneration;
       void (async () => {
-        if (this.wantsWebAudio()) {
-          await this.unlockAudio();
-        }
-        // If we previously fell back to dry, just resume the dry element.
-        // Full reconnect only if resume fails.
         try {
-          if (this._webAudioRouted) {
-            await this.resumeAudioContext();
-          }
           await this.audio.play();
           if (gen !== this.playGeneration) return;
-          if (this._webAudioRouted) {
-            await this.resumeAudioContext();
-          }
           this._playing = true;
           this._loading = false;
           this._error = null;
@@ -1286,18 +1427,23 @@ class AudioPlayer {
       })();
       return;
     }
+    // Processed element or no src — full reconnect (dry-first).
     void this.play(this._station);
   }
 
   pause() {
+    this.userPaused = true;
+    this.clearPauseWatch();
     this.audio.pause();
   }
 
   stop() {
+    this.userPaused = true;
     this.playGeneration++;
     this.mediaGeneration = 0;
     this.cancelFade();
     this.clearVerifyTimer();
+    this.clearPauseWatch();
     this.audio.pause();
     this.audio.removeAttribute('src');
     try {
