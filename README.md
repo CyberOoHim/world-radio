@@ -16,6 +16,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 - **Soft Volume Fades** — Smooth ~400ms volume fade-in on playback start and gentle fade-out when sleep timer finishes.
 - **Close & Hard-Stop** — Dedicated close button to stop playback, detach stream source, and cancel in-flight network requests.
 - **Resume Last Station** — Quick action button and automatic restoration of the last played station across reloads.
+- **Audio FX & 8-Band Equalizer** — Built-in spatial audio environment presets (Music Hall, Cathedral, Radio Booth, etc.), voice-changing effects, and customizable 8-band graphic equalizer with custom preset saving. *(Note: Audio FX & EQ are disabled on iPad / iPadOS due to iOS WebAudio streaming constraints).*
 - **Sleep Timer** — Flexible timer (15, 30, 45, 60, 90 mins) with live countdown display (`M:SS`) and soft audio fade.
 
 ### 🌍 Discovery & Modes
