@@ -13,6 +13,19 @@ import {
 } from './storage';
 
 type PlayerListener = () => void;
+type NoticeListener = (message: string) => void;
+
+/** Why FX/EQ was bypassed and audio fell back to dry element playback. */
+export type DryPlaybackReason = 'cors' | 'silent' | 'unavailable';
+
+const DRY_PLAYBACK_MESSAGES: Record<DryPlaybackReason, string> = {
+  cors:
+    'Audio FX & EQ unavailable for this station (stream blocks processing). Playing original audio.',
+  silent:
+    'Audio FX & EQ could not process this stream. Playing original audio.',
+  unavailable:
+    'Audio FX & EQ could not be applied. Playing original audio.',
+};
 
 function getAudioContextClass(): typeof AudioContext {
   return (
@@ -57,6 +70,8 @@ class AudioPlayer {
   private unlockBound = false;
   /** Timer for detecting silent Web Audio output (CORS-tainted MES on some mobile browsers). */
   private silenceWatchTimer: ReturnType<typeof setTimeout> | null = null;
+  private noticeListeners = new Set<NoticeListener>();
+  private lastDryNoticeAt = 0;
 
   // Graphic Equalizer state
   private eqChain: EqChain | null = null;
@@ -336,6 +351,30 @@ class AudioPlayer {
   /** Whether audio is currently routed through the Web Audio FX/EQ graph. */
   get webAudioRouted() {
     return this._webAudioRouted;
+  }
+
+  /**
+   * Subscribe to one-shot user notices (e.g. dry playback when FX/EQ cannot run).
+   * Returns an unsubscribe function.
+   */
+  onNotice(fn: NoticeListener): () => void {
+    this.noticeListeners.add(fn);
+    return () => this.noticeListeners.delete(fn);
+  }
+
+  private notifyDryPlayback(reason: DryPlaybackReason) {
+    // Debounce so overlapping fallbacks (toggle + silence watch) don't spam toasts.
+    const now = Date.now();
+    if (now - this.lastDryNoticeAt < 2500) return;
+    this.lastDryNoticeAt = now;
+    const message = DRY_PLAYBACK_MESSAGES[reason];
+    for (const fn of this.noticeListeners) {
+      try {
+        fn(message);
+      } catch {
+        // ignore listener errors
+      }
+    }
   }
 
   setEqPreset(presetId: string) {
@@ -685,6 +724,7 @@ class AudioPlayer {
             this._loading = false;
             this._error = null;
             this.softFadeIn();
+            this.notifyDryPlayback('cors');
             this.emit();
           } catch {
             this.failPlayback('Could not play this station. Try another.');
@@ -921,9 +961,15 @@ class AudioPlayer {
             this.initAudioElement(false, true);
             this.audio.src = url;
             this.applyOutputVolume();
-            void this.audio.play().catch(() => {
-              // ignore
-            });
+            void this.audio
+              .play()
+              .then(() => {
+                this.notifyDryPlayback('silent');
+                this.emit();
+              })
+              .catch(() => {
+                // ignore
+              });
           }
         } catch {
           try {
@@ -1058,6 +1104,7 @@ class AudioPlayer {
           this._loading = false;
           this._error = null;
           this.softFadeIn();
+          this.notifyDryPlayback('cors');
           this.emit();
           return;
         } catch {

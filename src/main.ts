@@ -2877,6 +2877,11 @@ player.subscribe(() => {
   updatePlaybackUI();
 });
 
+// Popup when FX/EQ cannot process a stream (CORS, silent graph, etc.) and dry play is used.
+player.onNotice((msg) => {
+  showToast(msg, 4200);
+});
+
 sleepTimer.setOnFire(() => {
   const finish = () => {
     player.pause();
