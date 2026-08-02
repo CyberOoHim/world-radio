@@ -1,5 +1,7 @@
 import { resolveStream } from './api/radioBrowser';
 import type { Station } from './types';
+import { DEFAULT_FX, FX_PRESETS, buildFxChain, type FxChain, type FxConfig } from './audioFx';
+import { loadFxState, saveFxState } from './storage';
 
 type PlayerListener = () => void;
 
@@ -22,18 +24,51 @@ class AudioPlayer {
   private fadeTimer: ReturnType<typeof setInterval> | null = null;
   private _userVolume = 0.75;
 
+  // Web Audio FX engine state
+  private audioCtx: AudioContext | null = null;
+  private mediaSourceNode: MediaElementAudioSourceNode | null = null;
+  private fxChain: FxChain | null = null;
+  private _fxEnabled = false;
+  private _fxPresetId: string | null = 'radio';
+  private _customFx: Record<string, number> = {};
+
   constructor() {
+    const savedFx = loadFxState();
+    this._fxEnabled = savedFx.enabled;
+    this._fxPresetId = savedFx.presetId;
+    this._customFx = savedFx.customFx || {};
+
+    this.initAudioElement(this._fxEnabled);
+  }
+
+  private initAudioElement(useCors = false) {
+    if (this.audio) {
+      try {
+        this.audio.pause();
+        this.audio.removeAttribute('src');
+        this.audio.load();
+      } catch {}
+    }
+    this.audio = new Audio();
     this.audio.preload = 'none';
-    // Do not set crossOrigin — most radio streams lack CORS headers and would fail to play.
     this.audio.setAttribute('playsinline', '');
     this.audio.setAttribute('webkit-playsinline', '');
     (this.audio as HTMLAudioElement & { playsInline?: boolean }).playsInline = true;
+
+    if (useCors) {
+      this.audio.crossOrigin = 'anonymous';
+    }
+
+    this.mediaSourceNode = null;
 
     this.audio.addEventListener('playing', () => {
       if (!this.isActiveGeneration()) return;
       this._playing = true;
       this._loading = false;
       this._error = null;
+      if (this._fxEnabled) {
+        try { this.ensureAudioContext(); } catch {}
+      }
       this.emit();
     });
     this.audio.addEventListener('pause', () => {
@@ -90,6 +125,131 @@ class AudioPlayer {
   get muted() {
     return this._muted;
   }
+  get fxEnabled() {
+    return this._fxEnabled;
+  }
+  get fxPresetId() {
+    return this._fxPresetId;
+  }
+
+  ensureAudioContext(): AudioContext | null {
+    if (!this._fxEnabled) return null;
+    if (!this.audioCtx) {
+      const AudioCtxClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      this.audioCtx = new AudioCtxClass();
+    }
+    if (this.audioCtx.state === 'suspended') {
+      void this.audioCtx.resume();
+    }
+    if (!this.mediaSourceNode && this.audioCtx && this._fxEnabled) {
+      try {
+        this.mediaSourceNode = this.audioCtx.createMediaElementSource(this.audio);
+        this.rebuildAudioPipeline();
+      } catch {
+        // Non-fatal if media source node cannot be initialized
+      }
+    }
+    return this.audioCtx;
+  }
+
+  private getCombinedFxConfig(): FxConfig {
+    const preset = FX_PRESETS.find((p) => p.id === this._fxPresetId);
+    const baseFx = preset ? preset.fx : {};
+    return {
+      ...DEFAULT_FX,
+      ...baseFx,
+      ...this._customFx,
+    };
+  }
+
+  rebuildAudioPipeline() {
+    if (!this.audioCtx || !this.mediaSourceNode) return;
+
+    try {
+      this.mediaSourceNode.disconnect();
+    } catch {}
+
+    if (this.fxChain) {
+      try {
+        this.fxChain.input.disconnect();
+        this.fxChain.output.disconnect();
+        this.fxChain.cleanup();
+      } catch {}
+      this.fxChain = null;
+    }
+
+    if (this._fxEnabled) {
+      try {
+        const config = this.getCombinedFxConfig();
+        this.fxChain = buildFxChain(this.audioCtx, config);
+        this.mediaSourceNode.connect(this.fxChain.input);
+        this.fxChain.output.connect(this.audioCtx.destination);
+      } catch {
+        // Fallback
+      }
+    }
+  }
+
+  setFxEnabled(enabled: boolean) {
+    const previous = this._fxEnabled;
+    this._fxEnabled = enabled;
+    saveFxState({ enabled: this._fxEnabled, presetId: this._fxPresetId, customFx: this._customFx });
+
+    if (previous !== enabled) {
+      const wasPlaying = this._playing;
+      const currentUrl = this.activeStreamUrl;
+
+      if (this.fxChain) {
+        try {
+          this.fxChain.input.disconnect();
+          this.fxChain.output.disconnect();
+          this.fxChain.cleanup();
+        } catch {}
+        this.fxChain = null;
+      }
+      if (this.mediaSourceNode) {
+        try { this.mediaSourceNode.disconnect(); } catch {}
+        this.mediaSourceNode = null;
+      }
+
+      this.initAudioElement(enabled);
+
+      if (currentUrl && wasPlaying) {
+        this.audio.src = currentUrl;
+        this.audio.volume = this._muted ? 0 : this._userVolume;
+        if (enabled) {
+          try { this.ensureAudioContext(); } catch {}
+        }
+        void this.audio.play().catch(() => {
+          if (enabled) {
+            this._fxEnabled = false;
+            saveFxState({ enabled: false, presetId: this._fxPresetId, customFx: this._customFx });
+            this.initAudioElement(false);
+            this.audio.src = currentUrl;
+            this.audio.volume = this._muted ? 0 : this._userVolume;
+            void this.audio.play();
+          }
+        });
+      }
+    } else if (enabled) {
+      this.rebuildAudioPipeline();
+    }
+    this.emit();
+  }
+
+  setFxPreset(presetId: string | null) {
+    this._fxPresetId = presetId;
+    saveFxState({ enabled: this._fxEnabled, presetId: this._fxPresetId, customFx: this._customFx });
+    if (this.fxChain) {
+      this.fxChain.updateFx(this.getCombinedFxConfig());
+    } else if (this._fxEnabled) {
+      this.rebuildAudioPipeline();
+    }
+    this.emit();
+  }
+
 
   /** True when an audio element has a stream URL assigned (may still be paused). */
   get hasSource() {
@@ -205,13 +365,8 @@ class AudioPlayer {
     this.cancelFade();
     this.emit();
 
-    this.audio.pause();
-    this.audio.removeAttribute('src');
-    try {
-      this.audio.load();
-    } catch {
-      // ignore
-    }
+    this.initAudioElement(this._fxEnabled);
+    this.audio.volume = this._muted ? 0 : this._userVolume;
 
     // Prefer click-counted resolve URL, but never hang surprise/play on a dead API.
     let streamUrl: string | null = null;

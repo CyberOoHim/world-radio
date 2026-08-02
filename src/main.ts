@@ -25,6 +25,13 @@ import {
   timeOfDayPeriodLabel,
   type SearchParams,
 } from './api/radioBrowser';
+import { FX_PRESETS, type FxCategory } from './audioFx';
+import {
+  closeFxModal,
+  renderFxModal,
+  setFxModalTab,
+  toggleFxModal,
+} from './fxModal';
 import { updateMediaSession } from './mediaSession';
 import { player } from './player';
 import { parseHash, setHash, stationShareUrl } from './router';
@@ -1442,7 +1449,7 @@ function stationArtHtml(station: Station, cls = 'station-art'): string {
   if (station.favicon) {
     return `<div class="${cls}" data-fallback="${initial}">
       <img src="${escapeHtml(station.favicon)}" alt="" loading="lazy" referrerpolicy="no-referrer"
-        onerror="this.remove();this.parentElement.textContent=this.parentElement.dataset.fallback"/>
+        onerror="const p=this.parentElement;this.remove();if(p)p.textContent=p.dataset.fallback||'♪'"/>
     </div>`;
   }
   return `<div class="${cls}">${initial}</div>`;
@@ -1958,6 +1965,9 @@ function renderPlayerHtml(): string {
             : ''
         }
       </div>
+      <button type="button" class="btn-icon ${player.fxEnabled ? 'is-active fx-active-btn' : ''}" data-action="toggle-fx-modal" title="Voice & Audio FX (Devices, Lo-Fi, Spaces)" aria-label="Audio FX">
+        🎙️
+      </button>
     </div>
     <div class="player-volume">
       <button type="button" class="btn-icon" data-action="mute" title="${state.muted ? 'Unmute' : 'Mute'}" aria-label="${state.muted ? 'Unmute' : 'Mute'}">
@@ -2099,6 +2109,7 @@ function ensureShell() {
     <footer class="player" aria-label="Player"></footer>
     <nav class="mobile-tabs" aria-label="Primary"></nav>
     <div class="detail-root"></div>
+    <div class="fx-modal-root"></div>
     <div class="toast-root" aria-live="polite"></div>
   `;
   shellBuilt = true;
@@ -2217,6 +2228,7 @@ function renderAllChrome() {
   renderPlayer();
   renderMobileTabs();
   renderDetail();
+  renderFxModal();
   renderToast();
 }
 
@@ -2496,6 +2508,37 @@ function ensureAppEvents() {
         state.timeOfDayMode = mode;
         persistPrefs();
         renderMain();
+        break;
+      }
+      case 'toggle-fx-modal':
+        toggleFxModal();
+        break;
+      case 'close-fx-modal':
+        closeFxModal();
+        break;
+      case 'toggle-fx': {
+        const next = !player.fxEnabled;
+        player.setFxEnabled(next);
+        renderFxModal();
+        renderPlayer();
+        showToast(next ? 'Audio FX Enabled' : 'Audio FX Bypassed');
+        break;
+      }
+      case 'select-fx-tab': {
+        const tab = t.dataset.tab as FxCategory | undefined;
+        if (tab) setFxModalTab(tab);
+        break;
+      }
+      case 'select-fx-preset': {
+        const id = t.dataset.id;
+        if (id) {
+          player.setFxPreset(id);
+          player.setFxEnabled(true);
+          renderFxModal();
+          renderPlayer();
+          const p = FX_PRESETS.find((preset) => preset.id === id);
+          if (p) showToast(`Audio FX: ${p.emoji} ${p.name}`);
+        }
         break;
       }
       case 'near-me':

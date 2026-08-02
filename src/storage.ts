@@ -249,3 +249,36 @@ export function importFavoritesJson(raw: string): Station[] | null {
     return null;
   }
 }
+
+
+export interface FxStatePrefs {
+  enabled: boolean;
+  presetId: string | null;
+  customFx: Record<string, number>;
+}
+
+const FX_STATE_KEY = 'world-radio:fx-state';
+
+export function loadFxState(): FxStatePrefs {
+  try {
+    const raw = localStorage.getItem(FX_STATE_KEY);
+    if (!raw) return { enabled: false, presetId: 'radio', customFx: {} };
+    const parsed = JSON.parse(raw);
+    return {
+      enabled: Boolean(parsed.enabled),
+      presetId: typeof parsed.presetId === 'string' ? parsed.presetId : 'radio',
+      customFx: typeof parsed.customFx === 'object' && parsed.customFx ? parsed.customFx : {},
+    };
+  } catch {
+    return { enabled: false, presetId: 'radio', customFx: {} };
+  }
+}
+
+export function saveFxState(fxState: FxStatePrefs): void {
+  try {
+    localStorage.setItem(FX_STATE_KEY, JSON.stringify(fxState));
+  } catch {
+    // Quota / private mode
+  }
+}
+
