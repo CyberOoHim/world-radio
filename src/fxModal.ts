@@ -119,7 +119,15 @@ function renderEqSectionHtml(): string {
           class="btn-sm btn-primary eq-save-btn"
           data-action="save-custom-eq"
         >
-          💾 Save Current Preset
+          💾 Save Preset
+        </button>
+        <button
+          type="button"
+          class="btn-sm eq-reset-btn"
+          data-action="reset-eq"
+          title="Reset all 8 bands to Flat (0 dB)"
+        >
+          ↺ Reset EQ
         </button>
       </div>
 

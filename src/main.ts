@@ -2586,6 +2586,12 @@ function ensureAppEvents() {
         }
         break;
       }
+      case 'reset-eq':
+        player.setEqPreset('flat');
+        renderFxModal();
+        renderPlayer();
+        showToast('Equalizer reset to Flat (0 dB)');
+        break;
       case 'near-me':
         openNearMe();
         break;

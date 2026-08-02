@@ -2054,6 +2054,25 @@ button.browse-card:hover,
   opacity: 0.9;
 }
 
+.eq-reset-btn {
+  padding: 7px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.eq-reset-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
 .eq-sliders-container {
   display: grid;
   grid-template-columns: repeat(8, 1fr);

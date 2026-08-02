@@ -29,6 +29,7 @@ export interface EqPreset {
 
 export const EQ_PRESETS: EqPreset[] = [
   { id: 'flat', name: 'Flat', emoji: '⚖️', bands: { b60: 0, b150: 0, b400: 0, b1k: 0, b2k5: 0, b6k: 0, b10k: 0, b16k: 0 } },
+  { id: 'classics', name: 'Classics', emoji: '🎻', bands: { b60: 4, b150: 3, b400: 0, b1k: 0, b2k5: 2, b6k: 3, b10k: 4, b16k: 5 } },
   { id: 'speech', name: 'Speech & News', emoji: '📻', bands: { b60: -3, b150: 1, b400: -3, b1k: 1, b2k5: 4, b6k: 2, b10k: -1, b16k: -2 } },
   { id: 'bass', name: 'Bass Boost', emoji: '🔊', bands: { b60: 6, b150: 5, b400: 2, b1k: 0, b2k5: -1, b6k: -2, b10k: -2, b16k: -3 } },
   { id: 'hiss', name: 'Hiss & Static Cut', emoji: '🧹', bands: { b60: 0, b150: 0, b400: -1, b1k: 0, b2k5: 1, b6k: -1, b10k: -4, b16k: -6 } },
