@@ -14,6 +14,13 @@ import {
 
 type PlayerListener = () => void;
 
+function getAudioContextClass(): typeof AudioContext {
+  return (
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+  );
+}
+
 class AudioPlayer {
   private audio = new Audio();
   private listeners = new Set<PlayerListener>();
@@ -36,10 +43,20 @@ class AudioPlayer {
   // Web Audio FX engine state
   private audioCtx: AudioContext | null = null;
   private mediaSourceNode: MediaElementAudioSourceNode | null = null;
+  /** Master output gain after FX/EQ — preferred volume path when Web Audio is active. */
+  private masterGain: GainNode | null = null;
   private fxChain: FxChain | null = null;
   private _fxEnabled = false;
   private _fxPresetId: string | null = 'radio';
   private _customFx: Record<string, number> = {};
+  /** Tracks which FX/EQ enable combo the current graph was built for. */
+  private pipelineKey: string | null = null;
+  /** True when MediaElementSource is connected into a live graph. */
+  private _webAudioRouted = false;
+  private visibilityBound = false;
+  private unlockBound = false;
+  /** Timer for detecting silent Web Audio output (CORS-tainted MES on some mobile browsers). */
+  private silenceWatchTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Graphic Equalizer state
   private eqChain: EqChain | null = null;
@@ -61,11 +78,100 @@ class AudioPlayer {
     this._customEqPresets = loadCustomEqPresets();
 
     this.initAudioElement(this._fxEnabled || this._eqEnabled);
+    this.bindVisibilityResume();
+  }
+
+  /**
+   * Call from a user gesture (pointer/touch/click) so iOS/Android unlock
+   * Web Audio. Safe to call repeatedly. Mirrors voice-changer unlock pattern.
+   */
+  async unlockAudio(): Promise<void> {
+    try {
+      if (!this.audioCtx) {
+        this.audioCtx = new (getAudioContextClass())();
+      }
+      if (this.audioCtx.state === 'suspended') {
+        await this.audioCtx.resume();
+      }
+      // Silent one-shot buffer helps fully unlock WebKit audio on iPad/iPhone.
+      if (this.audioCtx.state === 'running') {
+        const buf = this.audioCtx.createBuffer(1, 1, this.audioCtx.sampleRate || 44100);
+        const src = this.audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(this.audioCtx.destination);
+        try {
+          src.start(0);
+        } catch {
+          // ignore
+        }
+        try {
+          src.disconnect();
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore — unlock is best-effort
+    }
+  }
+
+  /**
+   * Install once: first pointer/touch/key gesture unlocks AudioContext
+   * (required on iPad Safari before FX/EQ can be heard).
+   */
+  installGestureUnlock(): void {
+    if (this.unlockBound) return;
+    this.unlockBound = true;
+    const unlock = () => {
+      void this.unlockAudio();
+    };
+    window.addEventListener('pointerdown', unlock, { capture: true, passive: true });
+    window.addEventListener('touchstart', unlock, { capture: true, passive: true });
+    window.addEventListener('keydown', unlock, { capture: true });
+  }
+
+  private bindVisibilityResume() {
+    if (this.visibilityBound || typeof document === 'undefined') return;
+    this.visibilityBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        void this.resumeAudioContext();
+      }
+    });
+    window.addEventListener('pageshow', () => {
+      void this.resumeAudioContext();
+    });
+  }
+
+  private async resumeAudioContext(): Promise<void> {
+    if (!this.audioCtx) return;
+    if (this.audioCtx.state === 'suspended') {
+      try {
+        await this.audioCtx.resume();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /** Keep the media element in the document — more reliable for WebKit routing. */
+  private mountAudioElement(el: HTMLAudioElement) {
+    if (typeof document === 'undefined' || !document.body) return;
+    if (el.isConnected) return;
+    el.setAttribute('aria-hidden', 'true');
+    el.style.position = 'fixed';
+    el.style.width = '0';
+    el.style.height = '0';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    el.tabIndex = -1;
+    document.body.appendChild(el);
   }
 
   private initAudioElement(useCors = false, forceRecreate = false) {
     const hasCors = Boolean(this.audio && this.audio.crossOrigin);
     if (!forceRecreate && this.audio && hasCors === useCors) {
+      this.mountAudioElement(this.audio);
       return;
     }
 
@@ -74,8 +180,22 @@ class AudioPlayer {
         this.audio.pause();
         this.audio.removeAttribute('src');
         this.audio.load();
-      } catch {}
+      } catch {
+        // ignore
+      }
+      try {
+        if (this.audio.isConnected) this.audio.remove();
+      } catch {
+        // ignore
+      }
     }
+
+    // Detach any prior MediaElementSource — a new element needs a new source node.
+    this.mediaSourceNode = null;
+    this.pipelineKey = null;
+    this._webAudioRouted = false;
+    this.teardownGraphNodesOnly();
+
     this.audio = new Audio();
     this.audio.preload = 'none';
     this.audio.setAttribute('playsinline', '');
@@ -83,10 +203,11 @@ class AudioPlayer {
     (this.audio as HTMLAudioElement & { playsInline?: boolean }).playsInline = true;
 
     if (useCors) {
+      // Required for createMediaElementSource on cross-origin radio streams.
       this.audio.crossOrigin = 'anonymous';
     }
 
-    this.mediaSourceNode = null;
+    this.mountAudioElement(this.audio);
 
     this.audio.addEventListener('playing', () => {
       if (!this.isActiveGeneration()) return;
@@ -94,7 +215,8 @@ class AudioPlayer {
       this._loading = false;
       this._error = null;
       if (this._fxEnabled || this._eqEnabled) {
-        try { this.ensureAudioContext(); } catch {}
+        // iOS may suspend the context while buffering; re-attach if graph dropped.
+        void this.ensureAudioContext(!this._webAudioRouted);
       }
       this.emit();
     });
@@ -134,6 +256,47 @@ class AudioPlayer {
     });
   }
 
+  /** Disconnect FX/EQ/master nodes without disposing the AudioContext. */
+  private teardownGraphNodesOnly() {
+    if (this.fxChain) {
+      try {
+        this.fxChain.input.disconnect();
+        this.fxChain.output.disconnect();
+        this.fxChain.cleanup();
+      } catch {
+        // ignore
+      }
+      this.fxChain = null;
+    }
+    if (this.eqChain) {
+      try {
+        this.eqChain.input.disconnect();
+        this.eqChain.output.disconnect();
+        this.eqChain.cleanup();
+      } catch {
+        // ignore
+      }
+      this.eqChain = null;
+    }
+    if (this.masterGain) {
+      try {
+        this.masterGain.disconnect();
+      } catch {
+        // ignore
+      }
+      this.masterGain = null;
+    }
+    if (this.mediaSourceNode) {
+      try {
+        this.mediaSourceNode.disconnect();
+      } catch {
+        // ignore
+      }
+    }
+    this.pipelineKey = null;
+    this._webAudioRouted = false;
+  }
+
   get station() {
     return this._station;
   }
@@ -170,6 +333,10 @@ class AudioPlayer {
   get customEqPresets() {
     return this._customEqPresets;
   }
+  /** Whether audio is currently routed through the Web Audio FX/EQ graph. */
+  get webAudioRouted() {
+    return this._webAudioRouted;
+  }
 
   setEqPreset(presetId: string) {
     this._eqPresetId = presetId;
@@ -182,7 +349,7 @@ class AudioPlayer {
     }
     saveEqState({ enabled: this._eqEnabled, presetId: this._eqPresetId, bands: this._eqBands });
     if (this._eqEnabled) {
-      this.ensureAudioContext();
+      void this.ensureAudioContext();
     }
     if (this.eqChain) {
       this.eqChain.updateBands(this._eqBands);
@@ -214,27 +381,55 @@ class AudioPlayer {
     this.emit();
   }
 
-  ensureAudioContext(): AudioContext | null {
+  private desiredPipelineKey(): string {
+    return `fx:${this._fxEnabled ? 1 : 0}|eq:${this._eqEnabled ? 1 : 0}`;
+  }
+
+  /**
+   * Create/resume AudioContext, attach MediaElementSource, build FX/EQ graph.
+   * @param forceRebuild rebuild the node graph even if enable flags are unchanged
+   */
+  async ensureAudioContext(forceRebuild = false): Promise<AudioContext | null> {
     if (!this._fxEnabled && !this._eqEnabled) return null;
+
     if (!this.audioCtx) {
-      const AudioCtxClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
+      this.audioCtx = new (getAudioContextClass())();
     }
-    if (this.audioCtx.state === 'suspended') {
-      void this.audioCtx.resume();
+
+    await this.resumeAudioContext();
+
+    this.mountAudioElement(this.audio);
+
+    // MediaElementSource requires CORS on cross-origin streams.
+    if (!this.audio.crossOrigin) {
+      // Element was created without CORS (dry fallback). Cannot process — leave dry.
+      this._webAudioRouted = false;
+      return this.audioCtx;
     }
-    if (this.audioCtx && (this._fxEnabled || this._eqEnabled)) {
-      if (!this.mediaSourceNode) {
-        try {
-          this.mediaSourceNode = this.audioCtx.createMediaElementSource(this.audio);
-        } catch {
-          // Non-fatal
-        }
+
+    if (!this.mediaSourceNode) {
+      try {
+        this.mediaSourceNode = this.audioCtx.createMediaElementSource(this.audio);
+        forceRebuild = true;
+      } catch {
+        // Already bound to a source on this element, or invalid state.
+        // If we lost our reference, we cannot re-bind — leave dry until element recreate.
+        this._webAudioRouted = false;
+        return this.audioCtx;
       }
-      this.rebuildAudioPipeline();
     }
+
+    const key = this.desiredPipelineKey();
+    if (forceRebuild || this.pipelineKey !== key || !this._webAudioRouted) {
+      this.rebuildAudioPipeline();
+    } else {
+      // Context may have been suspended; volume node may need refresh.
+      this.applyOutputVolume();
+    }
+
+    // Second resume after graph connect — critical on iPad after async stream resolve.
+    await this.resumeAudioContext();
+
     return this.audioCtx;
   }
 
@@ -249,18 +444,21 @@ class AudioPlayer {
   }
 
   rebuildAudioPipeline() {
-    if (!this.audioCtx || !this.mediaSourceNode) return;
+    if (!this.audioCtx || !this.mediaSourceNode) {
+      this._webAudioRouted = false;
+      this.pipelineKey = null;
+      return;
+    }
 
-    try {
-      this.mediaSourceNode.disconnect();
-    } catch {}
-
+    // Disconnect prior graph but keep MediaElementSource node (cannot recreate on same element).
     if (this.fxChain) {
       try {
         this.fxChain.input.disconnect();
         this.fxChain.output.disconnect();
         this.fxChain.cleanup();
-      } catch {}
+      } catch {
+        // ignore
+      }
       this.fxChain = null;
     }
 
@@ -269,24 +467,49 @@ class AudioPlayer {
         this.eqChain.input.disconnect();
         this.eqChain.output.disconnect();
         this.eqChain.cleanup();
-      } catch {}
+      } catch {
+        // ignore
+      }
       this.eqChain = null;
     }
 
-    if (this._fxEnabled && this.audioCtx) {
+    if (this.masterGain) {
+      try {
+        this.masterGain.disconnect();
+      } catch {
+        // ignore
+      }
+      this.masterGain = null;
+    }
+
+    try {
+      this.mediaSourceNode.disconnect();
+    } catch {
+      // ignore
+    }
+
+    if (this._fxEnabled) {
       try {
         const config = this.getCombinedFxConfig();
         this.fxChain = buildFxChain(this.audioCtx, config);
-      } catch {}
+      } catch {
+        this.fxChain = null;
+      }
     }
 
-    if (this._eqEnabled && this.audioCtx) {
+    if (this._eqEnabled) {
       try {
         this.eqChain = buildEqChain(this.audioCtx, this._eqBands);
-      } catch {}
+      } catch {
+        this.eqChain = null;
+      }
     }
 
-    // Connect node chain: mediaSourceNode -> [fxChain] -> [eqChain] -> destination
+    // Master gain after FX/EQ — reliable volume on iOS (element.volume alone is flaky with MES).
+    this.masterGain = this.audioCtx.createGain();
+    this.applyOutputVolume();
+
+    // mediaSource → [fx] → [eq] → masterGain → destination
     try {
       let head: AudioNode = this.mediaSourceNode;
       if (this.fxChain) {
@@ -297,9 +520,47 @@ class AudioPlayer {
         head.connect(this.eqChain.input);
         head = this.eqChain.output;
       }
-      head.connect(this.audioCtx.destination);
+      head.connect(this.masterGain);
+      this.masterGain.connect(this.audioCtx.destination);
+
+      // Keep media element volume at unity when Web Audio owns level (masterGain).
+      this.audio.volume = 1;
+
+      this.pipelineKey = this.desiredPipelineKey();
+      this._webAudioRouted = true;
     } catch {
-      // Fallback
+      this._webAudioRouted = false;
+      this.pipelineKey = null;
+    }
+  }
+
+  private applyOutputVolume() {
+    const level = this._muted ? 0 : this._userVolume;
+    if (this.masterGain && this._webAudioRouted) {
+      try {
+        const g = this.masterGain.gain;
+        const ctx = this.audioCtx;
+        if (ctx) {
+          g.cancelScheduledValues(ctx.currentTime);
+          g.setValueAtTime(level, ctx.currentTime);
+        } else {
+          g.value = level;
+        }
+      } catch {
+        this.masterGain.gain.value = level;
+      }
+      // Element stays at 1 when Web Audio routes volume.
+      try {
+        this.audio.volume = 1;
+      } catch {
+        // ignore
+      }
+    } else {
+      try {
+        this.audio.volume = level;
+      } catch {
+        // ignore
+      }
     }
   }
 
@@ -310,9 +571,12 @@ class AudioPlayer {
 
     const nextWebAudio = this._fxEnabled || this._eqEnabled;
     if (prevWebAudio !== nextWebAudio) {
-      this.handleWebAudioToggle(nextWebAudio);
+      void this.handleWebAudioToggle(nextWebAudio);
     } else if (enabled) {
-      this.ensureAudioContext();
+      void this.ensureAudioContext(true);
+    } else if (this.fxChain) {
+      // FX off but EQ still on — rebuild without FX chain.
+      void this.ensureAudioContext(true);
     }
     this.emit();
   }
@@ -321,10 +585,15 @@ class AudioPlayer {
     this._fxPresetId = presetId;
     saveFxState({ enabled: this._fxEnabled, presetId: this._fxPresetId, customFx: this._customFx });
     if (this._fxEnabled) {
-      this.ensureAudioContext();
-    }
-    if (this.fxChain) {
-      this.fxChain.updateFx(this.getCombinedFxConfig());
+      // Prefer in-place param update; only ensure graph if missing.
+      if (!this.fxChain || !this._webAudioRouted) {
+        void this.ensureAudioContext(true).then(() => {
+          if (this.fxChain) this.fxChain.updateFx(this.getCombinedFxConfig());
+        });
+      } else {
+        void this.resumeAudioContext();
+        this.fxChain.updateFx(this.getCombinedFxConfig());
+      }
     }
     this.emit();
   }
@@ -336,9 +605,11 @@ class AudioPlayer {
 
     const nextWebAudio = this._fxEnabled || this._eqEnabled;
     if (prevWebAudio !== nextWebAudio) {
-      this.handleWebAudioToggle(nextWebAudio);
+      void this.handleWebAudioToggle(nextWebAudio);
     } else if (enabled) {
-      this.ensureAudioContext();
+      void this.ensureAudioContext(true);
+    } else if (this.eqChain) {
+      void this.ensureAudioContext(true);
     }
     this.emit();
   }
@@ -348,59 +619,83 @@ class AudioPlayer {
     this._eqPresetId = 'custom';
     saveEqState({ enabled: this._eqEnabled, presetId: this._eqPresetId, bands: this._eqBands });
     if (this._eqEnabled) {
-      this.ensureAudioContext();
-    }
-    if (this.eqChain) {
-      this.eqChain.updateBands(this._eqBands);
+      if (!this.eqChain || !this._webAudioRouted) {
+        void this.ensureAudioContext(true).then(() => {
+          if (this.eqChain) this.eqChain.updateBands(this._eqBands);
+        });
+      } else {
+        void this.resumeAudioContext();
+        this.eqChain.updateBands(this._eqBands);
+      }
     }
     this.emit();
   }
 
-  private handleWebAudioToggle(enableWebAudio: boolean) {
+  private async handleWebAudioToggle(enableWebAudio: boolean) {
     const wasPlaying = this._playing;
     const currentUrl = this.activeStreamUrl;
 
-    if (this.fxChain) {
-      try {
-        this.fxChain.input.disconnect();
-        this.fxChain.output.disconnect();
-        this.fxChain.cleanup();
-      } catch {}
-      this.fxChain = null;
-    }
-    if (this.eqChain) {
-      try {
-        this.eqChain.input.disconnect();
-        this.eqChain.output.disconnect();
-        this.eqChain.cleanup();
-      } catch {}
-      this.eqChain = null;
-    }
+    this.teardownGraphNodesOnly();
     if (this.mediaSourceNode) {
-      try { this.mediaSourceNode.disconnect(); } catch {}
+      try {
+        this.mediaSourceNode.disconnect();
+      } catch {
+        // ignore
+      }
       this.mediaSourceNode = null;
     }
 
+    // Recreate element: MediaElementSource cannot be undone without a new element.
     this.initAudioElement(enableWebAudio, true);
 
     if (currentUrl && wasPlaying) {
       this.audio.src = currentUrl;
-      this.audio.volume = this._muted ? 0 : this._userVolume;
+      this.applyOutputVolume();
+
       if (enableWebAudio) {
-        try { this.ensureAudioContext(); } catch {}
+        // Must unlock/resume inside the enabling gesture (toggle click).
+        await this.unlockAudio();
+        await this.ensureAudioContext(true);
       }
-      void this.audio.play().catch(() => {
+
+      try {
+        await this.audio.play();
         if (enableWebAudio) {
-          // Play in non-CORS fallback mode for this stream without resetting user preferences
+          await this.ensureAudioContext(true);
+          await this.resumeAudioContext();
+          this.watchForSilentWebAudio(this.playGeneration);
+        }
+        this._playing = true;
+        this._loading = false;
+        this._error = null;
+        this.softFadeIn();
+        this.emit();
+      } catch {
+        if (enableWebAudio) {
+          // CORS or autoplay failure: fall back to dry element play.
+          // Keep user FX/EQ prefs so next station can still try Web Audio.
+          this.teardownGraphNodesOnly();
+          this.mediaSourceNode = null;
           this.initAudioElement(false, true);
           this.audio.src = currentUrl;
-          this.audio.volume = this._muted ? 0 : this._userVolume;
-          void this.audio.play();
+          this.applyOutputVolume();
+          try {
+            await this.audio.play();
+            this._playing = true;
+            this._loading = false;
+            this._error = null;
+            this.softFadeIn();
+            this.emit();
+          } catch {
+            this.failPlayback('Could not play this station. Try another.');
+          }
         }
-      });
+      }
+    } else if (enableWebAudio) {
+      // Not playing — still unlock context so next play routes correctly on iPad.
+      await this.unlockAudio();
     }
   }
-
 
   /** True when an audio element has a stream URL assigned (may still be paused). */
   get hasSource() {
@@ -428,19 +723,19 @@ class AudioPlayer {
   }
 
   /**
-   * Set volume on the element. Does not emit — callers already own the UI value
-   * and full re-renders on every slider tick thrash focus.
+   * Set volume on the element / Web Audio master gain. Does not emit —
+   * callers already own the UI value and full re-renders thrash focus.
    */
   setVolume(v: number) {
     this._userVolume = Math.min(1, Math.max(0, v));
     this._volume = this._userVolume;
     this.cancelFade();
-    this.audio.volume = this._muted ? 0 : this._volume;
+    this.applyOutputVolume();
   }
 
   setMuted(m: boolean, opts?: { silent?: boolean }) {
     this._muted = m;
-    this.audio.volume = m ? 0 : this._volume;
+    this.applyOutputVolume();
     if (!opts?.silent) this.emit();
   }
 
@@ -449,15 +744,41 @@ class AudioPlayer {
     this.cancelFade();
     const target = this._muted ? 0 : this._userVolume;
     if (target <= 0) {
-      this.audio.volume = 0;
+      this.applyOutputVolume();
       return;
     }
-    this.audio.volume = 0;
+
+    const useMaster = Boolean(this.masterGain && this._webAudioRouted && this.audioCtx);
+    if (useMaster && this.masterGain && this.audioCtx) {
+      try {
+        const g = this.masterGain.gain;
+        const now = this.audioCtx.currentTime;
+        g.cancelScheduledValues(now);
+        g.setValueAtTime(0, now);
+        g.linearRampToValueAtTime(target, now + 0.4);
+        this.audio.volume = 1;
+        return;
+      } catch {
+        // fall through to stepped fade
+      }
+    }
+
+    if (useMaster && this.masterGain) {
+      this.masterGain.gain.value = 0;
+    } else {
+      this.audio.volume = 0;
+    }
     const steps = 8;
     let i = 0;
     this.fadeTimer = setInterval(() => {
       i++;
-      this.audio.volume = target * (i / steps);
+      const level = target * (i / steps);
+      if (this.masterGain && this._webAudioRouted) {
+        this.masterGain.gain.value = level;
+        this.audio.volume = 1;
+      } else {
+        this.audio.volume = level;
+      }
       if (i >= steps) this.cancelFade();
     }, 50);
   }
@@ -465,7 +786,8 @@ class AudioPlayer {
   /** Fade out then invoke callback (for sleep timer). */
   fadeOutThen(ms: number, done: () => void) {
     this.cancelFade();
-    const start = this.audio.volume;
+    const useMaster = Boolean(this.masterGain && this._webAudioRouted);
+    const start = useMaster && this.masterGain ? this.masterGain.gain.value : this.audio.volume;
     if (start <= 0.01 || this._muted) {
       done();
       return;
@@ -474,7 +796,12 @@ class AudioPlayer {
     let i = 0;
     this.fadeTimer = setInterval(() => {
       i++;
-      this.audio.volume = start * (1 - i / steps);
+      const level = start * (1 - i / steps);
+      if (useMaster && this.masterGain) {
+        this.masterGain.gain.value = level;
+      } else {
+        this.audio.volume = level;
+      }
       if (i >= steps) {
         this.cancelFade();
         done();
@@ -487,6 +814,126 @@ class AudioPlayer {
       clearInterval(this.fadeTimer);
       this.fadeTimer = null;
     }
+    // Hold current Web Audio gain and cancel any softFadeIn ramp.
+    if (this.masterGain && this.audioCtx) {
+      try {
+        const g = this.masterGain.gain;
+        const now = this.audioCtx.currentTime;
+        const held = g.value;
+        g.cancelScheduledValues(now);
+        g.setValueAtTime(held, now);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private clearSilenceWatch() {
+    if (this.silenceWatchTimer != null) {
+      clearTimeout(this.silenceWatchTimer);
+      this.silenceWatchTimer = null;
+    }
+  }
+
+  private measureGraphLevel(analyser: AnalyserNode): number {
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(data);
+    let sumDev = 0;
+    for (let i = 0; i < data.length; i++) {
+      sumDev += Math.abs(data[i] - 128);
+    }
+    return sumDev / data.length;
+  }
+
+  /**
+   * Mobile WebKit: AudioContext can stay suspended or MediaElementSource can
+   * output silence after async stream resolve. Recover by resume → rebuild,
+   * and only fall back to dry element play if the graph stays silent so the
+   * user still hears radio (FX prefs remain for the next CORS-capable stream).
+   */
+  private watchForSilentWebAudio(gen: number) {
+    this.clearSilenceWatch();
+    if (!this._webAudioRouted || !this.audioCtx || !this.mediaSourceNode) return;
+
+    this.silenceWatchTimer = setTimeout(() => {
+      void (async () => {
+        this.silenceWatchTimer = null;
+        if (gen !== this.playGeneration || !this._webAudioRouted || !this._playing) return;
+        if (!this.audioCtx || !this.mediaSourceNode) return;
+
+        let analyser: AnalyserNode | null = null;
+        try {
+          analyser = this.audioCtx.createAnalyser();
+          analyser.fftSize = 256;
+          (this.masterGain || this.mediaSourceNode).connect(analyser);
+
+          let level = this.measureGraphLevel(analyser);
+          if (level >= 0.5) {
+            analyser.disconnect();
+            return;
+          }
+
+          // 1) Resume suspended context (common on iPad after await).
+          await this.resumeAudioContext();
+          await new Promise((r) => setTimeout(r, 200));
+          if (gen !== this.playGeneration) {
+            analyser.disconnect();
+            return;
+          }
+          level = this.measureGraphLevel(analyser);
+          if (level >= 0.5) {
+            analyser.disconnect();
+            return;
+          }
+
+          // 2) Rebuild graph and re-measure.
+          try {
+            analyser.disconnect();
+          } catch {
+            // ignore
+          }
+          await this.ensureAudioContext(true);
+          await this.resumeAudioContext();
+          if (gen !== this.playGeneration || !this._webAudioRouted || !this.audioCtx) return;
+
+          analyser = this.audioCtx.createAnalyser();
+          analyser.fftSize = 256;
+          (this.masterGain || this.mediaSourceNode!).connect(analyser);
+          await new Promise((r) => setTimeout(r, 300));
+          if (gen !== this.playGeneration) {
+            analyser.disconnect();
+            return;
+          }
+          level = this.measureGraphLevel(analyser);
+          try {
+            analyser.disconnect();
+          } catch {
+            // ignore
+          }
+
+          if (level >= 0.5) return;
+
+          // 3) Still silent while element is playing ⇒ dry fallback (hear radio).
+          if (this.activeStreamUrl && !this.audio.paused) {
+            const url = this.activeStreamUrl;
+            this.teardownGraphNodesOnly();
+            this.mediaSourceNode = null;
+            this.initAudioElement(false, true);
+            this.audio.src = url;
+            this.applyOutputVolume();
+            void this.audio.play().catch(() => {
+              // ignore
+            });
+          }
+        } catch {
+          try {
+            analyser?.disconnect();
+          } catch {
+            // ignore
+          }
+        }
+      })();
+    }, 1200);
   }
 
   private raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -517,11 +964,21 @@ class AudioPlayer {
     this.emit();
 
     const useWebAudio = this._fxEnabled || this._eqEnabled;
+
+    // Unlock inside the initiating user gesture *before* any await (iPad critical).
+    if (useWebAudio) {
+      await this.unlockAudio();
+    }
+
     this.initAudioElement(useWebAudio, false);
     if (useWebAudio) {
-      try { this.ensureAudioContext(); } catch {}
+      try {
+        await this.ensureAudioContext();
+      } catch {
+        // non-fatal; will retry after play
+      }
     }
-    this.audio.volume = this._muted ? 0 : this._userVolume;
+    this.applyOutputVolume();
 
     // Prefer click-counted resolve URL, but never hang surprise/play on a dead API.
     let streamUrl: string | null = null;
@@ -550,7 +1007,12 @@ class AudioPlayer {
     this.mediaGeneration = gen;
     this.activeStreamUrl = streamUrl;
     this.audio.src = streamUrl;
-    this.audio.volume = this._muted ? 0 : this._userVolume;
+    this.applyOutputVolume();
+
+    // After async work, iOS may have suspended the context — resume before play.
+    if (useWebAudio) {
+      await this.resumeAudioContext();
+    }
 
     const tryPlay = async (url: string) => {
       this.activeStreamUrl = url;
@@ -566,19 +1028,63 @@ class AudioPlayer {
       this._playing = true;
       this._loading = false;
       this._error = null;
+
+      // Re-assert Web Audio graph after play — iPad often needs this post-start.
+      if (useWebAudio) {
+        try {
+          await this.ensureAudioContext(true);
+          await this.resumeAudioContext();
+          this.watchForSilentWebAudio(gen);
+        } catch {
+          // keep playing; FX may attach on 'playing' event
+        }
+      }
+
       this.softFadeIn();
       this.emit();
     } catch (err) {
       if (gen !== this.playGeneration) return;
 
+      // If CORS-enabled play failed, try dry (non-CORS) so the station still plays.
+      // FX/EQ prefs stay on for the next attempt / station that supports CORS.
+      if (useWebAudio && this.audio.crossOrigin) {
+        try {
+          this.teardownGraphNodesOnly();
+          this.mediaSourceNode = null;
+          this.initAudioElement(false, true);
+          await tryPlay(streamUrl);
+          if (gen !== this.playGeneration) return;
+          this._playing = true;
+          this._loading = false;
+          this._error = null;
+          this.softFadeIn();
+          this.emit();
+          return;
+        } catch {
+          // fall through to original URL / error
+          this.initAudioElement(true, true);
+        }
+      }
+
       if (originalUrl && originalUrl !== streamUrl) {
         try {
           this.triedOriginalFallback = true;
+          if (useWebAudio) {
+            this.initAudioElement(true, false);
+          }
           await tryPlay(originalUrl);
           if (gen !== this.playGeneration) return;
           this._playing = true;
           this._loading = false;
           this._error = null;
+          if (useWebAudio) {
+            try {
+              await this.ensureAudioContext(true);
+              await this.resumeAudioContext();
+            } catch {
+              // ignore
+            }
+          }
           this.softFadeIn();
           this.emit();
           return;
@@ -678,11 +1184,25 @@ class AudioPlayer {
       this._error = null;
       this.emit();
       const gen = this.playGeneration;
-      void this.audio.play().catch(() => {
-        if (gen !== this.playGeneration) return;
-        // Stale src after long pause / network loss — full reconnect.
-        void this.play(this._station!);
-      });
+      // Resume AudioContext inside the gesture before play (iPad).
+      void (async () => {
+        if (this._fxEnabled || this._eqEnabled) {
+          await this.unlockAudio();
+          await this.ensureAudioContext();
+        }
+        try {
+          await this.audio.play();
+          if (gen !== this.playGeneration) return;
+          if (this._fxEnabled || this._eqEnabled) {
+            await this.ensureAudioContext(true);
+            await this.resumeAudioContext();
+          }
+        } catch {
+          if (gen !== this.playGeneration) return;
+          // Stale src after long pause / network loss — full reconnect.
+          void this.play(this._station!);
+        }
+      })();
       return;
     }
     void this.play(this._station);
@@ -700,6 +1220,7 @@ class AudioPlayer {
     this.playGeneration++;
     this.mediaGeneration = 0;
     this.cancelFade();
+    this.clearSilenceWatch();
     this.audio.pause();
     this.audio.removeAttribute('src');
     try {
@@ -718,3 +1239,8 @@ class AudioPlayer {
 }
 
 export const player = new AudioPlayer();
+
+// Eager gesture unlock for iPad / Android (same approach as voice-changer).
+if (typeof window !== 'undefined') {
+  player.installGestureUnlock();
+}
