@@ -391,10 +391,7 @@ class AudioPlayer {
       }
       void this.audio.play().catch(() => {
         if (enableWebAudio) {
-          this._fxEnabled = false;
-          this._eqEnabled = false;
-          saveFxState({ enabled: false, presetId: this._fxPresetId, customFx: this._customFx });
-          saveEqState({ enabled: false, presetId: this._eqPresetId, bands: this._eqBands });
+          // Play in non-CORS fallback mode for this stream without resetting user preferences
           this.initAudioElement(false, true);
           this.audio.src = currentUrl;
           this.audio.volume = this._muted ? 0 : this._userVolume;
