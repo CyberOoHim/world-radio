@@ -1638,7 +1638,6 @@ function renderDiscover(): string {
   return `
     <section class="hero">
       <h2>Listen to the world, softly.</h2>
-      <p>Thousands of live radio stations from every continent — jazz at midnight in Tokyo, classical in Vienna, ambient from the coast. Pick a mood or drift through the globe.</p>
       <div class="hero-stats">
         ${totalStationHint > 0 ? `<span>${Math.floor(totalStationHint / 1000)}k+ stations</span>` : ''}
         ${state.countries.length ? `<span>${state.countries.length} countries</span>` : ''}
