@@ -858,14 +858,6 @@ class AudioPlayer {
     this.softFadeIn();
     this.emit();
 
-    // On iPad, CORS+MES is too unstable for live radio — stay dry + toast.
-    if (isAppleTouchDevice()) {
-      this._dryBecauseFxBlocked = true;
-      this.triedDryFallback = true;
-      this.notifyDryPlayback('unavailable');
-      return;
-    }
-
     // Desktop/Android: try upgrade; on any failure re-assert dry + toast.
     const upgraded = await this.tryUpgradeToProcessed(currentUrl, this.playGeneration);
     if (!upgraded) {
@@ -1245,17 +1237,6 @@ class AudioPlayer {
     this.emit();
 
     if (!wantFx) {
-      return;
-    }
-
-    // ── FX/EQ requested ──────────────────────────────────────────
-    // iPad / iPhone: do not attempt CORS MediaElementSource for live
-    // radio — it commonly pauses mid-stream with no recoverable error.
-    // Stay on dry and always toast so the user knows FX is bypassed.
-    if (isAppleTouchDevice()) {
-      this._dryBecauseFxBlocked = true;
-      this.triedDryFallback = true;
-      this.notifyDryPlayback('unavailable');
       return;
     }
 
