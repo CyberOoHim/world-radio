@@ -2879,7 +2879,8 @@ player.subscribe(() => {
 
 // Popup when FX/EQ cannot process a stream (CORS, silent graph, etc.) and dry play is used.
 player.onNotice((msg) => {
-  showToast(msg, 4200);
+  // Longer toast so dry-play notice is readable on iPad.
+  showToast(msg, 5500);
 });
 
 sleepTimer.setOnFire(() => {
