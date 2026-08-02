@@ -312,13 +312,11 @@ class AudioPlayer {
   /**
    * If the stream stays paused/waiting under processed mode, force dry.
    * Catches iPad cases that fire pause/waiting without a hard error.
-   * @param ms — shorter on Apple touch (processed path dies faster there).
    */
-  private armPauseWatch(ms?: number) {
+  private armPauseWatch() {
     if (this.pauseWatchTimer != null) {
       clearTimeout(this.pauseWatchTimer);
     }
-    const delay = ms ?? (isAppleTouchDevice() ? 1600 : 2500);
     this.pauseWatchTimer = setTimeout(() => {
       this.pauseWatchTimer = null;
       if (!this.isActiveGeneration() || this.userPaused) return;
@@ -328,7 +326,7 @@ class AudioPlayer {
       if (this.audio.paused || this.audio.readyState < 2) {
         void this.forceDryFallback('cors');
       }
-    }, delay);
+    }, 2500);
   }
 
   private clearPauseWatch() {
@@ -834,8 +832,8 @@ class AudioPlayer {
     }
 
     // Enabling FX while playing:
-    // 1) Restore dry immediately so user never sits paused.
-    // 2) Careful processed upgrade (iPad included); instant dry recover on failure.
+    // 1) Keep/restore dry immediately so user never sits paused.
+    // 2) Optionally try processed upgrade (skipped on Apple touch for stability).
     await this.unlockAudio();
     this.userPaused = false;
 
@@ -850,21 +848,23 @@ class AudioPlayer {
     this.softFadeIn();
     this.emit();
 
-    const upgraded = await this.tryUpgradeToProcessed(currentUrl, this.playGeneration);
-    if (upgraded && !this.audio.paused && this._webAudioRouted) {
-      this._dryBecauseFxBlocked = false;
-      this.softFadeIn();
-      this.emit();
+    // On iPad, CORS+MES is too unstable for live radio — stay dry + toast.
+    if (isAppleTouchDevice()) {
+      this._dryBecauseFxBlocked = true;
+      this.triedDryFallback = true;
+      this.notifyDryPlayback('unavailable');
       return;
     }
 
-    // Upgrade failed — ensure dry is playing + toast.
-    if (this.audio.paused || this.isProcessedElement()) {
-      await this.forceDryFallback('cors');
-    } else {
-      this._dryBecauseFxBlocked = true;
-      this.triedDryFallback = true;
-      this.notifyDryPlayback('cors');
+    // Desktop/Android: try upgrade; on any failure re-assert dry + toast.
+    const upgraded = await this.tryUpgradeToProcessed(currentUrl, this.playGeneration);
+    if (!upgraded) {
+      if (this.audio.paused || this.isProcessedElement()) {
+        await this.forceDryFallback('cors');
+      } else {
+        this._dryBecauseFxBlocked = true;
+        this.notifyDryPlayback('cors');
+      }
     }
   }
 
@@ -1024,109 +1024,76 @@ class AudioPlayer {
     return sumDev / data.length;
   }
 
-  /** Wait until the media element reports playing, or timeout. */
-  private waitForElementPlaying(timeoutMs: number): Promise<boolean> {
-    if (!this.audio.paused && this.audio.readyState >= 2) return Promise.resolve(true);
-    return new Promise((resolve) => {
-      let settled = false;
-      const done = (ok: boolean) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        this.audio.removeEventListener('playing', onPlaying);
-        this.audio.removeEventListener('canplay', onPlaying);
-        resolve(ok);
-      };
-      const onPlaying = () => done(true);
-      const timer = setTimeout(() => done(!this.audio.paused), timeoutMs);
-      this.audio.addEventListener('playing', onPlaying);
-      this.audio.addEventListener('canplay', onPlaying);
-      // Already flowing?
-      if (!this.audio.paused && this.audio.readyState >= 2) done(true);
-    });
-  }
-
   /**
-   * Probe Web Audio graph for real audio (not silence).
-   * Used before accepting a processed upgrade — critical on iPad.
-   */
-  private async probeWebAudioSignal(windowMs: number): Promise<boolean> {
-    if (!this.audioCtx || !this.mediaSourceNode || !this._webAudioRouted) return false;
-    if (this.audio.paused) return false;
-
-    await this.resumeAudioContext();
-
-    let analyser: AnalyserNode | null = null;
-    try {
-      analyser = this.audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      (this.masterGain || this.mediaSourceNode).connect(analyser);
-
-      const deadline = Date.now() + windowMs;
-      let best = 0;
-      while (Date.now() < deadline) {
-        if (this.audio.paused) {
-          analyser.disconnect();
-          return false;
-        }
-        await this.resumeAudioContext();
-        const level = this.measureGraphLevel(analyser);
-        if (level > best) best = level;
-        // Real program audio is well above 0.8 average deviation from midpoint.
-        if (best >= 0.8) {
-          analyser.disconnect();
-          return true;
-        }
-        await new Promise((r) => setTimeout(r, 120));
-      }
-      try {
-        analyser.disconnect();
-      } catch {
-        // ignore
-      }
-      return best >= 0.8;
-    } catch {
-      try {
-        analyser?.disconnect();
-      } catch {
-        // ignore
-      }
-      return false;
-    }
-  }
-
-  /**
-   * Ongoing watch after a successful upgrade. ALWAYS dry-fallback if silent
-   * or paused — never leave the user stuck (especially iPad).
+   * After a processed upgrade, verify signal. ALWAYS dry-fallback if silent
+   * or paused — never leave the user stuck.
    */
   private scheduleProcessedVerification(gen: number) {
     this.clearVerifyTimer();
-    const firstCheckMs = isAppleTouchDevice() ? 700 : 900;
     this.verifyTimer = setTimeout(() => {
       void (async () => {
         this.verifyTimer = null;
         if (gen !== this.playGeneration || this.userPaused) return;
         if (!this.wantsWebAudio()) return;
+
+        // Already dry — nothing to verify.
         if (!this.isProcessedElement()) return;
 
+        // Paused / not flowing under processed path → dry immediately.
         if (this.audio.paused || !this._webAudioRouted) {
           await this.forceDryFallback(this.audio.paused ? 'cors' : 'unavailable');
           return;
         }
 
-        const ok = await this.probeWebAudioSignal(isAppleTouchDevice() ? 900 : 600);
-        if (gen !== this.playGeneration || this.userPaused) return;
-
-        if (ok && !this.audio.paused) {
-          this._dryBecauseFxBlocked = false;
-          // Keep a light ongoing stall watch on Apple.
-          if (isAppleTouchDevice()) this.armPauseWatch(2000);
+        await this.resumeAudioContext();
+        if (!this.audioCtx || !this.mediaSourceNode) {
+          await this.forceDryFallback('unavailable');
           return;
         }
 
-        await this.forceDryFallback('silent');
+        let analyser: AnalyserNode | null = null;
+        try {
+          analyser = this.audioCtx.createAnalyser();
+          analyser.fftSize = 256;
+          (this.masterGain || this.mediaSourceNode).connect(analyser);
+
+          let level = this.measureGraphLevel(analyser);
+          if (level < 0.8) {
+            await new Promise((r) => setTimeout(r, 350));
+            if (gen !== this.playGeneration) {
+              try {
+                analyser.disconnect();
+              } catch {
+                // ignore
+              }
+              return;
+            }
+            await this.resumeAudioContext();
+            level = this.measureGraphLevel(analyser);
+          }
+          try {
+            analyser.disconnect();
+          } catch {
+            // ignore
+          }
+
+          if (level >= 0.8 && !this.audio.paused) {
+            this._dryBecauseFxBlocked = false;
+            return;
+          }
+
+          // Silent or paused → dry + toast.
+          await this.forceDryFallback('silent');
+        } catch {
+          try {
+            analyser?.disconnect();
+          } catch {
+            // ignore
+          }
+          await this.forceDryFallback('unavailable');
+        }
       })();
-    }, firstCheckMs);
+    }, 800);
   }
 
   /** Reliable non-CORS element play. */
@@ -1150,39 +1117,22 @@ class AudioPlayer {
   }
 
   /**
-   * Careful upgrade from dry → CORS + Web Audio (iPad included).
-   *
-   * Rules:
-   * 1. Never report success without a verified non-silent graph.
-   * 2. Fail fast so the caller can restore dry immediately.
-   * 3. Keep pause/stall watches so mid-stream death recovers to dry + toast.
+   * Upgrade an already-playing dry stream to CORS + Web Audio.
+   * On any failure returns false — caller must ensure dry is restored.
    */
   private async tryUpgradeToProcessed(url: string, gen: number): Promise<boolean> {
     if (gen !== this.playGeneration || !this.wantsWebAudio()) return false;
-
-    const apple = isAppleTouchDevice();
+    // iPad: skip upgrade — CORS live streams pause/die too often.
+    if (isAppleTouchDevice()) return false;
 
     try {
-      // Gesture unlock again before CORS play (iPad often re-suspends after await).
-      await this.unlockAudio();
-
-      this.clearVerifyTimer();
-      this.clearPauseWatch();
       this.initAudioElement(true, true);
       this.activeStreamUrl = url;
       this.audio.src = url;
       this.audio.volume = this._muted ? 0 : this._userVolume;
       this.userPaused = false;
-
-      // Fail fast on Apple so dry restore is quick.
-      await this.raceTimeout(this.audio.play(), apple ? 4_500 : 6_000);
+      await this.raceTimeout(this.audio.play(), 6_000);
       if (gen !== this.playGeneration) return false;
-
-      // iPad often resolves play() before media is actually flowing.
-      const flowing = await this.waitForElementPlaying(apple ? 1800 : 1000);
-      if (gen !== this.playGeneration || !flowing || this.audio.paused) {
-        return false;
-      }
 
       await this.unlockAudio();
       await this.ensureAudioContext(true);
@@ -1193,16 +1143,8 @@ class AudioPlayer {
       }
 
       this.applyOutputVolume();
-
-      // Require real signal before accepting the upgrade (prevents silent "pause").
-      const hasSignal = await this.probeWebAudioSignal(apple ? 1100 : 700);
-      if (gen !== this.playGeneration || !hasSignal || this.audio.paused) {
-        return false;
-      }
-
-      this._dryBecauseFxBlocked = false;
       this.scheduleProcessedVerification(gen);
-      this.armPauseWatch(apple ? 1500 : 2500);
+      this.armPauseWatch();
       return true;
     } catch {
       return false;
@@ -1296,9 +1238,18 @@ class AudioPlayer {
       return;
     }
 
-    // ── FX/EQ requested (all platforms, incl. careful iPad attempt) ──
-    // Dry is already playing. Try CORS + Web Audio; require verified signal.
-    // On any failure → restore dry immediately + toast. Never leave paused.
+    // ── FX/EQ requested ──────────────────────────────────────────
+    // iPad / iPhone: do not attempt CORS MediaElementSource for live
+    // radio — it commonly pauses mid-stream with no recoverable error.
+    // Stay on dry and always toast so the user knows FX is bypassed.
+    if (isAppleTouchDevice()) {
+      this._dryBecauseFxBlocked = true;
+      this.triedDryFallback = true;
+      this.notifyDryPlayback('unavailable');
+      return;
+    }
+
+    // Desktop / Android: optional upgrade to processed path.
     const upgraded = await this.tryUpgradeToProcessed(dryUrl, gen);
     if (gen !== this.playGeneration) return;
 
@@ -1316,6 +1267,7 @@ class AudioPlayer {
     if (this.audio.paused || this.isProcessedElement() || !this._playing) {
       const recovered = await this.forceDryFallback('cors');
       if (!recovered && gen === this.playGeneration) {
+        // Last resort: re-try dry on all urls
         for (const url of urls) {
           if (await this.tryStartDry(url, gen)) {
             this._playing = true;
@@ -1330,7 +1282,7 @@ class AudioPlayer {
         }
       }
     } else {
-      // Still on dry and playing — notify that FX could not be applied.
+      // Still on dry and playing — just notify.
       this._dryBecauseFxBlocked = true;
       this.triedDryFallback = true;
       this.notifyDryPlayback('cors');
