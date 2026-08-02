@@ -1,6 +1,6 @@
 import { FX_PRESETS, type FxCategory } from './audioFx';
 import { EQ_PRESETS, type EqBands } from './equalizer';
-import { player } from './player';
+import { isAppleTouchDevice, player } from './player';
 
 export type ModalTab = FxCategory | 'Equalizer';
 
@@ -12,6 +12,10 @@ export function isFxModalOpen(): boolean {
 }
 
 export function openFxModal(tab?: ModalTab) {
+  if (isAppleTouchDevice()) {
+    player.notifyCustomNotice('Audio FX & EQ could not be applied on iPAD.');
+    return;
+  }
   fxModalOpen = true;
   if (tab) currentTab = tab;
   renderFxModal();
@@ -23,6 +27,10 @@ export function closeFxModal() {
 }
 
 export function toggleFxModal() {
+  if (isAppleTouchDevice()) {
+    player.notifyCustomNotice('Audio FX & EQ could not be applied on iPAD.');
+    return;
+  }
   fxModalOpen = !fxModalOpen;
   renderFxModal();
 }

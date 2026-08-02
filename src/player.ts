@@ -35,7 +35,7 @@ function getAudioContextClass(): typeof AudioContext {
 }
 
 /** iPhone / iPad / iPod (incl. iPadOS desktop UA). */
-function isAppleTouchDevice(): boolean {
+export function isAppleTouchDevice(): boolean {
   const ua = navigator.userAgent || '';
   if (/iPad|iPhone|iPod/.test(ua)) return true;
   // iPadOS 13+ reports as MacIntel with touch
@@ -529,6 +529,16 @@ class AudioPlayer {
   onNotice(fn: NoticeListener): () => void {
     this.noticeListeners.add(fn);
     return () => this.noticeListeners.delete(fn);
+  }
+
+  notifyCustomNotice(message: string) {
+    for (const fn of this.noticeListeners) {
+      try {
+        fn(message);
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private notifyDryPlayback(reason: DryPlaybackReason) {
