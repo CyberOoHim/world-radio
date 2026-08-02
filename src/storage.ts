@@ -282,3 +282,62 @@ export function saveFxState(fxState: FxStatePrefs): void {
   }
 }
 
+import type { EqBands } from './equalizer';
+
+export interface EqStatePrefs {
+  enabled: boolean;
+  presetId: string;
+  bands: EqBands;
+}
+
+const EQ_STATE_KEY = 'world-radio:eq-state';
+
+export function loadEqState(): EqStatePrefs {
+  const defaultBands = { b60: 0, b150: 0, b400: 0, b1k: 0, b2k5: 0, b6k: 0, b10k: 0, b16k: 0 };
+  try {
+    const raw = localStorage.getItem(EQ_STATE_KEY);
+    if (!raw) return { enabled: false, presetId: 'flat', bands: defaultBands };
+    const parsed = JSON.parse(raw);
+    const bands = typeof parsed.bands === 'object' && parsed.bands ? { ...defaultBands, ...parsed.bands } : defaultBands;
+    return {
+      enabled: Boolean(parsed.enabled),
+      presetId: typeof parsed.presetId === 'string' ? parsed.presetId : 'flat',
+      bands,
+    };
+  } catch {
+    return { enabled: false, presetId: 'flat', bands: defaultBands };
+  }
+}
+
+export function saveEqState(eqState: EqStatePrefs): void {
+  try {
+    localStorage.setItem(EQ_STATE_KEY, JSON.stringify(eqState));
+  } catch {}
+}
+
+export interface CustomEqPreset {
+  id: string;
+  name: string;
+  bands: EqBands;
+}
+
+const CUSTOM_EQ_PRESETS_KEY = 'world-radio:custom-eq-presets';
+
+export function loadCustomEqPresets(): CustomEqPreset[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_EQ_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomEqPresets(presets: CustomEqPreset[]): void {
+  try {
+    localStorage.setItem(CUSTOM_EQ_PRESETS_KEY, JSON.stringify(presets));
+  } catch {}
+}
+
+

@@ -25,12 +25,15 @@ import {
   timeOfDayPeriodLabel,
   type SearchParams,
 } from './api/radioBrowser';
-import { FX_PRESETS, type FxCategory } from './audioFx';
+import { FX_PRESETS } from './audioFx';
+import { type EqBands } from './equalizer';
 import {
   closeFxModal,
+  openFxModal,
   renderFxModal,
   setFxModalTab,
   toggleFxModal,
+  type ModalTab,
 } from './fxModal';
 import { updateMediaSession } from './mediaSession';
 import { player } from './player';
@@ -1965,8 +1968,8 @@ function renderPlayerHtml(): string {
             : ''
         }
       </div>
-      <button type="button" class="btn-icon ${player.fxEnabled ? 'is-active fx-active-btn' : ''}" data-action="toggle-fx-modal" title="Voice & Audio FX (Devices, Lo-Fi, Spaces)" aria-label="Audio FX">
-        🎙️
+      <button type="button" class="btn-icon ${player.fxEnabled || player.eqEnabled ? 'is-active fx-active-btn' : ''}" data-action="toggle-fx-modal" title="Audio FX & Equalizer" aria-label="Audio FX & Equalizer">
+        🎛️
       </button>
     </div>
     <div class="player-volume">
@@ -2513,6 +2516,9 @@ function ensureAppEvents() {
       case 'toggle-fx-modal':
         toggleFxModal();
         break;
+      case 'open-eq-tab':
+        openFxModal('Equalizer');
+        break;
       case 'close-fx-modal':
         closeFxModal();
         break;
@@ -2524,8 +2530,16 @@ function ensureAppEvents() {
         showToast(next ? 'Audio FX Enabled' : 'Audio FX Bypassed');
         break;
       }
+      case 'toggle-eq': {
+        const next = !player.eqEnabled;
+        player.setEqEnabled(next);
+        renderFxModal();
+        renderPlayer();
+        showToast(next ? 'Equalizer Active' : 'Equalizer Bypassed');
+        break;
+      }
       case 'select-fx-tab': {
-        const tab = t.dataset.tab as FxCategory | undefined;
+        const tab = t.dataset.tab as ModalTab | undefined;
         if (tab) setFxModalTab(tab);
         break;
       }
@@ -2538,6 +2552,37 @@ function ensureAppEvents() {
           renderPlayer();
           const p = FX_PRESETS.find((preset) => preset.id === id);
           if (p) showToast(`Audio FX: ${p.emoji} ${p.name}`);
+        }
+        break;
+      }
+      case 'select-eq-preset': {
+        const id = t.dataset.id;
+        if (id) {
+          player.setEqPreset(id);
+          player.setEqEnabled(true);
+          renderFxModal();
+          renderPlayer();
+          showToast(`EQ Mode: ${id.toUpperCase()}`);
+        }
+        break;
+      }
+      case 'save-custom-eq': {
+        const input = document.getElementById('eq-preset-name-input') as HTMLInputElement | null;
+        const name = input?.value.trim() || 'Custom Preset';
+        const newPreset = player.saveCustomEqPreset(name);
+        player.setEqEnabled(true);
+        renderFxModal();
+        renderPlayer();
+        showToast(`Saved EQ Preset: ${newPreset.name}`);
+        break;
+      }
+      case 'delete-custom-eq': {
+        const id = t.dataset.id;
+        if (id) {
+          player.deleteCustomEqPreset(id);
+          renderFxModal();
+          renderPlayer();
+          showToast('Deleted custom EQ preset');
         }
         break;
       }
@@ -2695,6 +2740,15 @@ function ensureAppEvents() {
         } catch {
           // ignore
         }
+      }
+      return;
+    }
+
+    if (action === 'change-eq-band' && t instanceof HTMLInputElement) {
+      const band = t.dataset.band as keyof EqBands | undefined;
+      if (band) {
+        player.setEqBand(band, parseFloat(t.value));
+        renderFxModal();
       }
       return;
     }

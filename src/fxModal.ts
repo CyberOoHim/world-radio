@@ -1,14 +1,17 @@
 import { FX_PRESETS, type FxCategory } from './audioFx';
+import { EQ_PRESETS, type EqBands } from './equalizer';
 import { player } from './player';
 
+export type ModalTab = FxCategory | 'Equalizer';
+
 let fxModalOpen = false;
-let currentTab: FxCategory = 'Devices';
+let currentTab: ModalTab = 'Devices';
 
 export function isFxModalOpen(): boolean {
   return fxModalOpen;
 }
 
-export function openFxModal(tab?: FxCategory) {
+export function openFxModal(tab?: ModalTab) {
   fxModalOpen = true;
   if (tab) currentTab = tab;
   renderFxModal();
@@ -24,41 +27,193 @@ export function toggleFxModal() {
   renderFxModal();
 }
 
-export function setFxModalTab(tab: FxCategory) {
+export function setFxModalTab(tab: ModalTab) {
   currentTab = tab;
   renderFxModal();
+}
+
+function renderEqSectionHtml(): string {
+  const eqEnabled = player.eqEnabled;
+  const eqPresetId = player.eqPresetId;
+  const bands = player.eqBands;
+  const customPresets = player.customEqPresets;
+
+  const bandConfigs: { key: keyof EqBands; label: string; sub: string }[] = [
+    { key: 'b60', label: '60 Hz', sub: 'Sub-Bass' },
+    { key: 'b150', label: '150 Hz', sub: 'Warmth' },
+    { key: 'b400', label: '400 Hz', sub: 'Mud Cut' },
+    { key: 'b1k', label: '1 kHz', sub: 'Mid Core' },
+    { key: 'b2k5', label: '2.5 kHz', sub: 'Clarity' },
+    { key: 'b6k', label: '6 kHz', sub: 'Presence' },
+    { key: 'b10k', label: '10 kHz', sub: 'Hiss Cut' },
+    { key: 'b16k', label: '16 kHz', sub: 'Air' },
+  ];
+
+  return `
+    <div class="eq-panel">
+      <div class="eq-preset-row">
+        <span class="eq-preset-label">Default Presets:</span>
+        <div class="eq-presets-wrap">
+          ${EQ_PRESETS.map(
+            (p) => `
+            <button
+              type="button"
+              class="chip eq-preset-chip ${eqPresetId === p.id && eqEnabled ? 'active' : ''}"
+              data-action="select-eq-preset"
+              data-id="${p.id}"
+            >
+              ${p.emoji} ${p.name}
+            </button>
+          `
+          ).join('')}
+        </div>
+      </div>
+
+      ${
+        customPresets.length > 0
+          ? `
+        <div class="eq-preset-row">
+          <span class="eq-preset-label">My Saved Presets:</span>
+          <div class="eq-presets-wrap">
+            ${customPresets
+              .map(
+                (cp) => `
+              <div class="chip eq-custom-chip ${eqPresetId === cp.id && eqEnabled ? 'active' : ''}">
+                <button
+                  type="button"
+                  class="eq-chip-btn"
+                  data-action="select-eq-preset"
+                  data-id="${cp.id}"
+                >
+                  ⭐ ${cp.name}
+                </button>
+                <button
+                  type="button"
+                  class="eq-chip-del"
+                  data-action="delete-custom-eq"
+                  data-id="${cp.id}"
+                  title="Delete preset ${cp.name}"
+                  aria-label="Delete preset ${cp.name}"
+                >
+                  ✕
+                </button>
+              </div>
+            `
+              )
+              .join('')}
+          </div>
+        </div>
+      `
+          : ''
+      }
+
+      <div class="eq-save-row">
+        <input
+          type="text"
+          class="eq-save-input"
+          placeholder="Preset name (e.g. My Late Night Radio)..."
+          id="eq-preset-name-input"
+        />
+        <button
+          type="button"
+          class="btn-sm btn-primary eq-save-btn"
+          data-action="save-custom-eq"
+        >
+          💾 Save Current Preset
+        </button>
+      </div>
+
+      <div class="eq-sliders-container ${!eqEnabled ? 'is-disabled' : ''}">
+        ${bandConfigs
+          .map((b) => {
+            const val = bands[b.key] || 0;
+            const formatted = (val > 0 ? '+' : '') + val + ' dB';
+            return `
+            <div class="eq-slider-col">
+              <div class="eq-db-val">${formatted}</div>
+              <div class="eq-track-wrap">
+                <input
+                  type="range"
+                  class="eq-v-slider"
+                  min="-12"
+                  max="12"
+                  step="1"
+                  value="${val}"
+                  data-action="change-eq-band"
+                  data-band="${b.key}"
+                  aria-label="${b.label} Equalizer Band"
+                  ${!eqEnabled ? 'disabled' : ''}
+                />
+              </div>
+              <div class="eq-band-title">${b.label}</div>
+              <div class="eq-band-sub">${b.sub}</div>
+            </div>
+          `;
+          })
+          .join('')}
+      </div>
+
+      <div class="eq-guide-box">
+        <div class="eq-guide-title">💡 Frequency Adjustment Guide</div>
+        <table class="eq-guide-table">
+          <thead>
+            <tr>
+              <th>Frequency</th>
+              <th>Target</th>
+              <th>Radio Tuning Tip</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>60 Hz</strong></td><td>Sub-Bass</td><td>Boost for electronic music; cut for HVAC room rumble</td></tr>
+            <tr><td><strong>150 Hz</strong></td><td>Bass Warmth</td><td>Adds warmth to male announcers & bass instruments</td></tr>
+            <tr><td><strong>400 Hz</strong></td><td>Low-Mid (Mud)</td><td><strong>Cut (-2 to -4dB)</strong> to clear boxy radio streams</td></tr>
+            <tr><td><strong>1 kHz</strong></td><td>Vocal Core</td><td>Body of human voice & main instruments</td></tr>
+            <tr><td><strong>2.5 kHz</strong></td><td>Speech Clarity</td><td><strong>Boost (+2 to +4dB)</strong> for clear news anchors</td></tr>
+            <tr><td><strong>6 kHz</strong></td><td>Presence</td><td>Adjust vocal crispness & microphone sibilance</td></tr>
+            <tr><td><strong>10 kHz</strong></td><td>Treble / Hiss</td><td><strong>Cut (-3 to -6dB)</strong> to silence static noise</td></tr>
+            <tr><td><strong>16 kHz</strong></td><td>Super Air</td><td>Adds sparkle and air sheen to HD broadcasts</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 export function renderFxModalHtml(): string {
   if (!fxModalOpen) return '';
 
-  const enabled = player.fxEnabled;
-  const activePresetId = player.fxPresetId;
-  const activePreset = FX_PRESETS.find((p) => p.id === activePresetId);
+  const isEqTab = currentTab === 'Equalizer';
+  const isEnabled = isEqTab ? player.eqEnabled : player.fxEnabled;
 
-  const categories: { id: FxCategory; label: string; icon: string }[] = [
+  const categories: { id: ModalTab; label: string; icon: string }[] = [
     { id: 'Devices', label: 'Devices', icon: '📻' },
     { id: 'Lo-Fi', label: 'Lo-Fi', icon: '📼' },
     { id: 'Spaces', label: 'Spaces', icon: '🏛️' },
+    { id: 'Equalizer', label: 'Equalizer', icon: '🎚️' },
   ];
 
-  const presetsInTab = FX_PRESETS.filter((p) => p.cat === currentTab);
+  const presetsInTab = isEqTab ? [] : FX_PRESETS.filter((p) => p.cat === currentTab);
+  const activeFxPreset = FX_PRESETS.find((p) => p.id === player.fxPresetId);
 
   return `
     <div class="fx-modal-backdrop" data-action="close-fx-modal"></div>
     <div class="fx-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="fx-modal-title">
       <div class="fx-modal-header">
         <div class="fx-modal-title-group">
-          <div class="fx-modal-icon">🎙️</div>
+          <div class="fx-modal-icon">🎛️</div>
           <div>
-            <h2 id="fx-modal-title" class="fx-modal-title">Voice & Audio FX</h2>
-            <p class="fx-modal-subtitle">Transform live radio with real-time vintage & room effects</p>
+            <h2 id="fx-modal-title" class="fx-modal-title">${isEqTab ? '8-Band Graphic Equalizer' : 'Voice & Audio FX'}</h2>
+            <p class="fx-modal-subtitle">${
+              isEqTab
+                ? '8-band precision frequency shaping & radio tuning guide'
+                : 'Transform live radio with real-time vintage & room effects'
+            }</p>
           </div>
         </div>
         <div class="fx-header-actions">
-          <label class="fx-toggle-label" title="Enable or disable audio processing">
-            <span class="fx-toggle-text">${enabled ? 'FX Active' : 'FX Off'}</span>
-            <input type="checkbox" class="fx-toggle-input" data-action="toggle-fx" ${enabled ? 'checked' : ''} />
+          <label class="fx-toggle-label" title="${isEqTab ? 'Enable or disable Equalizer' : 'Enable or disable Voice FX'}">
+            <span class="fx-toggle-text">${isEnabled ? (isEqTab ? 'EQ Active' : 'FX Active') : (isEqTab ? 'EQ Off' : 'FX Off')}</span>
+            <input type="checkbox" class="fx-toggle-input" data-action="${isEqTab ? 'toggle-eq' : 'toggle-fx'}" ${isEnabled ? 'checked' : ''} />
             <span class="fx-toggle-slider"></span>
           </label>
           <button type="button" class="btn-icon close-btn" data-action="close-fx-modal" aria-label="Close modal">✕</button>
@@ -84,42 +239,57 @@ export function renderFxModalHtml(): string {
           .join('')}
       </div>
 
-      ${
-        enabled && activePreset
-          ? `
-        <div class="fx-status-banner">
-          <span class="status-dot"></span>
-          Current Mode: <strong>${activePreset.emoji} ${activePreset.name}</strong> (${activePreset.cat})
-        </div>
-      `
-          : ''
-      }
+      <div class="fx-modal-scroll-body">
+        ${
+          !isEqTab && player.fxEnabled && activeFxPreset
+            ? `
+          <div class="fx-status-banner">
+            <span class="status-dot"></span>
+            Voice FX Mode: <strong>${activeFxPreset.emoji} ${activeFxPreset.name}</strong> (${activeFxPreset.cat})
+          </div>
+        `
+            : ''
+        }
 
-      <div class="fx-preset-grid">
-        ${presetsInTab
-          .map((p) => {
-            const isSelected = activePresetId === p.id && enabled;
-            return `
-            <div
-              class="fx-card ${isSelected ? 'is-selected' : ''}"
-              data-action="select-fx-preset"
-              data-id="${p.id}"
-              tabindex="0"
-              role="button"
-            >
-              <div class="fx-card-header">
-                <span class="fx-card-emoji">${p.emoji}</span>
-                <div class="fx-card-titles">
-                  <div class="fx-card-name">${p.name}</div>
-                  ${p.era ? `<div class="fx-card-era">${p.era}</div>` : ''}
+        ${
+          isEqTab && player.eqEnabled
+            ? `
+          <div class="fx-status-banner">
+            <span class="status-dot"></span>
+            Equalizer Active: <strong>${player.eqPresetId.toUpperCase()} Mode</strong>
+          </div>
+        `
+            : ''
+        }
+
+        ${isEqTab ? renderEqSectionHtml() : `
+          <div class="fx-preset-grid">
+            ${presetsInTab
+              .map((p) => {
+                const isSelected = player.fxPresetId === p.id && player.fxEnabled;
+                return `
+                <div
+                  class="fx-card ${isSelected ? 'is-selected' : ''}"
+                  data-action="select-fx-preset"
+                  data-id="${p.id}"
+                  tabindex="0"
+                  role="button"
+                >
+                  <div class="fx-card-header">
+                    <span class="fx-card-emoji">${p.emoji}</span>
+                    <div class="fx-card-titles">
+                      <div class="fx-card-name">${p.name}</div>
+                      ${p.era ? `<div class="fx-card-era">${p.era}</div>` : ''}
+                    </div>
+                    ${isSelected ? `<span class="fx-card-badge">ACTIVE</span>` : ''}
+                  </div>
+                  <div class="fx-card-desc">${p.desc}</div>
                 </div>
-                ${isSelected ? `<span class="fx-card-badge">ACTIVE</span>` : ''}
-              </div>
-              <div class="fx-card-desc">${p.desc}</div>
-            </div>
-          `;
-          })
-          .join('')}
+              `;
+              })
+              .join('')}
+          </div>
+        `}
       </div>
     </div>
   `;
