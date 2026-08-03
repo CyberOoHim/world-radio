@@ -140,6 +140,8 @@ export interface SearchParams {
   geo_distance?: number;
   /** true = only stations that have geo coordinates */
   has_geo_info?: boolean;
+  /** Cache-busting timestamp parameter */
+  _t?: number;
 }
 
 function toQuery(params: SearchParams): string {

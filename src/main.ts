@@ -267,6 +267,7 @@ function listQueryExtras(): SearchParams {
   if (state.sort === 'random') {
     extra.order = 'random';
     extra.reverse = false;
+    extra._t = Date.now();
   } else if (state.sort === 'name') {
     extra.order = 'name';
     extra.reverse = false;
