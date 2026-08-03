@@ -610,6 +610,14 @@ button.chip.active,
   margin-bottom: 6px;
 }
 
+.filter-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
+}
+
 .toggle-https {
   display: inline-flex;
   align-items: center;
@@ -624,6 +632,18 @@ button.chip.active,
   accent-color: var(--accent);
   width: 16px;
   height: 16px;
+}
+
+button.chip.random-chip {
+  background: linear-gradient(135deg, #283a62 0%, #1e2c4c 100%) !important;
+  border-color: rgba(200, 180, 255, 0.45) !important;
+}
+
+button.chip.random-chip:hover {
+  background: linear-gradient(135deg, #364d80 0%, #2a3d68 100%) !important;
+  border-color: rgba(220, 190, 255, 0.8) !important;
+  box-shadow: 0 4px 16px rgba(180, 140, 255, 0.25);
+  transform: translateY(-1px);
 }
 
 .browse-search-wrap {

@@ -83,6 +83,8 @@ export interface AppState {
   sort: SortId;
   languageFilter: string | null;
   httpsOnly: boolean;
+  /** When true, 🎲 Random picks from 200+ global API genres (Option B) instead of curated list (Option A) */
+  randomAllGenres: boolean;
   detailStation: Station | null;
   toast: string | null;
   nearMe: boolean;
@@ -95,6 +97,7 @@ export interface AppState {
 
 export interface AppPrefs {
   httpsOnly: boolean;
+  randomAllGenres: boolean;
   sort: SortId;
   timeOfDayMode: TimeOfDayMode;
 }

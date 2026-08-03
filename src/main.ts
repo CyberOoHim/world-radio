@@ -102,6 +102,7 @@ const state: AppState = {
   sort: prefs.sort,
   languageFilter: null,
   httpsOnly: prefs.httpsOnly,
+  randomAllGenres: prefs.randomAllGenres,
   detailStation: null,
   toast: null,
   nearMe: false,
@@ -240,6 +241,7 @@ function showToast(msg: string, ms = 2600) {
 function persistPrefs() {
   savePrefs({
     httpsOnly: state.httpsOnly,
+    randomAllGenres: state.randomAllGenres,
     sort: state.sort,
     timeOfDayMode: state.timeOfDayMode,
   });
@@ -1336,6 +1338,38 @@ function openTag(tag: string, opts?: { skipHash?: boolean }) {
   void loadDiscover(true);
 }
 
+function handlePickRandomGenre() {
+  let pickedId = '';
+  let pickedLabel = '';
+
+  if (state.randomAllGenres && state.tags.length > 0) {
+    // Option B: Pick from 200+ global API genres
+    const candidates = state.tags.filter(
+      (t) => t.stationcount >= 5 && t.name.toLowerCase() !== state.selectedTag?.toLowerCase()
+    );
+    const pool = candidates.length > 0 ? candidates : state.tags;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    if (pick) {
+      pickedId = pick.name;
+      pickedLabel = titleCaseTag(pick.name);
+    }
+  }
+
+  if (!pickedId) {
+    // Option A: Curated MOOD_TAGS
+    const candidates = MOOD_TAGS.filter(
+      (t) => t.id.toLowerCase() !== state.selectedTag?.toLowerCase()
+    );
+    const pool = candidates.length > 0 ? candidates : MOOD_TAGS;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    pickedId = pick.id;
+    pickedLabel = pick.label;
+  }
+
+  showToast(`🎲 Picked genre: ${pickedLabel}`);
+  openTag(pickedId);
+}
+
 function openNearMe() {
   if (!navigator.geolocation) {
     showToast('Geolocation not available on this device');
@@ -1554,10 +1588,16 @@ function filterBar(): string {
             .join('')}
         </div>
       </div>
-      <label class="toggle-https">
-        <input type="checkbox" data-action="https-only" ${state.httpsOnly ? 'checked' : ''} />
-        <span>HTTPS streams only</span>
-      </label>
+      <div class="filter-toggles">
+        <label class="toggle-https">
+          <input type="checkbox" data-action="https-only" ${state.httpsOnly ? 'checked' : ''} />
+          <span>HTTPS streams only</span>
+        </label>
+        <label class="toggle-https" title="Unchecked: Curated genres (Option A). Checked: All 200+ API genres (Option B).">
+          <input type="checkbox" data-action="random-all-genres" ${state.randomAllGenres ? 'checked' : ''} />
+          <span>Random all genres</span>
+        </label>
+      </div>
     </div>
   `;
 }
@@ -1694,6 +1734,9 @@ function renderDiscover(): string {
       <button type="button" class="chip ${!state.selectedTag && !state.nearMe && !state.surpriseMode ? 'active' : ''}" data-action="tag" data-tag="">
         ✨ Popular
       </button>
+      <button type="button" class="chip random-chip" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+        🎲 Random
+      </button>
       ${MOOD_TAGS.map(
         (t) => `
         <button type="button" class="chip ${state.selectedTag === t.id ? 'active' : ''}" data-action="tag" data-tag="${escapeHtml(t.id)}">
@@ -1813,6 +1856,9 @@ function renderGenres(): string {
       <h3>Popular moods</h3>
     </div>
     <div class="chip-row chip-row-scroll" style="margin-bottom:20px">
+      <button type="button" class="chip random-chip" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+        🎲 Random
+      </button>
       ${MOOD_TAGS.map(
         (t) => `
         <button type="button" class="chip" data-action="tag" data-tag="${escapeHtml(t.id)}">
@@ -2378,12 +2424,16 @@ function ensureAppEvents() {
       action === 'volume' ||
       action === 'browse-filter' ||
       action === 'https-only' ||
+      action === 'random-all-genres' ||
       action === 'import-favs'
     ) {
       return;
     }
 
     switch (action) {
+      case 'random-genre':
+        handlePickRandomGenre();
+        break;
       case 'focus-search':
         qs<HTMLInputElement>('.search-input')?.focus();
         if (state.view !== 'search') {
@@ -2684,6 +2734,17 @@ function ensureAppEvents() {
       state.httpsOnly = t.checked;
       persistPrefs();
       reloadCurrentList();
+      return;
+    }
+    if (t.dataset.action === 'random-all-genres' && t instanceof HTMLInputElement) {
+      state.randomAllGenres = t.checked;
+      persistPrefs();
+      showToast(
+        state.randomAllGenres
+          ? '🎲 Random mode: All 200+ API genres (Option B)'
+          : '🎲 Random mode: Curated genres (Option A)'
+      );
+      renderMain();
       return;
     }
     if (t.dataset.action === 'import-favs' && t instanceof HTMLInputElement && t.files?.[0]) {
