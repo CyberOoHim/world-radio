@@ -79,7 +79,7 @@ const SORT_OPTIONS: { id: SortId; label: string }[] = [
 const prefs = loadPrefs();
 
 const state: AppState = {
-  view: 'discover',
+  view: prefs.view,
   stations: [],
   countries: [],
   tags: [],
@@ -91,16 +91,16 @@ const state: AppState = {
   loadingMore: false,
   error: null,
   query: '',
-  selectedCountry: null,
-  selectedTag: null,
+  selectedCountry: prefs.selectedCountry,
+  selectedTag: prefs.selectedTag,
   volume: loadVolume(),
   muted: false,
   offset: 0,
   hasMore: true,
-  continentFilter: null,
-  browseFilter: '',
+  continentFilter: prefs.continentFilter,
+  browseFilter: prefs.browseFilter,
   sort: prefs.sort,
-  languageFilter: null,
+  languageFilter: prefs.languageFilter,
   httpsOnly: prefs.httpsOnly,
   randomAllGenres: prefs.randomAllGenres,
   detailStation: null,
@@ -244,6 +244,12 @@ function persistPrefs() {
     randomAllGenres: state.randomAllGenres,
     sort: state.sort,
     timeOfDayMode: state.timeOfDayMode,
+    selectedTag: state.selectedTag,
+    selectedCountry: state.selectedCountry,
+    continentFilter: state.continentFilter,
+    languageFilter: state.languageFilter,
+    browseFilter: state.browseFilter,
+    view: state.view,
   });
 }
 
@@ -1248,13 +1254,11 @@ async function loadFavoritesStations() {
 
 function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   state.view = view;
-  state.selectedCountry = null;
   state.nearMe = false;
   state.surpriseMode = null;
-  if (view !== 'discover') state.selectedTag = null;
-  if (view !== 'countries' && view !== 'genres') state.browseFilter = '';
   navOpen = false;
   state.detailStation = null;
+  persistPrefs();
 
   if (!opts?.skipHash && !applyingRoute) {
     setHash({ kind: 'view', view });
@@ -1263,17 +1267,21 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   if (view === 'discover') {
     void loadDiscover(true);
   } else if (view === 'countries') {
-    state.loading = state.countries.length === 0;
-    state.stations = [];
-    state.error = null;
-    if (state.countries.length === 0) {
-      void ensureMeta().then(() => {
-        state.loading = false;
-        renderMain();
-      });
+    if (state.selectedCountry) {
+      void loadCountryStations(state.selectedCountry, true);
     } else {
-      state.loading = false;
-      renderAllChrome();
+      state.loading = state.countries.length === 0;
+      state.stations = [];
+      state.error = null;
+      if (state.countries.length === 0) {
+        void ensureMeta().then(() => {
+          state.loading = false;
+          renderMain();
+        });
+      } else {
+        state.loading = false;
+        renderAllChrome();
+      }
     }
   } else if (view === 'genres') {
     state.loading = state.tags.length === 0;
@@ -1315,6 +1323,7 @@ function openCountry(code: string, opts?: { skipHash?: boolean }) {
   state.nearMe = false;
   state.surpriseMode = null;
   navOpen = false;
+  persistPrefs();
   if (!opts?.skipHash && !applyingRoute) {
     setHash({ kind: 'country', code });
   }
@@ -1328,8 +1337,8 @@ function openTag(tag: string, opts?: { skipHash?: boolean }) {
   state.selectedTag = tag;
   state.nearMe = false;
   state.surpriseMode = null;
-  state.selectedCountry = null;
   navOpen = false;
+  persistPrefs();
   if (!opts?.skipHash && !applyingRoute) {
     setHash({ kind: 'tag', tag });
   }
@@ -2407,6 +2416,10 @@ function ensureAppEvents() {
 
     const view = t.dataset.view as ViewId | undefined;
     if (view && t.dataset.action !== 'focus-search') {
+      if (state.view === 'countries' && view === 'countries' && state.selectedCountry) {
+        state.selectedCountry = null;
+        persistPrefs();
+      }
       if (view === 'search') {
         setView('search');
         qs<HTMLInputElement>('.search-input')?.focus();
@@ -2532,6 +2545,7 @@ function ensureAppEvents() {
           state.nearMe = false;
           state.surpriseMode = null;
           state.view = 'discover';
+          persistPrefs();
           if (!applyingRoute) setHash({ kind: 'view', view: 'discover' });
           void loadDiscover(true);
         } else {
@@ -2664,11 +2678,13 @@ function ensureAppEvents() {
       }
       case 'continent':
         state.continentFilter = t.dataset.continent || null;
+        persistPrefs();
         renderMain();
         break;
       case 'back-countries':
         state.selectedCountry = null;
         state.stations = [];
+        persistPrefs();
         if (!applyingRoute) setHash({ kind: 'view', view: 'countries' });
         renderMain();
         break;
@@ -2682,6 +2698,7 @@ function ensureAppEvents() {
       }
       case 'lang': {
         state.languageFilter = t.dataset.lang || null;
+        persistPrefs();
         reloadCurrentList();
         break;
       }
@@ -2797,6 +2814,7 @@ function ensureAppEvents() {
 
     if (action === 'browse-filter' && t instanceof HTMLInputElement) {
       state.browseFilter = t.value;
+      persistPrefs();
       renderMain();
       // restore focus
       const input = qs<HTMLInputElement>('.browse-search');

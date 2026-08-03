@@ -1,4 +1,4 @@
-import type { AppPrefs, SortId, Station, TimeOfDayMode } from './types';
+import type { AppPrefs, SortId, Station, TimeOfDayMode, ViewId } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
@@ -171,6 +171,12 @@ const DEFAULT_PREFS: AppPrefs = {
   randomAllGenres: false,
   sort: 'clickcount',
   timeOfDayMode: 'auto',
+  selectedTag: null,
+  selectedCountry: null,
+  continentFilter: null,
+  languageFilter: null,
+  browseFilter: '',
+  view: 'discover',
 };
 
 function sanitizeTimeOfDayMode(v: unknown): TimeOfDayMode {
@@ -192,6 +198,7 @@ export function loadPrefs(): AppPrefs {
     if (!raw) return { ...DEFAULT_PREFS };
     const parsed = JSON.parse(raw) as Partial<AppPrefs>;
     const sort = (parsed.sort as SortId) || DEFAULT_PREFS.sort;
+    const view = (parsed.view as ViewId) || DEFAULT_PREFS.view;
     return {
       httpsOnly:
         typeof parsed.httpsOnly === 'boolean'
@@ -211,6 +218,25 @@ export function loadPrefs(): AppPrefs {
           ? sort
           : DEFAULT_PREFS.sort,
       timeOfDayMode: sanitizeTimeOfDayMode(parsed.timeOfDayMode),
+      selectedTag:
+        typeof parsed.selectedTag === 'string' ? parsed.selectedTag : null,
+      selectedCountry:
+        typeof parsed.selectedCountry === 'string' ? parsed.selectedCountry : null,
+      continentFilter:
+        typeof parsed.continentFilter === 'string' ? parsed.continentFilter : null,
+      languageFilter:
+        typeof parsed.languageFilter === 'string' ? parsed.languageFilter : null,
+      browseFilter:
+        typeof parsed.browseFilter === 'string' ? parsed.browseFilter : '',
+      view:
+        view === 'discover' ||
+        view === 'countries' ||
+        view === 'genres' ||
+        view === 'favorites' ||
+        view === 'recent' ||
+        view === 'search'
+          ? view
+          : DEFAULT_PREFS.view,
     };
   } catch {
     return { ...DEFAULT_PREFS };

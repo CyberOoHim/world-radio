@@ -100,4 +100,10 @@ export interface AppPrefs {
   randomAllGenres: boolean;
   sort: SortId;
   timeOfDayMode: TimeOfDayMode;
+  selectedTag: string | null;
+  selectedCountry: string | null;
+  continentFilter: string | null;
+  languageFilter: string | null;
+  browseFilter: string;
+  view: ViewId;
 }
