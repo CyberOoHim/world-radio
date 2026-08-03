@@ -85,6 +85,8 @@ export interface AppState {
   httpsOnly: boolean;
   /** When true, 🎲 Random picks from 200+ global API genres (Option B) instead of curated list (Option A) */
   randomAllGenres: boolean;
+  /** When true, the current selectedTag was selected via 🎲 Random picker */
+  isRandomGenre: boolean;
   detailStation: Station | null;
   toast: string | null;
   nearMe: boolean;
@@ -98,6 +100,7 @@ export interface AppState {
 export interface AppPrefs {
   httpsOnly: boolean;
   randomAllGenres: boolean;
+  isRandomGenre: boolean;
   sort: SortId;
   timeOfDayMode: TimeOfDayMode;
   selectedTag: string | null;

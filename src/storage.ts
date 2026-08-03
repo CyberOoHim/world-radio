@@ -169,6 +169,7 @@ export function saveLastStation(station: Station | null): void {
 const DEFAULT_PREFS: AppPrefs = {
   httpsOnly: true,
   randomAllGenres: false,
+  isRandomGenre: false,
   sort: 'clickcount',
   timeOfDayMode: 'auto',
   selectedTag: null,
@@ -208,6 +209,10 @@ export function loadPrefs(): AppPrefs {
         typeof parsed.randomAllGenres === 'boolean'
           ? parsed.randomAllGenres
           : DEFAULT_PREFS.randomAllGenres,
+      isRandomGenre:
+        typeof parsed.isRandomGenre === 'boolean'
+          ? parsed.isRandomGenre
+          : DEFAULT_PREFS.isRandomGenre,
       sort:
         sort === 'votes' ||
         sort === 'name' ||

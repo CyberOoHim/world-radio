@@ -103,6 +103,7 @@ const state: AppState = {
   languageFilter: prefs.languageFilter,
   httpsOnly: prefs.httpsOnly,
   randomAllGenres: prefs.randomAllGenres,
+  isRandomGenre: prefs.isRandomGenre,
   detailStation: null,
   toast: null,
   nearMe: false,
@@ -242,6 +243,7 @@ function persistPrefs() {
   savePrefs({
     httpsOnly: state.httpsOnly,
     randomAllGenres: state.randomAllGenres,
+    isRandomGenre: state.isRandomGenre,
     sort: state.sort,
     timeOfDayMode: state.timeOfDayMode,
     selectedTag: state.selectedTag,
@@ -1332,9 +1334,10 @@ function openCountry(code: string, opts?: { skipHash?: boolean }) {
   void loadCountryStations(code, true);
 }
 
-function openTag(tag: string, opts?: { skipHash?: boolean }) {
+function openTag(tag: string, opts?: { skipHash?: boolean; isRandom?: boolean }) {
   state.view = 'discover';
   state.selectedTag = tag;
+  state.isRandomGenre = Boolean(opts?.isRandom);
   state.nearMe = false;
   state.surpriseMode = null;
   navOpen = false;
@@ -1376,7 +1379,7 @@ function handlePickRandomGenre() {
   }
 
   showToast(`🎲 Picked genre: ${pickedLabel}`);
-  openTag(pickedId);
+  openTag(pickedId, { isRandom: true });
 }
 
 function openNearMe() {
@@ -1743,8 +1746,8 @@ function renderDiscover(): string {
       <button type="button" class="chip ${!state.selectedTag && !state.nearMe && !state.surpriseMode ? 'active' : ''}" data-action="tag" data-tag="">
         ✨ Popular
       </button>
-      <button type="button" class="chip random-chip" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
-        🎲 Random
+      <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+        🎲 Random${state.isRandomGenre && state.selectedTag ? `: ${escapeHtml(titleCaseTag(state.selectedTag))}` : ''}
       </button>
       ${MOOD_TAGS.map(
         (t) => `
@@ -1865,8 +1868,8 @@ function renderGenres(): string {
       <h3>Popular moods</h3>
     </div>
     <div class="chip-row chip-row-scroll" style="margin-bottom:20px">
-      <button type="button" class="chip random-chip" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
-        🎲 Random
+      <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+        🎲 Random${state.isRandomGenre && state.selectedTag ? `: ${escapeHtml(titleCaseTag(state.selectedTag))}` : ''}
       </button>
       ${MOOD_TAGS.map(
         (t) => `
