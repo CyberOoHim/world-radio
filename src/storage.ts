@@ -167,7 +167,7 @@ export function saveLastStation(station: Station | null): void {
 }
 
 const DEFAULT_PREFS: AppPrefs = {
-  httpsOnly: false,
+  httpsOnly: true,
   sort: 'clickcount',
   timeOfDayMode: 'auto',
 };
@@ -192,7 +192,10 @@ export function loadPrefs(): AppPrefs {
     const parsed = JSON.parse(raw) as Partial<AppPrefs>;
     const sort = (parsed.sort as SortId) || DEFAULT_PREFS.sort;
     return {
-      httpsOnly: Boolean(parsed.httpsOnly),
+      httpsOnly:
+        typeof parsed.httpsOnly === 'boolean'
+          ? parsed.httpsOnly
+          : DEFAULT_PREFS.httpsOnly,
       sort:
         sort === 'votes' ||
         sort === 'name' ||
