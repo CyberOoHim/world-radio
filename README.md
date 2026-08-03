@@ -25,13 +25,15 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
   - **Surprise · Here** — Pick random station filtered by local country / location.
 - **Near Me** — Geolocation discovery via HTML5 Geolocation with expanding radius (100km to 2500km) and proximity badges (e.g. `12 km`, `450 km`).
 - **Right Now (Time of Day)** — Time-tailored station pick strip (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) following local clock or user-pinned period.
-- **Mood Chips & Genres** — Curated ambient and relaxing mood tags (Jazz, Classical, Ambient, Chillout, Lounge, Meditation, etc.) plus a full tag directory.
+- **Mood Chips & Expanded Genres** — Expanded curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag directory.
+- **🎲 Random Genre Picker** — Interactive random genre discovery chip button with a dedicated **"Random all genres" checkbox toggle** to switch between Option A (Curated mood tags) and Option B (200+ global API genres), persisted in settings.
 - **Countries & Continents** — Filterable directory by continent (Africa, Asia, Europe, North America, South America, Oceania) and country.
 
 ### 🔍 Search, Filters & Preferences
 - **Instant Search** — Real-time debounced search by station name, city, tag, or keyword.
-- **Sorting Options** — Sort stations by Popularity, Trending, Votes, Name, Bitrate, or Random.
-- **HTTPS-Only Toggle** — Option to filter non-secure streams for reliable playback on HTTPS environments.
+- **Sorting Options** — Sort stations by Popularity, Trending, Votes, Name, Bitrate, or Random (with real-time cache-busting timestamp parameter for fresh dynamic random picks on every click).
+- **HTTPS-Only Toggle** — Default-ON filter (`httpsOnly: true`) to prevent browser mixed-content playback blocks on HTTPS web hosts.
+- **Random All Genres Toggle** — Checkbox toggle in the filter toolbar to switch the 🎲 Random Genre picker between curated tags (Option A) and the full global API catalog of 200+ genres (Option B).
 - **Language Filter** — Filter stations by broadcast language.
 
 ### ❤️ Favorites & History Management
