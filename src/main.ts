@@ -1382,6 +1382,22 @@ function handlePickRandomGenre() {
   openTag(pickedId, { isRandom: true });
 }
 
+function handlePickRandomCountry() {
+  const list = filteredCountries();
+  const pool = list.length ? list : state.countries;
+  if (!pool.length) {
+    showToast('No countries available');
+    return;
+  }
+  const candidates = state.selectedCountry
+    ? pool.filter((c) => c.iso_3166_1 !== state.selectedCountry)
+    : pool;
+  const choice = candidates.length ? candidates : pool;
+  const picked = choice[Math.floor(Math.random() * choice.length)];
+  openCountry(picked.iso_3166_1);
+  showToast(`🎲 Random country: ${picked.name}`);
+}
+
 function openNearMe() {
   if (!navigator.geolocation) {
     showToast('Geolocation not available on this device');
@@ -1792,7 +1808,11 @@ function renderCountries(): string {
     return `
       <div class="section-head">
         <h3>${countryFlag(state.selectedCountry)} ${escapeHtml(name)}</h3>
-        <button type="button" class="chip" data-action="back-countries">← All countries</button>
+        <div class="chip-row compact" style="margin:0;">
+          <button type="button" class="chip" data-action="back-countries">← Back</button>
+          <button type="button" class="chip random-chip" data-action="random-country" title="Pick another country at random">🎲 Random</button>
+          ${surpriseActionsHtml({ compact: true })}
+        </div>
       </div>
       ${filterBar()}
       ${stationsSection('Stations', `${state.stations.length}${state.hasMore ? '+' : ''}`)}
@@ -1810,6 +1830,12 @@ function renderCountries(): string {
     <section class="hero">
       <h2>Every corner of the map.</h2>
       <p>Browse ${state.countries.length || 'hundreds of'} countries and territories with live streams.</p>
+      <div class="hero-actions">
+        <button type="button" class="chip random-chip" data-action="random-country" title="Pick a country at random">
+          🎲 Random Country
+        </button>
+        ${surpriseActionsHtml()}
+      </div>
     </section>
     <div class="browse-search-wrap">
       <input type="search" class="browse-search" placeholder="Filter countries…" value="${escapeHtml(state.browseFilter)}" data-action="browse-filter" autocomplete="off" />
@@ -2447,6 +2473,9 @@ function ensureAppEvents() {
     }
 
     switch (action) {
+      case 'random-country':
+        handlePickRandomCountry();
+        break;
       case 'random-genre':
         handlePickRandomGenre();
         break;
@@ -2697,6 +2726,9 @@ function ensureAppEvents() {
         state.sort = sort;
         persistPrefs();
         reloadCurrentList();
+        if (sort === 'random') {
+          showToast('Shuffled station list');
+        }
         break;
       }
       case 'lang': {
