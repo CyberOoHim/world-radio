@@ -1,6 +1,13 @@
 /* World Radio — minimal shell cache (no audio streams). */
-const CACHE = 'world-radio-shell-v1';
-const PRECACHE = ['./', './index.html', './favicon.svg', './manifest.webmanifest'];
+const CACHE = 'world-radio-shell-v2';
+const PRECACHE = [
+  './',
+  './index.html',
+  './favicon.svg',
+  './icon-192.png',
+  './icon-512.png',
+  './manifest.webmanifest'
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
