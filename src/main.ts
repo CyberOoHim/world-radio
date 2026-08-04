@@ -274,6 +274,7 @@ function listQueryExtras(): SearchParams {
   const extra: SearchParams = {};
   if (state.languageFilter) extra.language = state.languageFilter;
   if (state.httpsOnly) extra.is_https = true;
+  if (state.selectedTag) extra.tag = state.selectedTag;
   if (state.sort === 'random') {
     extra.order = 'random';
     extra.reverse = false;
@@ -1322,6 +1323,8 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
 function openCountry(code: string, opts?: { skipHash?: boolean }) {
   state.view = 'countries';
   state.selectedCountry = code;
+  state.selectedTag = null;
+  state.isRandomGenre = false;
   state.nearMe = false;
   state.surpriseMode = null;
   navOpen = false;
@@ -1379,7 +1382,14 @@ function handlePickRandomGenre() {
   }
 
   showToast(`🎲 Picked genre: ${pickedLabel}`);
-  openTag(pickedId, { isRandom: true });
+  if (state.view === 'countries' && state.selectedCountry) {
+    state.selectedTag = pickedId;
+    state.isRandomGenre = true;
+    persistPrefs();
+    void loadCountryStations(state.selectedCountry, true);
+  } else {
+    openTag(pickedId, { isRandom: true });
+  }
 }
 
 function handlePickRandomCountry() {
@@ -1814,8 +1824,29 @@ function renderCountries(): string {
           ${surpriseActionsHtml({ compact: true })}
         </div>
       </div>
+      <div class="section-head sticky-section"><h3>Moods &amp; genres</h3></div>
+      <div class="chip-row chip-row-scroll chip-fade">
+        <button type="button" class="chip ${!state.selectedTag && !state.nearMe && !state.surpriseMode ? 'active' : ''}" data-action="tag" data-tag="">
+          ✨ Popular
+        </button>
+        <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+          🎲 Random${state.isRandomGenre && state.selectedTag ? `: ${escapeHtml(titleCaseTag(state.selectedTag))}` : ''}
+        </button>
+        ${MOOD_TAGS.map(
+          (t) => `
+          <button type="button" class="chip ${state.selectedTag === t.id ? 'active' : ''}" data-action="tag" data-tag="${escapeHtml(t.id)}">
+            ${t.emoji} ${escapeHtml(t.label)}
+          </button>`
+        ).join('')}
+      </div>
       ${filterBar()}
-      ${stationsSection('Stations', `${state.stations.length}${state.hasMore ? '+' : ''}`)}
+      ${stationsSection(
+        state.selectedTag
+          ? MOOD_TAGS.find((t) => t.id === state.selectedTag)?.label ||
+            titleCaseTag(state.selectedTag)
+          : 'Stations',
+        `${state.stations.length}${state.hasMore ? '+' : ''}`
+      )}
     `;
   }
 
@@ -2572,16 +2603,23 @@ function ensureAppEvents() {
         const tag = t.dataset.tag ?? '';
         state.detailStation = null;
         renderDetail();
-        if (!tag) {
-          state.selectedTag = null;
-          state.nearMe = false;
-          state.surpriseMode = null;
-          state.view = 'discover';
+        if (state.view === 'countries' && state.selectedCountry) {
+          state.selectedTag = tag || null;
+          state.isRandomGenre = false;
           persistPrefs();
-          if (!applyingRoute) setHash({ kind: 'view', view: 'discover' });
-          void loadDiscover(true);
+          void loadCountryStations(state.selectedCountry, true);
         } else {
-          openTag(tag);
+          if (!tag) {
+            state.selectedTag = null;
+            state.nearMe = false;
+            state.surpriseMode = null;
+            state.view = 'discover';
+            persistPrefs();
+            if (!applyingRoute) setHash({ kind: 'view', view: 'discover' });
+            void loadDiscover(true);
+          } else {
+            openTag(tag);
+          }
         }
         break;
       }
@@ -2715,6 +2753,8 @@ function ensureAppEvents() {
         break;
       case 'back-countries':
         state.selectedCountry = null;
+        state.selectedTag = null;
+        state.isRandomGenre = false;
         state.stations = [];
         persistPrefs();
         if (!applyingRoute) setHash({ kind: 'view', view: 'countries' });
