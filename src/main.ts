@@ -1341,7 +1341,7 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   renderDetail();
 }
 
-function openCountry(code: string, opts?: { skipHash?: boolean }) {
+function openCountry(code: string, opts?: { skipHash?: boolean; autoPlay?: boolean }) {
   state.view = 'countries';
   state.selectedCountry = code;
   state.selectedTag = null;
@@ -1355,7 +1355,7 @@ function openCountry(code: string, opts?: { skipHash?: boolean }) {
   }
   renderNav();
   renderMobileTabs();
-  void loadCountryStations(code, true);
+  void loadCountryStations(code, true, { autoPlayTag: opts?.autoPlay ?? true });
 }
 
 function openTag(tag: string, opts?: { skipHash?: boolean; isRandom?: boolean; autoPlayTag?: boolean }) {
@@ -1425,7 +1425,7 @@ function handlePickRandomCountry() {
     : pool;
   const choice = candidates.length ? candidates : pool;
   const picked = choice[Math.floor(Math.random() * choice.length)];
-  openCountry(picked.iso_3166_1);
+  openCountry(picked.iso_3166_1, { autoPlay: true });
   showToast(`🎲 Random country: ${picked.name}`);
 }
 
@@ -1490,10 +1490,10 @@ async function applyRouteFromHash() {
         setView(route.view, { skipHash: true });
         break;
       case 'tag':
-        openTag(route.tag, { skipHash: true });
+        openTag(route.tag, { skipHash: true, autoPlayTag: false });
         break;
       case 'country':
-        openCountry(route.code, { skipHash: true });
+        openCountry(route.code, { skipHash: true, autoPlay: false });
         break;
       case 'search':
         state.query = route.q;
@@ -1656,8 +1656,8 @@ function filterBar(): string {
           <input type="checkbox" data-action="random-all-genres" ${state.randomAllGenres ? 'checked' : ''} />
           <span>Random all genres</span>
         </label>
-        <label class="toggle-select" title="Playback behavior when selecting a Mood & Genre tag">
-          <span>On genre select:</span>
+        <label class="toggle-select" title="Playback behavior when selecting a Mood & Genre tag or Country">
+          <span>On selection:</span>
           <select class="select-compact" data-action="tag-playback-behavior">
             <option value="keep" ${state.tagPlaybackBehavior === 'keep' ? 'selected' : ''}>Keep current station</option>
             <option value="first" ${state.tagPlaybackBehavior === 'first' ? 'selected' : ''}>Play 1st station</option>
@@ -2772,7 +2772,7 @@ function ensureAppEvents() {
       }
       case 'country': {
         const code = t.dataset.code;
-        if (code) openCountry(code);
+        if (code) openCountry(code, { autoPlay: true });
         break;
       }
       case 'continent':
@@ -2874,9 +2874,9 @@ function ensureAppEvents() {
         state.tagPlaybackBehavior = mode;
         persistPrefs();
         const labels: Record<TagPlaybackBehavior, string> = {
-          keep: 'On genre select: Keep current station',
-          first: 'On genre select: Play 1st station',
-          random: 'On genre select: Play random station',
+          keep: 'On selection: Keep current station',
+          first: 'On selection: Play 1st station',
+          random: 'On selection: Play random station',
         };
         showToast(labels[mode]);
         renderMain();
