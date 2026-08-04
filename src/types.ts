@@ -57,6 +57,7 @@ export type SleepMinutes = 15 | 30 | 45 | 60 | 90;
 export type TimeOfDayPeriod = 'morning' | 'day' | 'evening' | 'night';
 export type TimeOfDayMode = 'auto' | TimeOfDayPeriod;
 export type SurpriseMode = 'anywhere' | 'here';
+export type TagPlaybackBehavior = 'keep' | 'first' | 'random';
 
 export interface AppState {
   view: ViewId;
@@ -83,6 +84,8 @@ export interface AppState {
   sort: SortId;
   languageFilter: string | null;
   httpsOnly: boolean;
+  /** Behavior when a Mood&Genre tag is selected: keep current station, play 1st, or play random */
+  tagPlaybackBehavior: TagPlaybackBehavior;
   /** When true, 🎲 Random picks from 200+ global API genres (Option B) instead of curated list (Option A) */
   randomAllGenres: boolean;
   /** When true, the current selectedTag was selected via 🎲 Random picker */
@@ -99,6 +102,7 @@ export interface AppState {
 
 export interface AppPrefs {
   httpsOnly: boolean;
+  tagPlaybackBehavior: TagPlaybackBehavior;
   randomAllGenres: boolean;
   isRandomGenre: boolean;
   sort: SortId;

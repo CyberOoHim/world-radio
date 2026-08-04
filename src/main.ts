@@ -61,6 +61,7 @@ import type {
   SortId,
   Station,
   SurpriseMode,
+  TagPlaybackBehavior,
   TimeOfDayMode,
   ViewId,
 } from './types';
@@ -102,6 +103,7 @@ const state: AppState = {
   sort: prefs.sort,
   languageFilter: prefs.languageFilter,
   httpsOnly: prefs.httpsOnly,
+  tagPlaybackBehavior: prefs.tagPlaybackBehavior,
   randomAllGenres: prefs.randomAllGenres,
   isRandomGenre: prefs.isRandomGenre,
   detailStation: null,
@@ -242,6 +244,7 @@ function showToast(msg: string, ms = 2600) {
 function persistPrefs() {
   savePrefs({
     httpsOnly: state.httpsOnly,
+    tagPlaybackBehavior: state.tagPlaybackBehavior,
     randomAllGenres: state.randomAllGenres,
     isRandomGenre: state.isRandomGenre,
     sort: state.sort,
@@ -1042,7 +1045,7 @@ function announce(text: string) {
 
 // ─── Data loading ────────────────────────────────────────
 
-async function loadDiscover(reset = true) {
+async function loadDiscover(reset = true, opts?: { autoPlayTag?: boolean }) {
   const seq = ++loadSeq;
   const tagAtStart = state.selectedTag;
   const nearAtStart = state.nearMe;
@@ -1082,6 +1085,15 @@ async function loadDiscover(reset = true) {
     // Near-me uses expanding radius + client sort; allow more if page was full.
     state.hasMore = list.length >= PAGE && state.sort !== 'random';
     state.offset = offsetAtStart + list.length;
+
+    if (reset && opts?.autoPlayTag && list.length > 0) {
+      if (state.tagPlaybackBehavior === 'first') {
+        void playStation(list[0]);
+      } else if (state.tagPlaybackBehavior === 'random') {
+        const idx = Math.floor(Math.random() * list.length);
+        void playStation(list[idx]);
+      }
+    }
   } catch (e) {
     if (seq !== loadSeq) return;
     if (state.view !== 'discover' || state.selectedTag !== tagAtStart || state.nearMe !== nearAtStart)
@@ -1138,7 +1150,7 @@ async function loadSearch(q: string, reset = true) {
   }
 }
 
-async function loadCountryStations(code: string, reset = true) {
+async function loadCountryStations(code: string, reset = true, opts?: { autoPlayTag?: boolean }) {
   const seq = ++loadSeq;
   const offsetAtStart = reset ? 0 : state.offset;
   const extras = listQueryExtras();
@@ -1162,6 +1174,15 @@ async function loadCountryStations(code: string, reset = true) {
     state.stations = reset ? list : [...state.stations, ...list];
     state.hasMore = list.length >= PAGE && state.sort !== 'random';
     state.offset = offsetAtStart + list.length;
+
+    if (reset && opts?.autoPlayTag && list.length > 0) {
+      if (state.tagPlaybackBehavior === 'first') {
+        void playStation(list[0]);
+      } else if (state.tagPlaybackBehavior === 'random') {
+        const idx = Math.floor(Math.random() * list.length);
+        void playStation(list[idx]);
+      }
+    }
   } catch (e) {
     if (seq !== loadSeq) return;
     if (state.view !== 'countries' || state.selectedCountry !== code) return;
@@ -1337,7 +1358,7 @@ function openCountry(code: string, opts?: { skipHash?: boolean }) {
   void loadCountryStations(code, true);
 }
 
-function openTag(tag: string, opts?: { skipHash?: boolean; isRandom?: boolean }) {
+function openTag(tag: string, opts?: { skipHash?: boolean; isRandom?: boolean; autoPlayTag?: boolean }) {
   state.view = 'discover';
   state.selectedTag = tag;
   state.isRandomGenre = Boolean(opts?.isRandom);
@@ -1350,7 +1371,7 @@ function openTag(tag: string, opts?: { skipHash?: boolean; isRandom?: boolean })
   }
   renderNav();
   renderMobileTabs();
-  void loadDiscover(true);
+  void loadDiscover(true, { autoPlayTag: opts?.autoPlayTag ?? true });
 }
 
 function handlePickRandomGenre() {
@@ -1386,9 +1407,9 @@ function handlePickRandomGenre() {
     state.selectedTag = pickedId;
     state.isRandomGenre = true;
     persistPrefs();
-    void loadCountryStations(state.selectedCountry, true);
+    void loadCountryStations(state.selectedCountry, true, { autoPlayTag: true });
   } else {
-    openTag(pickedId, { isRandom: true });
+    openTag(pickedId, { isRandom: true, autoPlayTag: true });
   }
 }
 
@@ -1634,6 +1655,14 @@ function filterBar(): string {
         <label class="toggle-https" title="Unchecked: Curated genres (Option A). Checked: All 200+ API genres (Option B).">
           <input type="checkbox" data-action="random-all-genres" ${state.randomAllGenres ? 'checked' : ''} />
           <span>Random all genres</span>
+        </label>
+        <label class="toggle-select" title="Playback behavior when selecting a Mood & Genre tag">
+          <span>On genre select:</span>
+          <select class="select-compact" data-action="tag-playback-behavior">
+            <option value="keep" ${state.tagPlaybackBehavior === 'keep' ? 'selected' : ''}>Keep current station</option>
+            <option value="first" ${state.tagPlaybackBehavior === 'first' ? 'selected' : ''}>Play 1st station</option>
+            <option value="random" ${state.tagPlaybackBehavior === 'random' ? 'selected' : ''}>Play random station</option>
+          </select>
         </label>
       </div>
     </div>
@@ -2607,7 +2636,7 @@ function ensureAppEvents() {
           state.selectedTag = tag || null;
           state.isRandomGenre = false;
           persistPrefs();
-          void loadCountryStations(state.selectedCountry, true);
+          void loadCountryStations(state.selectedCountry, true, { autoPlayTag: true });
         } else {
           if (!tag) {
             state.selectedTag = null;
@@ -2616,9 +2645,9 @@ function ensureAppEvents() {
             state.view = 'discover';
             persistPrefs();
             if (!applyingRoute) setHash({ kind: 'view', view: 'discover' });
-            void loadDiscover(true);
+            void loadDiscover(true, { autoPlayTag: true });
           } else {
-            openTag(tag);
+            openTag(tag, { autoPlayTag: true });
           }
         }
         break;
@@ -2837,6 +2866,21 @@ function ensureAppEvents() {
           : '🎲 Random mode: Curated genres (Option A)'
       );
       renderMain();
+      return;
+    }
+    if (t.dataset.action === 'tag-playback-behavior' && t instanceof HTMLSelectElement) {
+      const mode = t.value as TagPlaybackBehavior;
+      if (mode === 'keep' || mode === 'first' || mode === 'random') {
+        state.tagPlaybackBehavior = mode;
+        persistPrefs();
+        const labels: Record<TagPlaybackBehavior, string> = {
+          keep: 'On genre select: Keep current station',
+          first: 'On genre select: Play 1st station',
+          random: 'On genre select: Play random station',
+        };
+        showToast(labels[mode]);
+        renderMain();
+      }
       return;
     }
     if (t.dataset.action === 'import-favs' && t instanceof HTMLInputElement && t.files?.[0]) {

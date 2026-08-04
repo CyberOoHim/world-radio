@@ -634,6 +634,32 @@ button.chip.active,
   height: 16px;
 }
 
+.toggle-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--text-soft);
+}
+
+.select-compact {
+  background: #1e2c4c;
+  border: 1px solid rgba(180, 205, 240, 0.35);
+  color: var(--text-heading, #eef3fb);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.select-compact:hover,
+.select-compact:focus {
+  border-color: rgba(180, 205, 240, 0.6);
+  background: #2a3d68;
+}
+
 button.chip.random-chip {
   background: linear-gradient(135deg, #283a62 0%, #1e2c4c 100%) !important;
   border-color: rgba(200, 180, 255, 0.45) !important;

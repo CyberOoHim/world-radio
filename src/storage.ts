@@ -1,4 +1,4 @@
-import type { AppPrefs, SortId, Station, TimeOfDayMode, ViewId } from './types';
+import type { AppPrefs, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, ViewId } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
@@ -168,6 +168,7 @@ export function saveLastStation(station: Station | null): void {
 
 const DEFAULT_PREFS: AppPrefs = {
   httpsOnly: true,
+  tagPlaybackBehavior: 'keep',
   randomAllGenres: false,
   isRandomGenre: false,
   sort: 'clickcount',
@@ -200,11 +201,16 @@ export function loadPrefs(): AppPrefs {
     const parsed = JSON.parse(raw) as Partial<AppPrefs>;
     const sort = (parsed.sort as SortId) || DEFAULT_PREFS.sort;
     const view = (parsed.view as ViewId) || DEFAULT_PREFS.view;
+    const tagPlaybackBehavior = parsed.tagPlaybackBehavior as TagPlaybackBehavior | undefined;
     return {
       httpsOnly:
         typeof parsed.httpsOnly === 'boolean'
           ? parsed.httpsOnly
           : DEFAULT_PREFS.httpsOnly,
+      tagPlaybackBehavior:
+        tagPlaybackBehavior === 'first' || tagPlaybackBehavior === 'random' || tagPlaybackBehavior === 'keep'
+          ? tagPlaybackBehavior
+          : DEFAULT_PREFS.tagPlaybackBehavior,
       randomAllGenres:
         typeof parsed.randomAllGenres === 'boolean'
           ? parsed.randomAllGenres
