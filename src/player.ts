@@ -1,5 +1,5 @@
 import { resolveStream } from './api/radioBrowser';
-import { upgradeHttpToHttps } from './safeUrl';
+import { playbackUrlCandidates } from './safeUrl';
 import type { Station } from './types';
 import { DEFAULT_FX, FX_PRESETS, buildFxChain, type FxChain, type FxConfig } from './audioFx';
 import { DEFAULT_EQ_BANDS, EQ_PRESETS, buildEqChain, type EqBands, type EqChain } from './equalizer';
@@ -84,6 +84,10 @@ class AudioPlayer {
   private dryReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private dryReconnectAttempts = 0;
   private _reconnecting = false;
+  /** True after this generation has actually started playback once. */
+  private playbackStarted = false;
+  /** HTTPS-first then original HTTP, so Icecast-without-TLS still plays. */
+  private streamCandidates: string[] = [];
 
   private eqChain: EqChain | null = null;
   private _eqEnabled = false;
@@ -246,6 +250,7 @@ class AudioPlayer {
       this._loading = false;
       this._error = null;
       this._reconnecting = false;
+      this.playbackStarted = true;
       this.dryReconnectAttempts = 0;
       this.clearDryReconnect();
       this.userPaused = false;
@@ -284,7 +289,8 @@ class AudioPlayer {
       this._loading = true;
       this.emit();
       this.armPauseWatch();
-      this.armDryReconnect();
+      // Live Icecast always buffers. Do not tear down on waiting.
+      this.armDryStallWatch();
     });
 
     this.audio.addEventListener('error', () => {
@@ -307,42 +313,95 @@ class AudioPlayer {
       }
       this._playing = false;
       this.emit();
-      this.armDryReconnect();
+      if (!this.userPaused && this.playbackStarted) {
+        void this.reconnectCurrentDry();
+      }
     });
 
     this.audio.addEventListener('stalled', () => {
       if (!this.isActiveGeneration() || this.userPaused) return;
       if (this._webAudioRouted) void this.resumeAudioContext();
       this.armPauseWatch();
-      this.armDryReconnect();
+      this.armDryStallWatch();
     });
   }
 
-  /** Reconnect a dropped dry Icecast/HLS stream. Capped to avoid storms. */
-  private armDryReconnect() {
+  /**
+   * After playback has started, a long stall often means the Icecast socket died.
+   * Never run this during the initial connect — waiting/stalled is normal then.
+   */
+  private armDryStallWatch() {
     if (this.userPaused || !this._station || !this.activeStreamUrl) return;
+    if (!this.playbackStarted) return;
     if (this.wantsWebAudio() && this.isProcessedElement()) return;
-    if (this.dryReconnectAttempts >= 4) return;
+    if (this.dryReconnectAttempts >= 3) return;
     if (this.dryReconnectTimer != null) return;
 
-    this._reconnecting = true;
-    this.emit();
-    const delay = 1800 + this.dryReconnectAttempts * 1400;
     this.dryReconnectTimer = setTimeout(() => {
       this.dryReconnectTimer = null;
-      if (!this.isActiveGeneration() || this.userPaused || !this._station) {
+      if (!this.isActiveGeneration() || this.userPaused || !this.playbackStarted) return;
+      // Still flowing — leave it alone.
+      if (!this.audio.paused && this.audio.readyState >= 3) return;
+      void this.reconnectCurrentDry();
+    }, 10_000);
+  }
+
+  /** Kick the same dry element. Do not bump playGeneration (that aborts a live connect). */
+  private async reconnectCurrentDry(): Promise<void> {
+    const url = this.activeStreamUrl;
+    const gen = this.playGeneration;
+    if (!url || this.userPaused || !this._station) return;
+    if (this.wantsWebAudio() && this.isProcessedElement()) return;
+    if (this.dryReconnectAttempts >= 3) return;
+
+    this.dryReconnectAttempts++;
+    this._reconnecting = true;
+    this.emit();
+
+    try {
+      this.audio.pause();
+      this.audio.src = url;
+      try {
+        this.audio.load();
+      } catch {
+        // ignore
+      }
+      this.applyOutputVolume();
+      await this.raceTimeout(this.audio.play(), 10_000);
+      if (gen !== this.playGeneration) return;
+      if (!this.audio.paused) {
+        this._playing = true;
+        this._loading = false;
+        this._error = null;
         this._reconnecting = false;
         this.emit();
         return;
       }
-      if (!this.audio.paused && this.audio.readyState >= 2) {
+    } catch {
+      // try remaining candidates below
+    }
+
+    if (gen !== this.playGeneration || this.userPaused) return;
+
+    const extras = this.streamCandidates.filter((u) => u !== url);
+    for (const next of extras) {
+      if (gen !== this.playGeneration) return;
+      const ok = await this.tryStartDry(next, gen);
+      if (ok) {
+        this._playing = true;
+        this._loading = false;
+        this._error = null;
         this._reconnecting = false;
+        this.softFadeIn();
         this.emit();
         return;
       }
-      this.dryReconnectAttempts++;
-      void this.play(this._station);
-    }, delay);
+    }
+
+    if (gen === this.playGeneration) {
+      this._reconnecting = false;
+      this.failPlayback('Could not play this station. Try another.');
+    }
   }
 
   private clearDryReconnect() {
@@ -396,6 +455,7 @@ class AudioPlayer {
     this.triedDryFallback = true;
     this.clearVerifyTimer();
     this.clearPauseWatch();
+    this.clearDryReconnect();
 
     try {
       this.teardownGraphNodesOnly();
@@ -420,13 +480,17 @@ class AudioPlayer {
       this.emit();
       return true;
     } catch {
-      // Try original station URL once more.
+      // Try remaining candidates (includes original HTTP after a failed HTTPS rewrite).
       if (this._station && gen === this.playGeneration) {
-        const original = this._station.url_resolved || this._station.url;
-        if (original && original !== url) {
+        const extras = this.streamCandidates.filter((u) => u && u !== url);
+        if (!extras.length) {
+          const original = this._station.url_resolved || this._station.url;
+          if (original && original !== url) extras.push(original);
+        }
+        for (const next of extras) {
           try {
-            this.activeStreamUrl = original;
-            this.audio.src = original;
+            this.activeStreamUrl = next;
+            this.audio.src = next;
             this.applyOutputVolume();
             await this.raceTimeout(this.audio.play(), 8_000);
             if (gen !== this.playGeneration) return false;
@@ -441,7 +505,7 @@ class AudioPlayer {
             this.emit();
             return true;
           } catch {
-            // fall through
+            // try next candidate
           }
         }
       }
@@ -460,25 +524,31 @@ class AudioPlayer {
       if (ok) return;
     }
 
-    // Dry element error: try alternate URL, else fail.
+    // Dry element error: walk remaining candidates (HTTP original after HTTPS rewrite).
     if (!this.triedOriginalFallback && this._station) {
-      const original = this._station.url_resolved || this._station.url;
-      if (original && original !== this.activeStreamUrl) {
+      const extras = this.streamCandidates.filter((u) => u && u !== this.activeStreamUrl);
+      if (!extras.length) {
+        const original = this._station.url_resolved || this._station.url;
+        if (original && original !== this.activeStreamUrl) extras.push(original);
+      }
+      if (extras.length) {
         this.triedOriginalFallback = true;
-        this.activeStreamUrl = original;
-        this.audio.src = original;
         const gen = this.playGeneration;
-        try {
-          await this.audio.play();
-          if (gen !== this.playGeneration) return;
-          this._playing = true;
-          this._loading = false;
-          this._error = null;
-          this.softFadeIn();
-          this.emit();
-          return;
-        } catch {
-          // fall through
+        for (const next of extras) {
+          this.activeStreamUrl = next;
+          this.audio.src = next;
+          try {
+            await this.audio.play();
+            if (gen !== this.playGeneration) return;
+            this._playing = true;
+            this._loading = false;
+            this._error = null;
+            this.softFadeIn();
+            this.emit();
+            return;
+          } catch {
+            // try next candidate
+          }
         }
       }
     }
@@ -1158,8 +1228,14 @@ class AudioPlayer {
       this.teardownGraphNodesOnly();
       this.mediaSourceNode = null;
       if (gen !== this.playGeneration) return false;
-      this.initAudioElement(false, true);
+      // Reuse the dry element so autoplay permission survives HTTPS→HTTP fallback.
+      this.initAudioElement(false, this.isProcessedElement());
       if (gen !== this.playGeneration) return false;
+      try {
+        this.audio.pause();
+      } catch {
+        // ignore
+      }
       this.activeStreamUrl = url;
       this.audio.src = url;
       this.applyOutputVolume();
@@ -1220,7 +1296,10 @@ class AudioPlayer {
     this._dryBecauseFxBlocked = false;
     this.userPaused = false;
     this.dryFallbackInFlight = false;
-    this._reconnecting = this.dryReconnectAttempts > 0;
+    this.dryReconnectAttempts = 0;
+    this.playbackStarted = false;
+    this.streamCandidates = [];
+    this._reconnecting = false;
     this.clearVerifyTimer();
     this.clearPauseWatch();
     this.clearDryReconnect();
@@ -1252,23 +1331,24 @@ class AudioPlayer {
     }
 
     const originalUrl = station.url_resolved || station.url || streamUrl;
+    this.streamCandidates = playbackUrlCandidates(
+      [streamUrl, originalUrl],
+      location.protocol
+    );
 
-    if (location.protocol === 'https:' && /^http:\/\//i.test(streamUrl)) {
-      streamUrl = upgradeHttpToHttps(streamUrl);
+    if (!this.streamCandidates.length) {
+      this._loading = false;
+      this._error = 'No stream URL available.';
+      this.emit();
+      return;
     }
 
     this.mediaGeneration = gen;
 
-    const urls: string[] = [];
-    for (const u of [streamUrl, originalUrl]) {
-      const next =
-        location.protocol === 'https:' && /^http:\/\//i.test(u) ? upgradeHttpToHttps(u) : u;
-      if (next && !urls.includes(next)) urls.push(next);
-    }
-
     // Dry-first: CORS live streams pause too often on iPad.
+    // Candidates are HTTPS-first, then the original HTTP stream.
     let dryUrl: string | null = null;
-    for (const url of urls) {
+    for (const url of this.streamCandidates) {
       if (gen !== this.playGeneration) return;
       const ok = await this.tryStartDry(url, gen);
       if (ok) {
@@ -1315,7 +1395,7 @@ class AudioPlayer {
       const recovered = await this.forceDryFallback('cors');
       if (!recovered && gen === this.playGeneration) {
         // Last resort: re-try dry on all urls
-        for (const url of urls) {
+        for (const url of this.streamCandidates) {
           if (await this.tryStartDry(url, gen)) {
             this._playing = true;
             this._loading = false;
@@ -1454,6 +1534,8 @@ class AudioPlayer {
       // ignore
     }
     this.activeStreamUrl = null;
+    this.streamCandidates = [];
+    this.playbackStarted = false;
     this.triedOriginalFallback = false;
     this.triedDryFallback = false;
     this._dryBecauseFxBlocked = false;
