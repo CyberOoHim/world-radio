@@ -15,6 +15,7 @@ import {
   getStationsByTag,
   getStationsByUuid,
   getStationsByUuids,
+  getLastNearMeta,
   getStationsNear,
   getTags,
   getTopStations,
@@ -29,12 +30,15 @@ import { FX_PRESETS } from './audioFx';
 import { type EqBands } from './equalizer';
 import {
   closeFxModal,
+  isFxModalOpen,
   openFxModal,
   renderFxModal,
   setFxModalTab,
   toggleFxModal,
   type ModalTab,
 } from './fxModal';
+import { escapeHtml } from './html';
+import { safeHttpUrl } from './safeUrl';
 import { updateMediaSession } from './mediaSession';
 import { player } from './player';
 import { parseHash, setHash, stationShareUrl } from './router';
@@ -44,11 +48,13 @@ import {
   importFavoritesJson,
   loadFavorites,
   loadLastStation,
+  loadMuted,
   loadPrefs,
   loadRecent,
   loadVolume,
   saveFavorites,
   saveLastStation,
+  saveMuted,
   savePrefs,
   saveRecent,
   saveVolume,
@@ -95,7 +101,7 @@ const state: AppState = {
   selectedCountry: prefs.selectedCountry,
   selectedTag: prefs.selectedTag,
   volume: loadVolume(),
-  muted: false,
+  muted: loadMuted(),
   offset: 0,
   hasMore: true,
   continentFilter: prefs.continentFilter,
@@ -113,6 +119,8 @@ const state: AppState = {
   userLon: null,
   timeOfDayMode: prefs.timeOfDayMode,
   surpriseMode: null,
+  favoriteGroupFilter: prefs.favoriteGroupFilter,
+  recentQuery: '',
 };
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -132,12 +140,7 @@ let surpriseBusy = false;
 let nearMeSeq = 0;
 
 const SURPRISE_BATCH = 20;
-/**
- * Full surprise budget (~60s):
- *   pool fetch ≤ 12s
- *   remaining ≈ 48s for connect attempts
- *   6 tries × ~8s outcome wait (play itself capped ~13s; deadline cuts overruns)
- */
+/** ~60s total: pool fetch ≤ 12s, then up to 6 connect attempts. */
 const SURPRISE_TOTAL_MS = 60_000;
 const SURPRISE_POOL_TIMEOUT_MS = 12_000;
 const SURPRISE_MAX_TRIES = 6;
@@ -204,12 +207,11 @@ function formatTags(tags: string, max = 3): string[] {
     .slice(0, max);
 }
 
-function escapeHtml(s: string | null | undefined): string {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
 }
 
 function titleCaseTag(name: string): string {
@@ -238,7 +240,7 @@ function showToast(msg: string, ms = 2600) {
   toastTimer = setTimeout(() => {
     state.toast = null;
     renderToast();
-  }, ms);
+  }, prefersReducedMotion() ? Math.min(ms, 1800) : ms);
 }
 
 function persistPrefs() {
@@ -255,6 +257,7 @@ function persistPrefs() {
     languageFilter: state.languageFilter,
     browseFilter: state.browseFilter,
     view: state.view,
+    favoriteGroupFilter: state.favoriteGroupFilter,
   });
 }
 
@@ -262,6 +265,7 @@ function applyMute(muted: boolean) {
   state.muted = muted;
   player.setMuted(muted, { silent: true });
   player.setVolume(state.volume);
+  saveMuted(muted);
   updatePlaybackUI();
 }
 
@@ -271,6 +275,7 @@ function applyVolume(v: number) {
   player.setVolume(state.volume);
   player.setMuted(state.muted, { silent: true });
   saveVolume(state.volume);
+  saveMuted(state.muted);
 }
 
 function listQueryExtras(): SearchParams {
@@ -405,11 +410,11 @@ function closePlayerAndCleanActivity() {
   state.loading = false;
   state.loadingMore = false;
 
-  // Leave station / near deep links.
+  // Leave station / near deep links; keep the actual browse view.
   if (!applyingRoute) {
     const route = parseHash();
     if (!route || route.kind === 'station' || route.kind === 'near') {
-      setHash({ kind: 'view', view: state.view === 'search' ? 'search' : 'discover' });
+      setHash({ kind: 'view', view: state.view });
     }
   }
 
@@ -829,10 +834,12 @@ async function runSurpriseAttempts(
     if (Date.now() > deadlineMs) return 'failed';
 
     attempt++;
-    if (attempt > 1) {
-      showToast(`Trying another… (${attempt}/${tries.length})`);
-    } else {
-      showToast(`Connecting (${scopeLabel})…`);
+    if (!prefersReducedMotion() || attempt === 1) {
+      if (attempt > 1) {
+        showToast(`Trying another… (${attempt}/${tries.length})`);
+      } else {
+        showToast(`Connecting (${scopeLabel})…`);
+      }
     }
 
     // Only switch UI to the candidate once we start this attempt.
@@ -912,10 +919,22 @@ async function runSurpriseAttempts(
 
 function restoreSurprisePrevious(previous: Station | null) {
   state.surpriseMode = null;
+  player.stop();
   state.current = previous;
   renderPlayer();
   renderMain();
   updatePlaybackUI();
+}
+
+let lastHereCtx: SurpriseContext | null = null;
+
+function rememberHereContext(ctx: SurpriseContext) {
+  lastHereCtx = {
+    ...ctx,
+    filters: { ...ctx.filters },
+    periodTags: ctx.periodTags ? [...ctx.periodTags] : null,
+    localPool: ctx.localPool,
+  };
 }
 
 /**
@@ -923,9 +942,8 @@ function restoreSurprisePrevious(previous: Station | null) {
  * Surprise · Here — respect current filters/list; one auto-fallback to Anywhere.
  * Re-click cancels the previous hunt and starts a new one (no permanent hang).
  */
-async function playSurprise(mode: SurpriseMode = 'anywhere') {
+async function playSurprise(mode: SurpriseMode = 'anywhere', overrideCtx?: SurpriseContext) {
   if (surpriseBusy) {
-    // Abandon stuck/slow hunt instead of blocking the user.
     surpriseSeq++;
     showToast('Restarting surprise…');
   }
@@ -933,7 +951,7 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
   const seq = ++surpriseSeq;
   surpriseBusy = true;
   state.surpriseMode = mode;
-  state.nearMe = false;
+  if (!overrideCtx?.near) state.nearMe = false;
   renderMain();
 
   const previous = state.current;
@@ -942,7 +960,7 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
 
   try {
     if (mode === 'here') {
-      const ctx = getSurpriseContext();
+      const ctx = overrideCtx ?? getSurpriseContext();
 
       if (ctx.localPool && ctx.localPool.length === 0) {
         state.surpriseMode = null;
@@ -972,9 +990,11 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
       }
 
       let result = await runSurpriseAttempts(pool, seq, ctx.label, deadlineMs);
-      if (result === 'cancelled' || result === 'played' || result === 'blocked') {
+      if (result === 'played' || result === 'blocked') {
+        rememberHereContext(ctx);
         return;
       }
+      if (result === 'cancelled') return;
 
       // Scoped streams all dead — one-shot global fallback
       if (Date.now() > deadlineMs) {
@@ -1018,6 +1038,23 @@ async function playSurprise(mode: SurpriseMode = 'anywhere') {
   }
 }
 
+function playPeriodMix() {
+  const period = resolveTimeOfDayPeriod(state.timeOfDayMode);
+  const ctx: SurpriseContext = {
+    label: timeOfDayPeriodLabel(period).toLowerCase(),
+    summary: `${timeOfDayPeriodLabel(period)} mix`,
+    hasStrongCondition: true,
+    filters: surpriseHttpsFilter(),
+    localPool: null,
+    tag: null,
+    countrycode: null,
+    near: null,
+    nameQuery: null,
+    periodTags: timeOfDayMoods(period).map((t) => t.id),
+  };
+  void playSurprise('here', ctx);
+}
+
 /** Dual surprise chips for hero / idle player */
 function surpriseActionsHtml(opts?: { compact?: boolean }): string {
   const ctx = getSurpriseContext();
@@ -1026,15 +1063,20 @@ function surpriseActionsHtml(opts?: { compact?: boolean }): string {
   const icon = icons.surprise;
   const activeAnywhere = state.surpriseMode === 'anywhere' ? ' active' : '';
   const activeHere = state.surpriseMode === 'here' ? ' active' : '';
+  const again = lastHereCtx
+    ? `<button type="button" class="chip" data-action="surprise-again" title="Another like: ${escapeHtml(lastHereCtx.summary)}">↻ Another like this</button>`
+    : '';
   if (opts?.compact) {
     return `
       <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Random station from anywhere">${icon} Anywhere</button>
       <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+      ${again}
     `;
   }
   return `
     <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Random station from all stations">${icon} Anywhere</button>
     <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+    ${again}
   `;
 }
 
@@ -1255,14 +1297,13 @@ async function loadFavoritesStations() {
       }
 
       if (seq !== loadSeq || state.view !== 'favorites') return;
-      state.stations = state.favorites
-        .map((s) => byId.get(s.stationuuid) ?? s)
-        .filter(Boolean);
+      state.favorites = state.favorites.map((s) => byId.get(s.stationuuid) ?? s);
+      applyFavoriteFilter();
     }
   } catch (e) {
     if (seq !== loadSeq || state.view !== 'favorites') return;
     // Fall back to local snapshots
-    state.stations = [...state.favorites];
+    applyFavoriteFilter();
     if (!state.stations.length) {
       state.error = e instanceof Error ? e.message : 'Failed to load favorites';
     }
@@ -1323,7 +1364,7 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   } else if (view === 'favorites') {
     void loadFavoritesStations();
   } else if (view === 'recent') {
-    state.stations = [...state.recent];
+    applyRecentFilter();
     state.loading = false;
     state.hasMore = false;
     state.error = null;
@@ -1379,7 +1420,7 @@ function handlePickRandomGenre() {
   let pickedLabel = '';
 
   if (state.randomAllGenres && state.tags.length > 0) {
-    // Option B: Pick from 200+ global API genres
+    // Full Radio Browser genre catalog
     const candidates = state.tags.filter(
       (t) => t.stationcount >= 5 && t.name.toLowerCase() !== state.selectedTag?.toLowerCase()
     );
@@ -1392,7 +1433,7 @@ function handlePickRandomGenre() {
   }
 
   if (!pickedId) {
-    // Option A: Curated MOOD_TAGS
+    // Curated mood tags
     const candidates = MOOD_TAGS.filter(
       (t) => t.id.toLowerCase() !== state.selectedTag?.toLowerCase()
     );
@@ -1506,7 +1547,6 @@ async function applyRouteFromHash() {
         openNearMe();
         break;
       case 'station': {
-        // Show station in player; load meta if needed
         let station =
           findStation(route.uuid) ||
           state.favorites.find((s) => s.stationuuid === route.uuid) ||
@@ -1522,14 +1562,11 @@ async function applyRouteFromHash() {
         }
         if (station) {
           state.current = station;
-          saveLastStation(station);
           renderPlayer();
-          // Stay on discover for browsing context
-          if (state.view === 'discover' && !state.stations.length) void loadDiscover(true);
-          else renderMain();
+          hydrateBrowseView();
         } else {
           showToast('Station not found');
-          setView('discover', { skipHash: true });
+          setView(prefs.view || 'discover', { skipHash: true });
         }
         break;
       }
@@ -1539,13 +1576,72 @@ async function applyRouteFromHash() {
   }
 }
 
+function hydrateBrowseView() {
+  const view = state.view;
+  if (view === 'favorites') {
+    void loadFavoritesStations();
+    return;
+  }
+  if (view === 'recent') {
+    applyRecentFilter();
+    state.loading = false;
+    state.hasMore = false;
+    renderMain();
+    return;
+  }
+  if (view === 'countries' && state.selectedCountry) {
+    void loadCountryStations(state.selectedCountry, true);
+    return;
+  }
+  if (view === 'search' && state.query.trim()) {
+    void loadSearch(state.query.trim(), true);
+    return;
+  }
+  if (view === 'discover' && !state.stations.length) {
+    void loadDiscover(true);
+    return;
+  }
+  renderMain();
+}
+
+function applyRecentFilter() {
+  const q = state.recentQuery.trim().toLowerCase();
+  state.stations = q
+    ? state.recent.filter(
+        (s) =>
+          s.name.toLowerCase().includes(q) ||
+          s.country.toLowerCase().includes(q) ||
+          s.tags.toLowerCase().includes(q)
+      )
+    : [...state.recent];
+}
+
+function favoriteGroups(): string[] {
+  const names = new Set<string>();
+  for (const s of state.favorites) {
+    if (s.group) names.add(s.group);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+function applyFavoriteFilter() {
+  const group = state.favoriteGroupFilter;
+  const list = group
+    ? group === '__none__'
+      ? state.favorites.filter((s) => !s.group)
+      : state.favorites.filter((s) => s.group === group)
+    : [...state.favorites];
+  state.stations = list;
+}
+
 // ─── Render pieces ───────────────────────────────────────
 
 function stationArtHtml(station: Station, cls = 'station-art'): string {
   const initial = escapeHtml((station.name || '?').trim().charAt(0).toUpperCase() || '♪');
-  if (station.favicon) {
+  const favicon = safeHttpUrl(station.favicon);
+  if (favicon) {
     return `<div class="${cls}" data-fallback="${initial}">
-      <img src="${escapeHtml(station.favicon)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+      <img src="${escapeHtml(favicon)}" alt="" loading="lazy" referrerpolicy="no-referrer"
         onerror="const p=this.parentElement;this.remove();if(p)p.textContent=p.dataset.fallback||'♪'"/>
     </div>`;
   }
@@ -1566,7 +1662,7 @@ function stationCard(station: Station): string {
       : null;
 
   return `
-    <article class="station-card ${current ? 'is-current' : ''} ${playing ? 'is-playing' : ''}" data-id="${escapeHtml(station.stationuuid)}" data-action="card-play" tabindex="0" role="button" aria-label="Play ${escapeHtml(station.name)}">
+    <article class="station-card ${current ? 'is-current' : ''} ${playing ? 'is-playing' : ''}" data-id="${escapeHtml(station.stationuuid)}" data-action="card-play">
       <div class="station-card-top">
         ${stationArtHtml(station)}
         <div class="station-info">
@@ -1574,7 +1670,7 @@ function stationCard(station: Station): string {
           <div class="station-meta">
             ${country ? `<span>${flag} ${escapeHtml(country)}</span>` : ''}
             ${dist ? `<span class="dot"></span><span title="Distance">${escapeHtml(dist)}</span>` : ''}
-            ${station.bitrate ? `<span class="dot"></span><span>${station.bitrate} kbps</span>` : ''}
+            ${typeof station.bitrate === 'number' && station.bitrate > 0 ? `<span class="dot"></span><span>${station.bitrate} kbps</span>` : ''}
             ${station.codec ? `<span class="dot"></span><span class="codec-badge">${escapeHtml(station.codec)}</span>` : ''}
             ${lang ? `<span class="dot"></span><span>${escapeHtml(lang)}</span>` : ''}
           </div>
@@ -1652,7 +1748,7 @@ function filterBar(): string {
           <input type="checkbox" data-action="https-only" ${state.httpsOnly ? 'checked' : ''} />
           <span>HTTPS streams only</span>
         </label>
-        <label class="toggle-https" title="Unchecked: Curated genres (Option A). Checked: All 200+ API genres (Option B).">
+        <label class="toggle-https" title="Unchecked: curated mood tags. Checked: full Radio Browser genre catalog.">
           <input type="checkbox" data-action="random-all-genres" ${state.randomAllGenres ? 'checked' : ''} />
           <span>Random all genres</span>
         </label>
@@ -1680,9 +1776,15 @@ function stationsSection(title: string, meta?: string): string {
     `;
   }
   if (state.error && state.stations.length === 0) {
+    const last = getLastStation();
     return `<div class="error-box">
       <p>${escapeHtml(state.error)}</p>
       <button type="button" class="btn-more" data-action="retry">Retry</button>
+      ${
+        last
+          ? `<button type="button" class="btn-more" data-action="resume" data-id="${escapeHtml(last.stationuuid)}">Resume ${escapeHtml(last.name.slice(0, 32))}</button>`
+          : ''
+      }
     </div>`;
   }
   if (state.stations.length === 0) {
@@ -1737,6 +1839,34 @@ function emptyMessage(): string {
  * - If a station is currently playing, returns the previous station in recent history.
  * - If no station is active (or player is idle), returns the most recent station played.
  */
+function nearYouTitle(): string {
+  const meta = getLastNearMeta();
+  if (!meta.radiusMeters) return 'Near you';
+  const km = Math.round(meta.radiusMeters / 1000);
+  if (meta.nextRadiusMeters && state.hasMore) {
+    const nextKm = Math.round(meta.nextRadiusMeters / 1000);
+    return `Showing within ${km} km — expand to ${nextKm} km`;
+  }
+  return `Showing within ${km} km`;
+}
+
+let deferredInstall: { prompt: () => Promise<unknown> } | null = null;
+let playSuccessCount = 0;
+let lastPlaySuccessId: string | null = null;
+
+function installHintDismissed(): boolean {
+  try {
+    return localStorage.getItem('world-radio:a2hs-dismissed') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function installChipHtml(): string {
+  if (!deferredInstall || playSuccessCount < 2 || installHintDismissed()) return '';
+  return `<button type="button" class="chip" data-action="install-app">Install World Radio</button>`;
+}
+
 function getLastStation(): Station | null {
   const current = state.current;
   if (current) {
@@ -1769,7 +1899,9 @@ function renderDiscover(): string {
             ? `<button type="button" class="chip" data-action="resume" data-id="${escapeHtml(last.stationuuid)}">▶ Resume ${escapeHtml(last.name.slice(0, 28))}${last.name.length > 28 ? '…' : ''}</button>`
             : ''
         }
+        ${installChipHtml()}
       </div>
+      <p class="hero-privacy">Near me sends your coordinates to Radio Browser to rank nearby stations. They are not stored.</p>
     </section>
     <div class="section-head">
       <h3>Right now <span class="period-tag">(${escapeHtml(periodLabel)})</span></h3>
@@ -1787,6 +1919,9 @@ function renderDiscover(): string {
       ).join('')}
     </div>
     <div class="chip-row chip-row-scroll">
+      <button type="button" class="chip" data-action="play-period" title="Play a random station for this period">
+        ▶ Play ${escapeHtml(periodLabel)} mix
+      </button>
       ${tod
         .map(
           (t) => `
@@ -1801,7 +1936,7 @@ function renderDiscover(): string {
       <button type="button" class="chip ${!state.selectedTag && !state.nearMe && !state.surpriseMode ? 'active' : ''}" data-action="tag" data-tag="">
         ✨ Popular
       </button>
-      <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+      <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'full catalog' : 'curated moods'})">
         🎲 Random${state.isRandomGenre && state.selectedTag ? `: ${escapeHtml(titleCaseTag(state.selectedTag))}` : ''}
       </button>
       ${MOOD_TAGS.map(
@@ -1814,7 +1949,7 @@ function renderDiscover(): string {
     ${filterBar()}
     ${stationsSection(
       state.nearMe
-        ? 'Near you'
+        ? nearYouTitle()
         : state.selectedTag
           ? MOOD_TAGS.find((t) => t.id === state.selectedTag)?.label ||
             titleCaseTag(state.selectedTag)
@@ -1858,7 +1993,7 @@ function renderCountries(): string {
         <button type="button" class="chip ${!state.selectedTag && !state.nearMe && !state.surpriseMode ? 'active' : ''}" data-action="tag" data-tag="">
           ✨ Popular
         </button>
-        <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+        <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'full catalog' : 'curated moods'})">
           🎲 Random${state.isRandomGenre && state.selectedTag ? `: ${escapeHtml(titleCaseTag(state.selectedTag))}` : ''}
         </button>
         ${MOOD_TAGS.map(
@@ -1954,7 +2089,7 @@ function renderGenres(): string {
       <h3>Popular moods</h3>
     </div>
     <div class="chip-row chip-row-scroll" style="margin-bottom:20px">
-      <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'Option B: All API genres' : 'Option A: Curated genres'})">
+      <button type="button" class="chip random-chip ${state.isRandomGenre ? 'active' : ''}" data-action="random-genre" title="Pick a random genre (${state.randomAllGenres ? 'full catalog' : 'curated moods'})">
         🎲 Random${state.isRandomGenre && state.selectedTag ? `: ${escapeHtml(titleCaseTag(state.selectedTag))}` : ''}
       </button>
       ${MOOD_TAGS.map(
@@ -1997,14 +2132,25 @@ function renderMainHtml(): string {
       return `
         <section class="hero">
           <h2>Your quiet collection.</h2>
-          <p>Stations you’ve saved for later evenings.</p>
+          <p>Stations you’ve saved for later evenings. Pin them into folders from station details.</p>
           <div class="hero-actions">
             <button type="button" class="chip" data-action="export-favs">Export JSON</button>
             <label class="chip file-chip">Import JSON
               <input type="file" accept="application/json,.json" data-action="import-favs" hidden />
             </label>
+            ${surpriseActionsHtml({ compact: true })}
           </div>
         </section>
+        <div class="chip-row chip-row-scroll compact">
+          <button type="button" class="chip ${!state.favoriteGroupFilter ? 'active' : ''}" data-action="fav-group-filter" data-group="">All</button>
+          <button type="button" class="chip ${state.favoriteGroupFilter === '__none__' ? 'active' : ''}" data-action="fav-group-filter" data-group="__none__">Ungrouped</button>
+          ${favoriteGroups()
+            .map(
+              (g) =>
+                `<button type="button" class="chip ${state.favoriteGroupFilter === g ? 'active' : ''}" data-action="fav-group-filter" data-group="${escapeHtml(g)}">${escapeHtml(g)}</button>`
+            )
+            .join('')}
+        </div>
         ${stationsSection('Favorites', `${state.stations.length}`)}
       `;
     case 'recent':
@@ -2012,7 +2158,14 @@ function renderMainHtml(): string {
         <section class="hero">
           <h2>Recently tuned.</h2>
           <p>Pick up where you left off.</p>
+          <div class="hero-actions">
+            <button type="button" class="chip" data-action="clear-recent">Clear history</button>
+            ${surpriseActionsHtml({ compact: true })}
+          </div>
         </section>
+        <div class="browse-search-wrap">
+          <input type="search" class="browse-search" placeholder="Search history…" value="${escapeHtml(state.recentQuery)}" data-action="recent-filter" autocomplete="off" />
+        </div>
         ${stationsSection('History', `${state.stations.length}`)}
       `;
     case 'search':
@@ -2039,6 +2192,12 @@ function renderPlayerHtml(): string {
           <button type="button" class="chip" data-action="tag" data-tag="jazz">🎷 Jazz</button>
           <button type="button" class="chip" data-action="tag" data-tag="ambient">🌙 Ambient</button>
           ${surpriseActionsHtml({ compact: true })}
+          <button type="button" class="chip ${state.httpsOnly ? 'active' : ''}" data-action="toggle-https-chip" title="Prefer HTTPS streams">${state.httpsOnly ? '🔒 HTTPS on' : '🔓 HTTPS off'}</button>
+          ${
+            state.languageFilter
+              ? `<button type="button" class="chip active" data-action="lang" data-lang="">✕ ${escapeHtml(titleCaseTag(state.languageFilter))}</button>`
+              : ''
+          }
         </div>
       </div>`;
   }
@@ -2050,13 +2209,15 @@ function renderPlayerHtml(): string {
   const country = s.country || s.countrycode || '';
   const sleepLabel = formatSleepRemaining(sleepTimer.remainingMs);
   const sleepActive = sleepTimer.active;
-  const nowLabel = loading
-    ? 'Connecting…'
-    : playing
-      ? 'Now playing'
-      : hydrated
-        ? 'Paused'
-        : 'Ready';
+  const nowLabel = player.reconnecting
+    ? `Reconnecting to ${s.name.slice(0, 28)}${s.name.length > 28 ? '…' : ''}…`
+    : loading
+      ? 'Connecting…'
+      : playing
+        ? 'Now playing'
+        : hydrated
+          ? 'Paused'
+          : 'Ready';
 
   return `
     <div class="player-now">
@@ -2149,11 +2310,11 @@ function renderDetailHtml(): string {
       <dl class="detail-meta">
         ${s.language ? `<div><dt>Language</dt><dd>${escapeHtml(s.language)}</dd></div>` : ''}
         ${s.codec ? `<div><dt>Codec</dt><dd>${escapeHtml(s.codec)}</dd></div>` : ''}
-        ${s.bitrate ? `<div><dt>Bitrate</dt><dd>${s.bitrate} kbps</dd></div>` : ''}
-        ${s.votes ? `<div><dt>Votes</dt><dd>${s.votes.toLocaleString()}</dd></div>` : ''}
-        ${s.clickcount ? `<div><dt>Clicks</dt><dd>${s.clickcount.toLocaleString()}</dd></div>` : ''}
+        ${typeof s.bitrate === 'number' && s.bitrate > 0 ? `<div><dt>Bitrate</dt><dd>${s.bitrate} kbps</dd></div>` : ''}
+        ${typeof s.votes === 'number' && s.votes > 0 ? `<div><dt>Votes</dt><dd>${s.votes.toLocaleString()}</dd></div>` : ''}
+        ${typeof s.clickcount === 'number' && s.clickcount > 0 ? `<div><dt>Clicks</dt><dd>${s.clickcount.toLocaleString()}</dd></div>` : ''}
         ${
-          s.geo_lat != null && s.geo_long != null
+          typeof s.geo_lat === 'number' && typeof s.geo_long === 'number'
             ? `<div><dt>Location</dt><dd>${s.geo_lat.toFixed(2)}, ${s.geo_long.toFixed(2)}</dd></div>`
             : ''
         }
@@ -2177,11 +2338,18 @@ function renderDetailHtml(): string {
         </button>
         <button type="button" class="btn-icon" data-action="share" data-id="${escapeHtml(s.stationuuid)}" title="Share">${icons.share}</button>
         ${
-          s.homepage
-            ? `<a class="btn-icon" href="${escapeHtml(s.homepage)}" target="_blank" rel="noopener" title="Website">${icons.external}</a>`
+          safeHttpUrl(s.homepage)
+            ? `<a class="btn-icon" href="${escapeHtml(safeHttpUrl(s.homepage)!)}" target="_blank" rel="noopener" title="Website">${icons.external}</a>`
             : ''
         }
       </div>
+      ${
+        isFav(s.stationuuid)
+          ? `<label class="folder-label">Folder
+              <input type="text" class="eq-save-input" maxlength="40" placeholder="e.g. Night jazz" value="${escapeHtml(s.group || '')}" data-action="set-fav-group" data-id="${escapeHtml(s.stationuuid)}" />
+            </label>`
+          : ''
+      }
     </div>
   `;
 }
@@ -2213,7 +2381,7 @@ function renderNavHtml(): string {
     <div class="nav-footer">
       Streams via <a href="https://www.radio-browser.info/" target="_blank" rel="noopener">Radio Browser</a>
       — community-powered, free radio directory.
-      <div class="kbd-hint">Shortcuts: Space play · / search · N/P next · M mute</div>
+      <div class="kbd-hint">Shortcuts: Space play · / search · N/P next · ↑↓ vol · M mute · Esc close</div>
     </div>
   `;
 }
@@ -2329,6 +2497,9 @@ function renderDetail() {
   if (!root) return;
   root.innerHTML = renderDetailHtml();
   document.body.classList.toggle('sheet-open', Boolean(state.detailStation));
+  if (state.detailStation) {
+    root.querySelector<HTMLElement>('.sheet-close')?.focus();
+  }
 }
 
 function renderToast() {
@@ -2398,9 +2569,24 @@ function updateHeroResumeUI() {
 }
 
 function updatePlaybackUI() {
-  state.current = player.station ?? state.current;
-  if (state.current) {
-    saveLastStation(state.current);
+  if (player.playing && player.station) {
+    state.current = player.station;
+    saveLastStation(player.station);
+    if (lastPlaySuccessId !== player.station.stationuuid) {
+      lastPlaySuccessId = player.station.stationuuid;
+      playSuccessCount++;
+      if (playSuccessCount === 2 && deferredInstall) renderMain();
+    }
+    document.title = `${player.station.name} — World Radio`;
+  } else if (player.station && !player.error) {
+    state.current = player.station;
+    document.title = state.current
+      ? `${state.current.name} — World Radio`
+      : 'World Radio — Relax & Listen';
+  } else {
+    document.title = state.current
+      ? `${state.current.name} — World Radio`
+      : 'World Radio — Relax & Listen';
   }
   document.body.classList.toggle('is-playing', player.playing);
   renderPlayer();
@@ -2525,6 +2711,8 @@ function ensureAppEvents() {
       action === 'search' ||
       action === 'volume' ||
       action === 'browse-filter' ||
+      action === 'recent-filter' ||
+      action === 'set-fav-group' ||
       action === 'https-only' ||
       action === 'random-all-genres' ||
       action === 'import-favs'
@@ -2657,6 +2845,43 @@ function ensureAppEvents() {
         void playSurprise(mode);
         break;
       }
+      case 'surprise-again':
+        if (lastHereCtx) void playSurprise('here', lastHereCtx);
+        else void playSurprise('here');
+        break;
+      case 'play-period':
+        playPeriodMix();
+        break;
+      case 'install-app':
+        void promptInstall();
+        break;
+      case 'toggle-https-chip':
+        state.httpsOnly = !state.httpsOnly;
+        persistPrefs();
+        if (!state.httpsOnly) {
+          showToast('HTTPS-only off — remaining HTTP streams may be blocked on this site');
+        }
+        renderMain();
+        renderPlayer();
+        reloadCurrentList();
+        break;
+      case 'fav-group-filter':
+        state.favoriteGroupFilter = t.dataset.group || null;
+        persistPrefs();
+        applyFavoriteFilter();
+        renderMain();
+        break;
+      case 'clear-recent':
+        state.recent = [];
+        state.recentQuery = '';
+        saveRecent([]);
+        if (state.view === 'recent') {
+          state.stations = [];
+          renderMain();
+        }
+        renderNav();
+        showToast('History cleared');
+        break;
       case 'time-of-day': {
         const mode = t.dataset.mode as TimeOfDayMode | undefined;
         if (
@@ -2854,6 +3079,9 @@ function ensureAppEvents() {
     if (t.dataset.action === 'https-only' && t instanceof HTMLInputElement) {
       state.httpsOnly = t.checked;
       persistPrefs();
+      if (!state.httpsOnly) {
+        showToast('HTTPS-only off — remaining HTTP streams may be blocked on this site');
+      }
       reloadCurrentList();
       return;
     }
@@ -2862,8 +3090,8 @@ function ensureAppEvents() {
       persistPrefs();
       showToast(
         state.randomAllGenres
-          ? '🎲 Random mode: All 200+ API genres (Option B)'
-          : '🎲 Random mode: Curated genres (Option A)'
+          ? '🎲 Random mode: full genre catalog'
+          : '🎲 Random mode: curated moods'
       );
       renderMain();
       return;
@@ -2935,7 +3163,6 @@ function ensureAppEvents() {
       state.browseFilter = t.value;
       persistPrefs();
       renderMain();
-      // restore focus
       const input = qs<HTMLInputElement>('.browse-search');
       if (input) {
         input.focus();
@@ -2949,11 +3176,45 @@ function ensureAppEvents() {
       return;
     }
 
+    if (action === 'recent-filter' && t instanceof HTMLInputElement) {
+      state.recentQuery = t.value;
+      applyRecentFilter();
+      renderMain();
+      const input = qs<HTMLInputElement>('[data-action="recent-filter"]');
+      if (input) {
+        input.focus();
+        const len = input.value.length;
+        try {
+          input.setSelectionRange(len, len);
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+
+    if (action === 'set-fav-group' && t instanceof HTMLInputElement) {
+      const id = t.dataset.id;
+      if (!id) return;
+      const group = t.value.trim().slice(0, 40);
+      state.favorites = state.favorites.map((s) =>
+        s.stationuuid === id ? { ...s, group: group || undefined } : s
+      );
+      saveFavorites(state.favorites);
+      if (state.detailStation?.stationuuid === id) {
+        state.detailStation = { ...state.detailStation, group: group || undefined };
+      }
+      if (state.view === 'favorites') applyFavoriteFilter();
+      return;
+    }
+
     if (action === 'change-eq-band' && t instanceof HTMLInputElement) {
       const band = t.dataset.band as keyof EqBands | undefined;
       if (band) {
-        player.setEqBand(band, parseFloat(t.value));
-        renderFxModal();
+        const val = parseFloat(t.value);
+        player.setEqBand(band, val);
+        const label = t.closest('.eq-slider-col')?.querySelector('.eq-db-val');
+        if (label) label.textContent = `${val > 0 ? '+' : ''}${val} dB`;
       }
       return;
     }
@@ -2983,12 +3244,15 @@ function ensureAppEvents() {
       return;
     }
 
-    // Card activate
     if (t.classList.contains('station-card') && (ke.key === 'Enter' || ke.key === ' ')) {
       ke.preventDefault();
+      ke.stopPropagation();
       const id = t.dataset.id;
       const station = id ? findStation(id) : undefined;
-      if (station) void playStation(station);
+      if (station) {
+        if (state.current?.stationuuid === station.stationuuid) togglePlayback();
+        else void playStation(station);
+      }
     }
   });
 }
@@ -3003,11 +3267,23 @@ function isTypingTarget(el: EventTarget | null): boolean {
 
 function bindGlobalKeys() {
   document.addEventListener('keydown', (e) => {
+    if (isFxModalOpen()) {
+      if (e.key === 'Escape') return;
+      if ([' ', 'n', 'N', 'p', 'P', 'm', 'M', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        return;
+      }
+    }
+
     if (isTypingTarget(e.target)) {
       if (e.key === 'Escape') {
         (e.target as HTMLElement).blur();
       }
       return;
+    }
+
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('button, [role="button"], a, input, select, textarea')) {
+      if (e.key === ' ' || e.key === 'Enter') return;
     }
 
     switch (e.key) {
@@ -3020,11 +3296,13 @@ function bindGlobalKeys() {
         applyMute(!state.muted);
         break;
       case 'ArrowLeft':
+      case 'ArrowDown':
         e.preventDefault();
         applyVolume(state.volume - 0.05);
         renderPlayer();
         break;
       case 'ArrowRight':
+      case 'ArrowUp':
         e.preventDefault();
         applyVolume(state.volume + 0.05);
         renderPlayer();
@@ -3068,9 +3346,29 @@ async function loadMore() {
   }
 }
 
+async function promptInstall() {
+  if (!deferredInstall) {
+    showToast('Use your browser menu to add World Radio to the home screen');
+    return;
+  }
+  try {
+    await deferredInstall.prompt();
+  } catch {
+    // ignore
+  }
+  deferredInstall = null;
+  try {
+    localStorage.setItem('world-radio:a2hs-dismissed', '1');
+  } catch {
+    // ignore
+  }
+  renderMain();
+}
+
 // ─── Boot ────────────────────────────────────────────────
 
 player.setVolume(state.volume);
+player.setMuted(state.muted, { silent: true });
 
 player.subscribe(() => {
   updatePlaybackUI();
@@ -3104,12 +3402,22 @@ window.addEventListener('hashchange', () => {
   void applyRouteFromHash();
 });
 
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstall = e as unknown as { prompt: () => Promise<unknown> };
+  if (playSuccessCount >= 2) renderMain();
+});
+
+sleepTimer.restore();
+
 renderAllChrome();
 void ensureMeta();
 
 const initialRoute = parseHash();
 if (initialRoute) {
   void applyRouteFromHash();
+} else if (prefs.view && prefs.view !== 'discover') {
+  setView(prefs.view);
 } else {
   void loadDiscover(true);
 }

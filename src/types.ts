@@ -22,6 +22,8 @@ export interface Station {
   geo_long: number | null;
   /** Meters from request origin; only set on geo searches. */
   geo_distance?: number | null;
+  /** App-only favorites folder name. */
+  group?: string;
 }
 
 export interface Country {
@@ -86,7 +88,7 @@ export interface AppState {
   httpsOnly: boolean;
   /** Behavior when a Mood&Genre tag is selected: keep current station, play 1st, or play random */
   tagPlaybackBehavior: TagPlaybackBehavior;
-  /** When true, 🎲 Random picks from 200+ global API genres (Option B) instead of curated list (Option A) */
+  /** When true, 🎲 Random picks from the full API genre catalog instead of curated moods. */
   randomAllGenres: boolean;
   /** When true, the current selectedTag was selected via 🎲 Random picker */
   isRandomGenre: boolean;
@@ -98,6 +100,8 @@ export interface AppState {
   /** Right now strip: auto follows local clock, or a pinned period */
   timeOfDayMode: TimeOfDayMode;
   surpriseMode: SurpriseMode | null;
+  favoriteGroupFilter: string | null;
+  recentQuery: string;
 }
 
 export interface AppPrefs {
@@ -113,4 +117,5 @@ export interface AppPrefs {
   languageFilter: string | null;
   browseFilter: string;
   view: ViewId;
+  favoriteGroupFilter: string | null;
 }

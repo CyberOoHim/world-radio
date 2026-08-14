@@ -1,8 +1,10 @@
+import { DEFAULT_EQ_BANDS, type EqBands } from './equalizer';
 import type { AppPrefs, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, ViewId } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
 const VOLUME_KEY = 'world-radio:volume';
+const MUTE_KEY = 'world-radio:muted';
 const LAST_KEY = 'world-radio:last-station';
 const PREFS_KEY = 'world-radio:prefs';
 
@@ -37,9 +39,13 @@ export function sanitizeStation(raw: unknown): Station | null {
     lastcheckok: typeof s.lastcheckok === 'number' ? s.lastcheckok : 0,
     clickcount: typeof s.clickcount === 'number' ? s.clickcount : 0,
     clicktrend: typeof s.clicktrend === 'number' ? s.clicktrend : 0,
-    geo_lat: typeof s.geo_lat === 'number' ? s.geo_lat : null,
-    geo_long: typeof s.geo_long === 'number' ? s.geo_long : null,
-    geo_distance: typeof s.geo_distance === 'number' ? s.geo_distance : null,
+    geo_lat: typeof s.geo_lat === 'number' && Number.isFinite(s.geo_lat) ? s.geo_lat : null,
+    geo_long: typeof s.geo_long === 'number' && Number.isFinite(s.geo_long) ? s.geo_long : null,
+    geo_distance: typeof s.geo_distance === 'number' && Number.isFinite(s.geo_distance) ? s.geo_distance : null,
+    group:
+      typeof s.group === 'string' && s.group.trim()
+        ? s.group.trim().slice(0, 40)
+        : undefined,
   };
 }
 
@@ -79,6 +85,7 @@ export function loadFavorites(): Station[] {
         clicktrend: 0,
         geo_lat: null,
         geo_long: null,
+        group: undefined,
       }));
     }
 
@@ -144,6 +151,22 @@ export function saveVolume(v: number): void {
   }
 }
 
+export function loadMuted(): boolean {
+  try {
+    return localStorage.getItem(MUTE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function saveMuted(muted: boolean): void {
+  try {
+    localStorage.setItem(MUTE_KEY, muted ? '1' : '0');
+  } catch {
+    // Quota / private mode
+  }
+}
+
 export function loadLastStation(): Station | null {
   try {
     const raw = localStorage.getItem(LAST_KEY);
@@ -179,6 +202,7 @@ const DEFAULT_PREFS: AppPrefs = {
   languageFilter: null,
   browseFilter: '',
   view: 'discover',
+  favoriteGroupFilter: null,
 };
 
 function sanitizeTimeOfDayMode(v: unknown): TimeOfDayMode {
@@ -248,6 +272,10 @@ export function loadPrefs(): AppPrefs {
         view === 'search'
           ? view
           : DEFAULT_PREFS.view,
+      favoriteGroupFilter:
+        typeof parsed.favoriteGroupFilter === 'string' && parsed.favoriteGroupFilter.trim()
+          ? parsed.favoriteGroupFilter.trim().slice(0, 40)
+          : null,
     };
   } catch {
     return { ...DEFAULT_PREFS };
@@ -266,7 +294,7 @@ export function exportFavoritesJson(stations: Station[]): string {
   return JSON.stringify(
     {
       app: 'world-radio',
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       favorites: stations.map(toSnapshot),
     },
@@ -327,8 +355,6 @@ export function saveFxState(fxState: FxStatePrefs): void {
   }
 }
 
-import type { EqBands } from './equalizer';
-
 export interface EqStatePrefs {
   enabled: boolean;
   presetId: string;
@@ -336,21 +362,35 @@ export interface EqStatePrefs {
 }
 
 const EQ_STATE_KEY = 'world-radio:eq-state';
+const BAND_KEYS: (keyof EqBands)[] = ['b60', 'b150', 'b400', 'b1k', 'b2k5', 'b6k', 'b10k', 'b16k'];
+
+function clampDb(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-12, Math.min(12, n));
+}
+
+export function sanitizeEqBands(raw: unknown): EqBands {
+  const src = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const bands = { ...DEFAULT_EQ_BANDS };
+  for (const key of BAND_KEYS) {
+    bands[key] = clampDb(src[key]);
+  }
+  return bands;
+}
 
 export function loadEqState(): EqStatePrefs {
-  const defaultBands = { b60: 0, b150: 0, b400: 0, b1k: 0, b2k5: 0, b6k: 0, b10k: 0, b16k: 0 };
   try {
     const raw = localStorage.getItem(EQ_STATE_KEY);
-    if (!raw) return { enabled: false, presetId: 'flat', bands: defaultBands };
+    if (!raw) return { enabled: false, presetId: 'flat', bands: { ...DEFAULT_EQ_BANDS } };
     const parsed = JSON.parse(raw);
-    const bands = typeof parsed.bands === 'object' && parsed.bands ? { ...defaultBands, ...parsed.bands } : defaultBands;
     return {
       enabled: Boolean(parsed.enabled),
       presetId: typeof parsed.presetId === 'string' ? parsed.presetId : 'flat',
-      bands,
+      bands: sanitizeEqBands(parsed.bands),
     };
   } catch {
-    return { enabled: false, presetId: 'flat', bands: defaultBands };
+    return { enabled: false, presetId: 'flat', bands: { ...DEFAULT_EQ_BANDS } };
   }
 }
 
@@ -368,12 +408,32 @@ export interface CustomEqPreset {
 
 const CUSTOM_EQ_PRESETS_KEY = 'world-radio:custom-eq-presets';
 
+export function sanitizeCustomEqPreset(raw: unknown): CustomEqPreset | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === 'string' ? o.id : '';
+  if (!id.startsWith('custom-') || id.length > 80) return null;
+  const name =
+    typeof o.name === 'string' && o.name.trim() ? o.name.trim().slice(0, 40) : 'Custom Preset';
+  return { id, name, bands: sanitizeEqBands(o.bands) };
+}
+
 export function loadCustomEqPresets(): CustomEqPreset[] {
   try {
     const raw = localStorage.getItem(CUSTOM_EQ_PRESETS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    const out: CustomEqPreset[] = [];
+    const seen = new Set<string>();
+    for (const item of parsed) {
+      const preset = sanitizeCustomEqPreset(item);
+      if (!preset || seen.has(preset.id)) continue;
+      seen.add(preset.id);
+      out.push(preset);
+      if (out.length >= 24) break;
+    }
+    return out;
   } catch {
     return [];
   }
@@ -381,7 +441,11 @@ export function loadCustomEqPresets(): CustomEqPreset[] {
 
 export function saveCustomEqPresets(presets: CustomEqPreset[]): void {
   try {
-    localStorage.setItem(CUSTOM_EQ_PRESETS_KEY, JSON.stringify(presets));
+    const clean = presets
+      .map(sanitizeCustomEqPreset)
+      .filter((p): p is CustomEqPreset => p != null)
+      .slice(0, 24);
+    localStorage.setItem(CUSTOM_EQ_PRESETS_KEY, JSON.stringify(clean));
   } catch {}
 }
 

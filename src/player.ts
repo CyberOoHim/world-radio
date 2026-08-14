@@ -1,4 +1,5 @@
 import { resolveStream } from './api/radioBrowser';
+import { upgradeHttpToHttps } from './safeUrl';
 import type { Station } from './types';
 import { DEFAULT_FX, FX_PRESETS, buildFxChain, type FxChain, type FxConfig } from './audioFx';
 import { DEFAULT_EQ_BANDS, EQ_PRESETS, buildEqChain, type EqBands, type EqChain } from './equalizer';
@@ -80,6 +81,9 @@ class AudioPlayer {
   private lastDryNoticeAt = 0;
   private verifyTimer: ReturnType<typeof setTimeout> | null = null;
   private pauseWatchTimer: ReturnType<typeof setTimeout> | null = null;
+  private dryReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private dryReconnectAttempts = 0;
+  private _reconnecting = false;
 
   private eqChain: EqChain | null = null;
   private _eqEnabled = false;
@@ -241,6 +245,9 @@ class AudioPlayer {
       this._playing = true;
       this._loading = false;
       this._error = null;
+      this._reconnecting = false;
+      this.dryReconnectAttempts = 0;
+      this.clearDryReconnect();
       this.userPaused = false;
       if (this._webAudioRouted) {
         void this.resumeAudioContext();
@@ -276,8 +283,8 @@ class AudioPlayer {
       if (!this.isActiveGeneration()) return;
       this._loading = true;
       this.emit();
-      // Long buffer under processed path often never recovers on iPad.
       this.armPauseWatch();
+      this.armDryReconnect();
     });
 
     this.audio.addEventListener('error', () => {
@@ -300,18 +307,53 @@ class AudioPlayer {
       }
       this._playing = false;
       this.emit();
+      this.armDryReconnect();
     });
 
     this.audio.addEventListener('stalled', () => {
       if (!this.isActiveGeneration() || this.userPaused) return;
       if (this._webAudioRouted) void this.resumeAudioContext();
       this.armPauseWatch();
+      this.armDryReconnect();
     });
+  }
+
+  /** Reconnect a dropped dry Icecast/HLS stream. Capped to avoid storms. */
+  private armDryReconnect() {
+    if (this.userPaused || !this._station || !this.activeStreamUrl) return;
+    if (this.wantsWebAudio() && this.isProcessedElement()) return;
+    if (this.dryReconnectAttempts >= 4) return;
+    if (this.dryReconnectTimer != null) return;
+
+    this._reconnecting = true;
+    this.emit();
+    const delay = 1800 + this.dryReconnectAttempts * 1400;
+    this.dryReconnectTimer = setTimeout(() => {
+      this.dryReconnectTimer = null;
+      if (!this.isActiveGeneration() || this.userPaused || !this._station) {
+        this._reconnecting = false;
+        this.emit();
+        return;
+      }
+      if (!this.audio.paused && this.audio.readyState >= 2) {
+        this._reconnecting = false;
+        this.emit();
+        return;
+      }
+      this.dryReconnectAttempts++;
+      void this.play(this._station);
+    }, delay);
+  }
+
+  private clearDryReconnect() {
+    if (this.dryReconnectTimer != null) {
+      clearTimeout(this.dryReconnectTimer);
+      this.dryReconnectTimer = null;
+    }
   }
 
   /**
    * If the stream stays paused/waiting under processed mode, force dry.
-   * Catches iPad cases that fire pause/waiting without a hard error.
    */
   private armPauseWatch() {
     if (this.pauseWatchTimer != null) {
@@ -524,6 +566,9 @@ class AudioPlayer {
   }
   get dryBecauseFxBlocked() {
     return this._dryBecauseFxBlocked;
+  }
+  get reconnecting() {
+    return this._reconnecting;
   }
 
   onNotice(fn: NoticeListener): () => void {
@@ -806,10 +851,12 @@ class AudioPlayer {
   }
 
   private async handleWebAudioToggle(enableWebAudio: boolean) {
+    const gen = this.playGeneration;
     const wasPlaying = this._playing || (!this.userPaused && !!this.activeStreamUrl && !this.audio.paused);
     const currentUrl = this.activeStreamUrl;
     this.clearVerifyTimer();
     this.clearPauseWatch();
+    this.clearDryReconnect();
     this._dryBecauseFxBlocked = false;
     this.triedDryFallback = false;
 
@@ -823,43 +870,46 @@ class AudioPlayer {
     }
 
     if (!enableWebAudio) {
-      // Back to dry — most reliable.
       this.userPaused = false;
       this.initAudioElement(false, true);
       this.audio.src = currentUrl;
       this.applyOutputVolume();
       try {
         await this.raceTimeout(this.audio.play(), 8_000);
+        if (gen !== this.playGeneration) return;
         this._playing = true;
         this._loading = false;
         this._error = null;
         this.softFadeIn();
         this.emit();
       } catch {
-        this.failPlayback('Could not play this station. Try another.');
+        if (gen === this.playGeneration) {
+          this.failPlayback('Could not play this station. Try another.');
+        }
       }
       return;
     }
 
-    // Enabling FX while playing:
-    // 1) Keep/restore dry immediately so user never sits paused.
-    // 2) Optionally try processed upgrade (skipped on Apple touch for stability).
     await this.unlockAudio();
+    if (gen !== this.playGeneration) return;
     this.userPaused = false;
 
-    const dryOk = await this.tryStartDry(currentUrl, this.playGeneration);
+    const dryOk = await this.tryStartDry(currentUrl, gen);
     if (!dryOk) {
-      this.failPlayback('Could not play this station. Try another.');
+      if (gen === this.playGeneration) {
+        this.failPlayback('Could not play this station. Try another.');
+      }
       return;
     }
+    if (gen !== this.playGeneration) return;
     this._playing = true;
     this._loading = false;
     this._error = null;
     this.softFadeIn();
     this.emit();
 
-    // Desktop/Android: try upgrade; on any failure re-assert dry + toast.
-    const upgraded = await this.tryUpgradeToProcessed(currentUrl, this.playGeneration);
+    const upgraded = await this.tryUpgradeToProcessed(currentUrl, gen);
+    if (gen !== this.playGeneration) return;
     if (!upgraded) {
       if (this.audio.paused || this.isProcessedElement()) {
         await this.forceDryFallback('cors');
@@ -1104,9 +1154,12 @@ class AudioPlayer {
     try {
       this.clearVerifyTimer();
       this.clearPauseWatch();
+      this.clearDryReconnect();
       this.teardownGraphNodesOnly();
       this.mediaSourceNode = null;
+      if (gen !== this.playGeneration) return false;
       this.initAudioElement(false, true);
+      if (gen !== this.playGeneration) return false;
       this.activeStreamUrl = url;
       this.audio.src = url;
       this.applyOutputVolume();
@@ -1128,7 +1181,9 @@ class AudioPlayer {
     if (isAppleTouchDevice()) return false;
 
     try {
+      if (gen !== this.playGeneration) return false;
       this.initAudioElement(true, true);
+      if (gen !== this.playGeneration) return false;
       this.activeStreamUrl = url;
       this.audio.src = url;
       this.audio.volume = this._muted ? 0 : this._userVolume;
@@ -1165,8 +1220,10 @@ class AudioPlayer {
     this._dryBecauseFxBlocked = false;
     this.userPaused = false;
     this.dryFallbackInFlight = false;
+    this._reconnecting = this.dryReconnectAttempts > 0;
     this.clearVerifyTimer();
     this.clearPauseWatch();
+    this.clearDryReconnect();
     this.cancelFade();
     this.emit();
 
@@ -1196,21 +1253,20 @@ class AudioPlayer {
 
     const originalUrl = station.url_resolved || station.url || streamUrl;
 
-    if (location.protocol === 'https:' && streamUrl.startsWith('http:')) {
-      streamUrl = streamUrl.replace(/^http:/, 'https:');
+    if (location.protocol === 'https:' && /^http:\/\//i.test(streamUrl)) {
+      streamUrl = upgradeHttpToHttps(streamUrl);
     }
 
     this.mediaGeneration = gen;
 
     const urls: string[] = [];
     for (const u of [streamUrl, originalUrl]) {
-      if (u && !urls.includes(u)) urls.push(u);
+      const next =
+        location.protocol === 'https:' && /^http:\/\//i.test(u) ? upgradeHttpToHttps(u) : u;
+      if (next && !urls.includes(next)) urls.push(next);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // ALWAYS dry-first: connection reliability over FX.
-    // This is the only way to avoid iPad "stuck paused" with CORS.
-    // ─────────────────────────────────────────────────────────────
+    // Dry-first: CORS live streams pause too often on iPad.
     let dryUrl: string | null = null;
     for (const url of urls) {
       if (gen !== this.playGeneration) return;
@@ -1387,6 +1443,9 @@ class AudioPlayer {
     this.cancelFade();
     this.clearVerifyTimer();
     this.clearPauseWatch();
+    this.clearDryReconnect();
+    this._reconnecting = false;
+    this.dryReconnectAttempts = 0;
     this.audio.pause();
     this.audio.removeAttribute('src');
     try {

@@ -17,11 +17,24 @@ const VIEW_SET = new Set<ViewId>([
   'search',
 ]);
 
+function decodeSegment(part: string): string | null {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return null;
+  }
+}
+
 export function parseHash(hash = location.hash): Route | null {
   const raw = hash.replace(/^#\/?/, '').trim();
   if (!raw) return null;
 
-  const parts = raw.split('/').map(decodeURIComponent);
+  const parts: string[] = [];
+  for (const part of raw.split('/')) {
+    const decoded = decodeSegment(part);
+    if (decoded == null) return null;
+    parts.push(decoded);
+  }
   const [a, b] = parts;
 
   if (a === 'station' && b) return { kind: 'station', uuid: b };

@@ -1,3 +1,5 @@
+import { nearExpansionComplete } from '../safeUrl';
+import { sanitizeStation } from '../storage';
 import type {
   Country,
   Language,
@@ -153,6 +155,11 @@ function toQuery(params: SearchParams): string {
   return q.toString();
 }
 
+function sanitizeStationList(raw: unknown): Station[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(sanitizeStation).filter((s): s is Station => s != null);
+}
+
 export async function searchStations(params: SearchParams = {}): Promise<Station[]> {
   const defaults: SearchParams = {
     hidebroken: true,
@@ -162,7 +169,7 @@ export async function searchStations(params: SearchParams = {}): Promise<Station
     offset: 0,
     ...params,
   };
-  return apiFetch<Station[]>(`/json/stations/search?${toQuery(defaults)}`);
+  return sanitizeStationList(await apiFetch<unknown>(`/json/stations/search?${toQuery(defaults)}`));
 }
 
 export async function getTopStations(
@@ -198,7 +205,9 @@ export async function getStationsByTag(
 }
 
 export async function getStationsByUuid(uuid: string): Promise<Station[]> {
-  return apiFetch<Station[]>(`/json/stations/byuuid/${encodeURIComponent(uuid)}`);
+  return sanitizeStationList(
+    await apiFetch<unknown>(`/json/stations/byuuid/${encodeURIComponent(uuid)}`)
+  );
 }
 
 /** Batch resolve stations by UUID (comma-separated GET, with per-uuid fallback). */
@@ -211,8 +220,8 @@ export async function getStationsByUuids(uuids: string[]): Promise<Station[]> {
     const slice = unique.slice(i, i + chunk);
     try {
       const path = `/json/stations/byuuid/${slice.map(encodeURIComponent).join(',')}`;
-      const list = await apiFetch<Station[]>(path);
-      if (Array.isArray(list) && list.length) {
+      const list = sanitizeStationList(await apiFetch<unknown>(path));
+      if (list.length) {
         results.push(...list);
         continue;
       }
@@ -266,13 +275,21 @@ export function isLikelyPlayable(
   return Boolean(station.stationuuid);
 }
 
+export interface NearSearchMeta {
+  radiusMeters: number;
+  nextRadiusMeters: number | null;
+  found: number;
+}
+
+let lastNearMeta: NearSearchMeta = { radiusMeters: 0, nextRadiusMeters: null, found: 0 };
+
+export function getLastNearMeta(): NearSearchMeta {
+  return lastNearMeta;
+}
+
 /**
  * Stations near a lat/lon.
- *
- * Radio Browser does **not** support `order=distance`. Proximity requires
- * `geo_lat` + `geo_long` + `geo_distance` (radius in meters). We expand the
- * radius until we have enough playable geo-tagged results, then sort by
- * `geo_distance` and slice for pagination.
+ * Radio Browser has no `order=distance`; we expand radius then sort by geo_distance.
  */
 export async function getStationsNear(
   lat: number,
@@ -293,6 +310,8 @@ export async function getStationsNear(
     has_geo_info: _hasGeo,
     ...filters
   } = extra;
+
+  lastNearMeta = { radiusMeters: 0, nextRadiusMeters: null, found: 0 };
 
   // Progressive radii (m). Cap rounds so Near me cannot hang on many sequential API calls.
   const radiiMeters = [100_000, 350_000, 1_000_000, 2_500_000];
@@ -333,8 +352,12 @@ export async function getStationsNear(
       // try next radius / mirror already retried in apiFetch
     }
 
-    // Enough for this page, or already more than a full first page.
-    if (byId.size >= need || byId.size >= limit) break;
+    lastNearMeta = {
+      radiusMeters: radius,
+      nextRadiusMeters: radiiMeters[radiiMeters.indexOf(radius) + 1] ?? null,
+      found: byId.size,
+    };
+    if (nearExpansionComplete(byId.size, need)) break;
   }
 
   const sorted = [...byId.values()].sort((a, b) => {
@@ -344,29 +367,69 @@ export async function getStationsNear(
     return (b.clickcount || 0) - (a.clickcount || 0);
   });
 
+  lastNearMeta = {
+    ...lastNearMeta,
+    found: sorted.length,
+  };
+
   return sorted.slice(offset, offset + limit);
 }
 
 export async function getCountries(): Promise<Country[]> {
-  const list = await apiFetch<Country[]>(
+  const list = await apiFetch<unknown>(
     '/json/countries?order=stationcount&reverse=true&hidebroken=true'
   );
-  return list.filter((c) => c.stationcount > 0 && c.iso_3166_1);
+  if (!Array.isArray(list)) return [];
+  const out: Country[] = [];
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    const c = row as Record<string, unknown>;
+    const iso = typeof c.iso_3166_1 === 'string' ? c.iso_3166_1 : '';
+    const count = typeof c.stationcount === 'number' && Number.isFinite(c.stationcount) ? c.stationcount : 0;
+    const name = typeof c.name === 'string' ? c.name : '';
+    if (!iso || count <= 0) continue;
+    out.push({ name, iso_3166_1: iso, stationcount: count });
+  }
+  return out;
 }
 
 export async function getTags(limit = 120): Promise<Tag[]> {
-  const list = await apiFetch<Tag[]>(
+  const list = await apiFetch<unknown>(
     `/json/tags?order=stationcount&reverse=true&hidebroken=true&limit=${limit}`
   );
-  return list.filter((t) => t.stationcount > 0 && t.name.trim().length > 0);
+  if (!Array.isArray(list)) return [];
+  const out: Tag[] = [];
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    const t = row as Record<string, unknown>;
+    const name = typeof t.name === 'string' ? t.name.trim() : '';
+    const count = typeof t.stationcount === 'number' && Number.isFinite(t.stationcount) ? t.stationcount : 0;
+    if (!name || count <= 0) continue;
+    out.push({ name, stationcount: count });
+  }
+  return out;
 }
 
 export async function getLanguages(limit = 80): Promise<Language[]> {
   try {
-    const list = await apiFetch<Language[]>(
+    const list = await apiFetch<unknown>(
       `/json/languages?order=stationcount&reverse=true&hidebroken=true&limit=${limit}`
     );
-    return list.filter((l) => l.stationcount > 0 && l.name.trim().length > 0);
+    if (!Array.isArray(list)) return [];
+    const out: Language[] = [];
+    for (const row of list) {
+      if (!row || typeof row !== 'object') continue;
+      const l = row as Record<string, unknown>;
+      const name = typeof l.name === 'string' ? l.name.trim() : '';
+      const count = typeof l.stationcount === 'number' && Number.isFinite(l.stationcount) ? l.stationcount : 0;
+      if (!name || count <= 0) continue;
+      out.push({
+        name,
+        iso_639: typeof l.iso_639 === 'string' ? l.iso_639 : undefined,
+        stationcount: count,
+      });
+    }
+    return out;
   } catch {
     return [];
   }

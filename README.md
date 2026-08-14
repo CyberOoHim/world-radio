@@ -17,7 +17,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 - **Close & Hard-Stop** — Dedicated close button to stop playback, detach stream source, and cancel in-flight network requests.
 - **Resume Last Station** — Quick action button and automatic restoration of the last played station across reloads.
 - **Audio FX & 8-Band Equalizer** — Built-in spatial audio environment presets (Music Hall, Cathedral, Radio Booth, etc.), voice-changing effects, and customizable 8-band graphic equalizer with custom preset saving. *(Note: Audio FX & EQ are disabled on iPad / iPadOS due to iOS WebAudio streaming constraints).*
-- **Sleep Timer** — Flexible timer (15, 30, 45, 60, 90 mins) with live countdown display (`M:SS`) and soft audio fade.
+- **Sleep Timer** — Flexible timer (15, 30, 45, 60, 90 mins) with live countdown (`M:SS`), soft fade, and restore after reload / lock screen.
 
 ### 🌍 Discovery & Modes
 - **Surprise Me** — Smart random station generator with multi-try connect pipeline (~60s budget, up to 6 retry attempts):
@@ -26,21 +26,21 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 - **Near Me** — Geolocation discovery via HTML5 Geolocation with expanding radius (100km to 2500km) and proximity badges (e.g. `12 km`, `450 km`).
 - **Right Now (Time of Day)** — Time-tailored station pick strip (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) following local clock or user-pinned period.
 - **Mood Chips & Expanded Genres** — Expanded curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag directory.
-- **🎲 Random Genre Picker** — Interactive random genre discovery chip button with a dedicated **"Random all genres" checkbox toggle** to switch between Option A (Curated mood tags) and Option B (200+ global API genres), persisted in settings.
+- **🎲 Random Genre Picker** — Interactive random genre discovery chip with a **"Random all genres" toggle** to switch between curated mood tags and the full Radio Browser catalog, persisted in settings.
 - **Countries & Continents** — Filterable directory by continent (Africa, Asia, Europe, North America, South America, Oceania) and country.
 
 ### 🔍 Search, Filters & Preferences
 - **Instant Search** — Real-time debounced search by station name, city, tag, or keyword.
 - **Sorting Options** — Sort stations by Popularity, Trending, Votes, Name, Bitrate, or Random (with real-time cache-busting timestamp parameter for fresh dynamic random picks on every click).
 - **HTTPS-Only Toggle** — Default-ON filter (`httpsOnly: true`) to prevent browser mixed-content playback blocks on HTTPS web hosts.
-- **Random All Genres Toggle** — Checkbox toggle in the filter toolbar to switch the 🎲 Random Genre picker between curated tags (Option A) and the full global API catalog of 200+ genres (Option B).
+- **Random All Genres Toggle** — Checkbox toggle in the filter toolbar to switch the 🎲 Random Genre picker between curated tags and the full API catalog.
 - **Language Filter** — Filter stations by broadcast language.
 
 ### ❤️ Favorites & History Management
-- **Snapshot Favorites** — Save stations as full offline snapshots (up to 200 stations).
+- **Snapshot Favorites** — Save stations as full offline snapshots (up to 200 stations) with optional folders.
 - **Import & Export** — Back up or transfer saved favorites via JSON file import/export.
-- **Recent History** — Track recently played stations (up to 40 stations).
-- **Session Persistence** — Remembers volume, mute state, preferences, and last played station in local storage.
+- **Recent History** — Track recently played stations (up to 40 stations), with search and clear.
+- **Session Persistence** — Remembers volume, mute, preferences, last played station, sleep timer, and folders in local storage.
 
 ### 📲 PWA & System Integration
 - **Installable PWA** — Offline app shell caching powered by a Service Worker (`sw.js`).
@@ -53,8 +53,8 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 - `/` — Focus search input
 - `N` / `P` — Next / Previous station
 - `M` — Mute / Unmute toggle
-- `↑` / `↓` — Adjust volume up / down (5% increments)
-- `Esc` — Close detail modal or collapse active menus
+- `↑` / `↓` or `←` / `→` — Adjust volume (5% increments)
+- `Esc` — Close FX/EQ, detail sheet, sleep menu, or nav
 
 ---
 
@@ -81,6 +81,9 @@ npm run dev
 
 # Type-check and build for production
 npm run build
+
+# Unit tests (router, sanitizers, URL safety)
+npm test
 
 # Preview production build locally
 npm run preview

@@ -1,5 +1,5 @@
 /* World Radio — minimal shell cache (no audio streams). */
-const CACHE = 'world-radio-shell-v2';
+const CACHE = 'world-radio-shell-v3';
 const PRECACHE = [
   './',
   './index.html',

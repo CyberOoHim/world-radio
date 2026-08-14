@@ -866,6 +866,58 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
   } catch {}
   head = tremoloGain;
 
+  // Vibrato: delay-line pitch wobble (LFO on delayTime).
+  const vibDelay = ctx.createDelay(0.05);
+  vibDelay.delayTime.value = 0.008;
+  const vibLfo = ctx.createOscillator();
+  vibLfo.type = 'sine';
+  const vibDepth = ctx.createGain();
+  vibLfo.connect(vibDepth);
+  vibDepth.connect(vibDelay.delayTime);
+  try {
+    vibLfo.start(0);
+    activeOscs.push(vibLfo);
+  } catch {}
+  head.connect(vibDelay);
+  head = vibDelay;
+
+  // Bitcrush + sample-rate hold. ScriptProcessor is deprecated but works
+  // without a separate worklet file (needed for live CORS streams).
+  let crushBits = 0;
+  let crushRate = 0;
+  let crushHeld = 0;
+  let crushCounter = 0;
+  const crushNode: ScriptProcessorNode | null =
+    typeof ctx.createScriptProcessor === 'function' ? ctx.createScriptProcessor(1024, 1, 1) : null;
+  const crushShaper = ctx.createWaveShaper();
+  crushShaper.oversample = 'none';
+
+  if (crushNode) {
+    crushNode.onaudioprocess = (ev) => {
+      const input = ev.inputBuffer.getChannelData(0);
+      const output = ev.outputBuffer.getChannelData(0);
+      const bits = crushBits;
+      const rate = crushRate;
+      const steps = bits > 0.001 ? Math.max(2, Math.round(Math.pow(2, 3 + (1 - bits) * 13))) : 0;
+      const holdEvery = rate > 0.001 ? Math.max(1, Math.round(1 + rate * 28)) : 1;
+      for (let i = 0; i < input.length; i++) {
+        let x = input[i];
+        if (holdEvery > 1) {
+          if (crushCounter % holdEvery === 0) crushHeld = x;
+          crushCounter++;
+          x = crushHeld;
+        }
+        if (steps) x = Math.round(x * steps) / steps;
+        output[i] = x;
+      }
+    };
+    head.connect(crushNode);
+    head = crushNode;
+  } else {
+    head.connect(crushShaper);
+    head = crushShaper;
+  }
+
   // Reverb Convolver
   const reverbDry = ctx.createGain();
   const reverbWet = ctx.createGain();
@@ -960,6 +1012,30 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
     tremoloDepth.gain.value = tMix * 0.5;
     tremoloLfo.frequency.value = fx.tremoloRate || 5;
 
+    // Vibrato
+    const vMix = Math.max(0, Math.min(1, fx.vibrato || 0));
+    vibDelay.delayTime.value = 0.008;
+    vibDepth.gain.value = vMix * 0.0065;
+    vibLfo.frequency.value = Math.max(0.05, fx.vibratoRate || 5);
+
+    // Bitcrush / sample-rate crush
+    crushBits = Math.max(0, Math.min(1, fx.bitcrush || 0));
+    crushRate = Math.max(0, Math.min(1, fx.sampleRateCrush || 0));
+    if (!crushNode) {
+      if (crushBits > 0.001) {
+        const steps = Math.max(2, Math.round(Math.pow(2, 3 + (1 - crushBits) * 13)));
+        const n = 256;
+        const curve = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          const x = (i * 2) / n - 1;
+          curve[i] = Math.round(x * steps) / steps;
+        }
+        crushShaper.curve = curve;
+      } else {
+        crushShaper.curve = null;
+      }
+    }
+
     // Reverb
     const rMix = Math.max(0, Math.min(1, fx.reverbMix || 0));
     reverbDry.gain.value = 1 - rMix;
@@ -996,6 +1072,12 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
         try { src.stop(); } catch {}
         try { src.disconnect(); } catch {}
       }
+      if (crushNode) {
+        crushNode.onaudioprocess = null;
+        try { crushNode.disconnect(); } catch {}
+      }
+      try { crushShaper.disconnect(); } catch {}
+      try { vibDelay.disconnect(); } catch {}
     },
   };
 }

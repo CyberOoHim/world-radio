@@ -1,5 +1,6 @@
 import { FX_PRESETS, type FxCategory } from './audioFx';
 import { EQ_PRESETS, type EqBands } from './equalizer';
+import { escapeHtml } from './html';
 import { isAppleTouchDevice, player } from './player';
 
 export type ModalTab = FxCategory | 'Equalizer';
@@ -13,7 +14,7 @@ export function isFxModalOpen(): boolean {
 
 export function openFxModal(tab?: ModalTab) {
   if (isAppleTouchDevice()) {
-    player.notifyCustomNotice('Audio FX & EQ could not be applied on iPAD.');
+    player.notifyCustomNotice('Audio FX & EQ could not be applied on iPhone and iPad.');
     return;
   }
   fxModalOpen = true;
@@ -24,11 +25,12 @@ export function openFxModal(tab?: ModalTab) {
 export function closeFxModal() {
   fxModalOpen = false;
   renderFxModal();
+  document.querySelector<HTMLElement>('[data-action="toggle-fx-modal"]')?.focus();
 }
 
 export function toggleFxModal() {
   if (isAppleTouchDevice()) {
-    player.notifyCustomNotice('Audio FX & EQ could not be applied on iPAD.');
+    player.notifyCustomNotice('Audio FX & EQ could not be applied on iPhone and iPad.');
     return;
   }
   fxModalOpen = !fxModalOpen;
@@ -93,15 +95,15 @@ function renderEqSectionHtml(): string {
                   data-action="select-eq-preset"
                   data-id="${cp.id}"
                 >
-                  ⭐ ${cp.name}
+                  ⭐ ${escapeHtml(cp.name)}
                 </button>
                 <button
                   type="button"
                   class="eq-chip-del"
                   data-action="delete-custom-eq"
-                  data-id="${cp.id}"
-                  title="Delete preset ${cp.name}"
-                  aria-label="Delete preset ${cp.name}"
+                  data-id="${escapeHtml(cp.id)}"
+                  title="Delete preset ${escapeHtml(cp.name)}"
+                  aria-label="Delete preset ${escapeHtml(cp.name)}"
                 >
                   ✕
                 </button>
@@ -284,12 +286,11 @@ export function renderFxModalHtml(): string {
               .map((p) => {
                 const isSelected = player.fxPresetId === p.id && player.fxEnabled;
                 return `
-                <div
+                <button
+                  type="button"
                   class="fx-card ${isSelected ? 'is-selected' : ''}"
                   data-action="select-fx-preset"
                   data-id="${p.id}"
-                  tabindex="0"
-                  role="button"
                 >
                   <div class="fx-card-header">
                     <span class="fx-card-emoji">${p.emoji}</span>
@@ -300,7 +301,7 @@ export function renderFxModalHtml(): string {
                     ${isSelected ? `<span class="fx-card-badge">ACTIVE</span>` : ''}
                   </div>
                   <div class="fx-card-desc">${p.desc}</div>
-                </div>
+                </button>
               `;
               })
               .join('')}
@@ -311,9 +312,74 @@ export function renderFxModalHtml(): string {
   `;
 }
 
+function focusableIn(root: Element): HTMLElement[] {
+  return [
+    ...root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ),
+  ].filter((el) => !el.hasAttribute('hidden') && el.offsetParent !== null);
+}
+
+function onFxModalKeydown(e: KeyboardEvent) {
+  if (!fxModalOpen) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeFxModal();
+    const trigger = document.querySelector<HTMLElement>('[data-action="toggle-fx-modal"]');
+    trigger?.focus();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  const dialog = document.querySelector('.fx-modal-dialog');
+  if (!dialog) return;
+  const items = focusableIn(dialog);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  } else if (active && !dialog.contains(active)) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+let fxKeyBound = false;
+
 export function renderFxModal() {
   const root = document.querySelector('.fx-modal-root');
   if (!root) return;
+  const eqSlider = document.activeElement;
+  const keepEq =
+    eqSlider instanceof HTMLInputElement &&
+    eqSlider.classList.contains('eq-v-slider') &&
+    fxModalOpen;
+  const keepBand = keepEq ? eqSlider.dataset.band : null;
+  const keepVal = keepEq ? eqSlider.value : null;
+
   root.innerHTML = renderFxModalHtml();
   document.body.classList.toggle('fx-modal-open', fxModalOpen);
+
+  if (!fxKeyBound) {
+    fxKeyBound = true;
+    document.addEventListener('keydown', onFxModalKeydown, true);
+  }
+
+  if (!fxModalOpen) return;
+
+  if (keepBand) {
+    const slider = root.querySelector<HTMLInputElement>(`.eq-v-slider[data-band="${keepBand}"]`);
+    if (slider) {
+      if (keepVal != null) slider.value = keepVal;
+      slider.focus();
+    }
+  } else {
+    const closeBtn = root.querySelector<HTMLElement>('.fx-modal-dialog .close-btn');
+    closeBtn?.focus();
+  }
 }
