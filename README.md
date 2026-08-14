@@ -1,70 +1,71 @@
-# World Radio
+# World Radio 🌍📻
 
-A calm, ambient web app for listening to **thousands of live radio stations** from around the world.
+A modern, ambient web application for discovering and listening to **thousands of live radio stations** from around the globe.
 
 Powered by the community-driven [Radio Browser](https://www.radio-browser.info/) directory (30,000+ live streams across every continent).
 
-**Live Demo:** [https://CyberOoHim.github.io/world_radio/](https://CyberOoHim.github.io/world_radio/)
+**Live App:** [https://CyberOoHim.github.io/world-radio/](https://CyberOoHim.github.io/world-radio/)
 
 ---
 
-## Features
+## ✨ Features
 
-### 🎧 Audio Player & Playback
-- **Resilient Playback** — Automatic HTTP-to-HTTPS upgrade for secure streams with fallback to original stream URLs.
-- **Failover & Reconnect** — Multi-mirror API failover (`de1`, `nl1`, `at1`, `fr1`) with automated mirror probe monitoring.
+### 🎧 Audio Player & Sound Processing
+- **Resilient Playback Engine** — Automatic HTTP-to-HTTPS upgrade for secure streams with fallback to original stream URLs.
+- **Failover & Reconnect** — Multi-mirror API failover (`de1`, `nl1`, `at1`, `fr1`) with automated mirror probe monitoring and stream connection timeouts.
+- **Web Audio FX & 8-Band Equalizer** — Built-in spatial audio environment presets (Music Hall, Cathedral, Radio Booth, etc.), voice effects, and customizable 8-band graphic equalizer with custom preset saving. *(Audio FX & EQ are automatically bypassed on iOS/iPadOS to ensure smooth native streaming).*
 - **Soft Volume Fades** — Smooth ~400ms volume fade-in on playback start and gentle fade-out when sleep timer finishes.
 - **Close & Hard-Stop** — Dedicated close button to stop playback, detach stream source, and cancel in-flight network requests.
 - **Resume Last Station** — Quick action button and automatic restoration of the last played station across reloads.
-- **Audio FX & 8-Band Equalizer** — Built-in spatial audio environment presets (Music Hall, Cathedral, Radio Booth, etc.), voice-changing effects, and customizable 8-band graphic equalizer with custom preset saving. *(Note: Audio FX & EQ are disabled on iPad / iPadOS due to iOS WebAudio streaming constraints).*
-- **Sleep Timer** — Flexible timer (15, 30, 45, 60, 90 mins) with live countdown (`M:SS`), soft fade, and restore after reload / lock screen.
+- **Sleep Timer** — Flexible timer (15, 30, 45, 60, 90 mins) with live countdown (`M:SS`), soft fade-out, and state restoration after reload.
 
-### 🌍 Discovery & Modes
-- **Surprise Me** — Smart random station generator with multi-try connect pipeline (~60s budget, up to 6 retry attempts):
-  - **Surprise · Anywhere** — Pick random station globally from community pool.
+### 🌍 Discovery & Curated Modes
+- **🎲 Surprise Me Pipeline** — Smart random station generator with multi-try connect pipeline (~60s budget, up to 6 retry attempts):
+  - **Surprise · Anywhere** — Pick random station globally from the community pool.
   - **Surprise · Here** — Pick random station filtered by local country / location.
-- **Near Me** — Geolocation discovery via HTML5 Geolocation with expanding radius (100km to 2500km) and proximity badges (e.g. `12 km`, `450 km`).
-- **Right Now (Time of Day)** — Time-tailored station pick strip (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) following local clock or user-pinned period.
-- **Mood Chips & Expanded Genres** — Expanded curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag directory.
-- **🎲 Random Genre Picker** — Interactive random genre discovery chip with a **"Random all genres" toggle** to switch between curated mood tags and the full Radio Browser catalog, persisted in settings.
-- **Countries & Continents** — Filterable directory by continent (Africa, Asia, Europe, North America, South America, Oceania) and country.
+- **📍 Near Me** — Geolocation discovery via HTML5 Geolocation with expanding radius (100km to 2500km) and proximity badges (e.g. `12 km`, `450 km`).
+- **☀️ Right Now (Time of Day)** — Time-tailored station pick strip (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) following local clock or user-pinned period.
+- **🎵 Mood Chips & Expanded Genres** — Curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag directory.
+- **🎲 Dynamic Random Genre Picker** — Interactive random genre discovery chip with a **"Random all genres" toggle** to switch between curated mood tags and the entire Radio Browser catalog.
+- **🌐 Countries & Continents** — Filterable directory by continent (Africa, Asia, Europe, North America, South America, Oceania) and country.
 
-### 🔍 Search, Filters & Preferences
+### 🔍 Search, Filters & Organization
 - **Instant Search** — Real-time debounced search by station name, city, tag, or keyword.
 - **Sorting Options** — Sort stations by Popularity, Trending, Votes, Name, Bitrate, or Random (with real-time cache-busting timestamp parameter for fresh dynamic random picks on every click).
 - **HTTPS-Only Toggle** — Default-ON filter (`httpsOnly: true`) to prevent browser mixed-content playback blocks on HTTPS web hosts.
-- **Random All Genres Toggle** — Checkbox toggle in the filter toolbar to switch the 🎲 Random Genre picker between curated tags and the full API catalog.
 - **Language Filter** — Filter stations by broadcast language.
-
-### ❤️ Favorites & History Management
-- **Snapshot Favorites** — Save stations as full offline snapshots (up to 200 stations) with optional folders.
+- **Snapshot Favorites & Folders** — Save stations as full offline snapshots (up to 200 stations) with customizable folder organization.
 - **Import & Export** — Back up or transfer saved favorites via JSON file import/export.
-- **Recent History** — Track recently played stations (up to 40 stations), with search and clear.
-- **Session Persistence** — Remembers volume, mute, preferences, last played station, sleep timer, and folders in local storage.
+- **Recent History** — Track recently played stations (up to 40 stations) with search and clear capabilities.
 
 ### 📲 PWA & System Integration
 - **Installable PWA** — Offline app shell caching powered by a Service Worker (`sw.js`).
 - **Media Session API** — OS lock screen and headset controls with station title, country artwork, and smooth line vector icon.
 - **Deep Hash Routing** — Shareable links for stations (`#/station/:uuid`), tags (`#/tag/:tag`), countries (`#/country/:code`), search (`#/search/:q`), near me (`#/near`), and top-level views (`#/`, `#/countries`, `#/genres`, `#/favorites`, `#/recent`).
 - **Toast Feedback System** — Visual notifications for actions such as copying station share links, favorite updates, and import/export results.
+- **Safe HTML & URL Sanitization** — All user inputs, API strings, and station URLs are strictly validated and escaped against XSS and unsafe protocols.
 
 ### ⌨️ Keyboard Shortcuts
-- `Space` — Play / Pause toggle
-- `/` — Focus search input
-- `N` / `P` — Next / Previous station
-- `M` — Mute / Unmute toggle
-- `↑` / `↓` or `←` / `→` — Adjust volume (5% increments)
-- `Esc` — Close FX/EQ, detail sheet, sleep menu, or nav
+| Key | Action |
+| --- | --- |
+| `Space` | Play / Pause toggle |
+| `/` | Focus search input |
+| `N` / `P` | Next / Previous station in list |
+| `M` | Mute / Unmute toggle |
+| `↑` / `↓` or `←` / `→` | Adjust volume (5% increments) |
+| `Esc` | Close FX/EQ, detail sheet, sleep menu, or nav |
 
 ---
 
 ## 🛠 Tech Stack
 
 - **Framework:** Vite + TypeScript
-- **Styling:** Custom CSS design system with responsive layouts & smooth-line retro radio vector iconography
+- **Styling:** Custom CSS design system with responsive layouts & retro-modern radio vector iconography
 - **Typography:** DM Sans & Instrument Serif (via `@fontsource`)
 - **API:** Radio Browser HTTP API (multi-mirror failover & stream URL resolver)
+- **Audio:** HTML5 Audio + Web Audio API (BiquadFilter, Convolver, DynamicsCompressor, GainNode)
 - **PWA:** Web App Manifest + Service Worker offline shell
+- **Testing:** Vitest
 
 ---
 
@@ -79,11 +80,11 @@ npm install
 # Start development server (http://localhost:5173)
 npm run dev
 
+# Run unit tests
+npm test
+
 # Type-check and build for production
 npm run build
-
-# Unit tests (router, sanitizers, URL safety)
-npm test
 
 # Preview production build locally
 npm run preview
@@ -96,8 +97,14 @@ npm run deploy:check
 
 ## 🚀 Deployment (GitHub Pages)
 
-Automatic deployment is configured via GitHub Actions (`.github/workflows/deploy-pages.yml`).
+Continuous deployment is automated via GitHub Actions ([`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml)).
 
 1. Push updates to the `main` branch.
-2. Ensure GitHub repository setting: **Pages → Source: GitHub Actions**.
-3. `vite.config.ts` uses `base: './'` so assets work relative to `/world_radio/`.
+2. The workflow automatically runs unit tests (`npm test`), builds the production bundle (`npm run build`), and deploys the `dist/` directory to GitHub Pages.
+3. `vite.config.ts` uses `base: './'` so all asset paths resolve properly on GitHub Pages or custom subdirectories.
+
+---
+
+## 📄 License
+
+MIT License. Radio stream data is provided under open community licenses by [Radio Browser](https://www.radio-browser.info/).
