@@ -6,7 +6,8 @@ export type Route =
   | { kind: 'tag'; tag: string }
   | { kind: 'country'; code: string }
   | { kind: 'search'; q: string }
-  | { kind: 'near' };
+  | { kind: 'near' }
+  | { kind: 'map'; lat?: number; lon?: number; zoom?: number };
 
 const VIEW_SET = new Set<ViewId>([
   'discover',
@@ -35,15 +36,30 @@ export function parseHash(hash = location.hash): Route | null {
     if (decoded == null) return null;
     parts.push(decoded);
   }
-  const [a, b] = parts;
+  const [a, b, c] = parts;
 
   if (a === 'station' && b) return { kind: 'station', uuid: b };
   if (a === 'tag' && b) return { kind: 'tag', tag: b };
   if (a === 'country' && b) return { kind: 'country', code: b.toUpperCase() };
   if (a === 'search') return { kind: 'search', q: b || '' };
   if (a === 'near') return { kind: 'near' };
+  if (a === 'map') return parseMapRoute(b, c);
   if (a && VIEW_SET.has(a as ViewId)) return { kind: 'view', view: a as ViewId };
   return null;
+}
+
+function parseMapRoute(coordPart?: string, zoomPart?: string): Route {
+  if (!coordPart) return { kind: 'map' };
+  const [latS, lonS] = coordPart.split(',');
+  const lat = Number(latS);
+  const lon = Number(lonS);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    return { kind: 'map' };
+  }
+  const zoom = zoomPart != null && zoomPart !== '' ? Number(zoomPart) : undefined;
+  const safeZoom =
+    typeof zoom === 'number' && Number.isFinite(zoom) ? Math.min(18, Math.max(1, Math.round(zoom))) : undefined;
+  return { kind: 'map', lat, lon, zoom: safeZoom };
 }
 
 function routeToHash(route: Route): string {
@@ -60,6 +76,12 @@ function routeToHash(route: Route): string {
       return route.q ? `#/search/${encodeURIComponent(route.q)}` : '#/search';
     case 'near':
       return '#/near';
+    case 'map': {
+      if (route.lat == null || route.lon == null) return '#/map';
+      const coord = `${route.lat.toFixed(3)},${route.lon.toFixed(3)}`;
+      if (route.zoom != null) return `#/map/${coord}/${route.zoom}`;
+      return `#/map/${coord}`;
+    }
   }
 }
 

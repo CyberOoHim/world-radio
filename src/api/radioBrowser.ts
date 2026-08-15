@@ -375,6 +375,52 @@ export async function getStationsNear(
   return sorted.slice(offset, offset + limit);
 }
 
+const MAP_FETCH_LIMIT = 200;
+const MAP_MIN_RADIUS_M = 50_000;
+const MAP_MAX_RADIUS_M = 2_500_000;
+
+/**
+ * Stations inside a map viewport. Radio Browser filters by radius from a
+ * center point — there is no bounding-box search — so we use the visible
+ * diagonal / 2 as geo_distance and cap it like Near me.
+ */
+export async function getStationsInViewport(
+  lat: number,
+  lon: number,
+  radiusMeters: number,
+  extra: SearchParams = {}
+): Promise<Station[]> {
+  const {
+    order,
+    reverse,
+    offset: _offset,
+    limit: _limit,
+    geo_lat: _glat,
+    geo_long: _glon,
+    geo_distance: _gdist,
+    has_geo_info: _hasGeo,
+    ...filters
+  } = extra;
+
+  const radius = Math.min(
+    MAP_MAX_RADIUS_M,
+    Math.max(MAP_MIN_RADIUS_M, Math.round(radiusMeters))
+  );
+
+  return searchStations({
+    ...filters,
+    geo_lat: lat,
+    geo_long: lon,
+    geo_distance: radius,
+    has_geo_info: true,
+    hidebroken: true,
+    order: order ?? 'clickcount',
+    reverse: reverse ?? true,
+    limit: MAP_FETCH_LIMIT,
+    offset: 0,
+  });
+}
+
 export async function getCountries(): Promise<Country[]> {
   const list = await apiFetch<unknown>(
     '/json/countries?order=stationcount&reverse=true&hidebroken=true'

@@ -38,6 +38,18 @@ import {
   type ModalTab,
 } from './fxModal';
 import { escapeHtml } from './html';
+import {
+  dismissMapAlert,
+  flyToMap,
+  getMapStations,
+  getMapViewport,
+  hideMapView,
+  highlightMapStation,
+  locateOnMap,
+  mountMapView,
+  refreshMapStations,
+  showMapView,
+} from './mapView';
 import { safeHttpUrl } from './safeUrl';
 import { updateMediaSession } from './mediaSession';
 import { player } from './player';
@@ -187,6 +199,7 @@ const icons = {
   close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" width="20" height="20"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
   surprise: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" width="18" height="18"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/><rect x="9" y="9" width="6" height="6" fill="currentColor" stroke="none"/></svg>`,
   pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="16" height="16"><path d="M12 21s6.5-5 6.5-10a6.5 6.5 0 10-13 0c0 5 6.5 10 6.5 10z"/><circle cx="12" cy="11" r="2.2" fill="currentColor" stroke="none"/></svg>`,
+  map: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M9 4l-5 2v14l5-2 6 2 5-2V4l-5 2-6-2z"/><path d="M9 4v14M15 6v14"/></svg>`,
   external: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="16" height="16"><path d="M14 4h6v6M20 4l-9 9"/><path d="M10 6H5a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1v-5"/></svg>`,
 };
 
@@ -414,7 +427,12 @@ function closePlayerAndCleanActivity() {
   if (!applyingRoute) {
     const route = parseHash();
     if (!route || route.kind === 'station' || route.kind === 'near') {
-      setHash({ kind: 'view', view: state.view });
+      if (state.view === 'map') {
+        const vp = getMapViewport();
+        setHash(vp ? { kind: 'map', lat: vp.lat, lon: vp.lon, zoom: vp.zoom } : { kind: 'map' });
+      } else {
+        setHash({ kind: 'view', view: state.view });
+      }
     }
   }
 
@@ -454,6 +472,7 @@ function getQueueContextName(): string {
     if (state.view === 'search' && state.query.trim()) return `Search "${state.query.trim()}"`;
     if (state.view === 'favorites') return 'Favorites';
     if (state.view === 'recent') return 'Recent history';
+    if (state.view === 'map') return 'Map';
     return 'Popular';
   }
   if (state.recent.length) return 'Recent history';
@@ -1326,7 +1345,8 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   persistPrefs();
 
   if (!opts?.skipHash && !applyingRoute) {
-    setHash({ kind: 'view', view });
+    if (view === 'map') setHash({ kind: 'map' });
+    else setHash({ kind: 'view', view });
   }
 
   if (view === 'discover') {
@@ -1376,6 +1396,11 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
       state.loading = false;
       renderAllChrome();
     }
+  } else if (view === 'map') {
+    state.loading = false;
+    state.hasMore = false;
+    state.error = null;
+    renderAllChrome();
   }
   renderNav();
   renderMobileTabs();
@@ -1546,6 +1571,12 @@ async function applyRouteFromHash() {
       case 'near':
         openNearMe();
         break;
+      case 'map':
+        if (route.lat != null && route.lon != null) {
+          flyToMap(route.lat, route.lon, route.zoom ?? 9);
+        }
+        setView('map', { skipHash: true });
+        break;
       case 'station': {
         let station =
           findStation(route.uuid) ||
@@ -1599,6 +1630,10 @@ function hydrateBrowseView() {
   }
   if (view === 'discover' && !state.stations.length) {
     void loadDiscover(true);
+    return;
+  }
+  if (view === 'map') {
+    renderMain();
     return;
   }
   renderMain();
@@ -1894,6 +1929,7 @@ function renderDiscover(): string {
       <div class="hero-actions">
         ${surpriseActionsHtml()}
         <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me">${icons.pin} Near me</button>
+        <button type="button" class="chip" data-action="open-map">${icons.map} Map</button>
         ${
           last
             ? `<button type="button" class="chip" data-action="resume" data-id="${escapeHtml(last.stationuuid)}">▶ Resume ${escapeHtml(last.name.slice(0, 28))}${last.name.length > 28 ? '…' : ''}</button>`
@@ -2315,7 +2351,9 @@ function renderDetailHtml(): string {
         ${typeof s.clickcount === 'number' && s.clickcount > 0 ? `<div><dt>Clicks</dt><dd>${s.clickcount.toLocaleString()}</dd></div>` : ''}
         ${
           typeof s.geo_lat === 'number' && typeof s.geo_long === 'number'
-            ? `<div><dt>Location</dt><dd>${s.geo_lat.toFixed(2)}, ${s.geo_long.toFixed(2)}</dd></div>`
+            ? `<div><dt>Location</dt><dd>
+                <button type="button" class="link-btn" data-action="show-on-map" data-id="${escapeHtml(s.stationuuid)}">${s.geo_lat.toFixed(2)}, ${s.geo_long.toFixed(2)} · Show on map</button>
+              </dd></div>`
             : ''
         }
       </dl>
@@ -2373,6 +2411,7 @@ function renderNavHtml(): string {
     </div>
     <div class="nav-section">Explore</div>
     ${navBtn('discover', icons.discover, 'Discover')}
+    ${navBtn('map', icons.map, 'Map')}
     ${navBtn('countries', icons.globe, 'Countries')}
     ${navBtn('genres', icons.music, 'Genres')}
     <div class="nav-section">Library</div>
@@ -2421,6 +2460,7 @@ function ensureShell() {
         <div class="stats-pill"><strong>—</strong> online</div>
       </div>
       <div class="content" tabindex="-1"></div>
+      <div class="map-root" hidden></div>
     </main>
     <footer class="player" aria-label="Player"></footer>
     <nav class="mobile-tabs" aria-label="Primary"></nav>
@@ -2458,10 +2498,54 @@ function renderTopbar() {
   }
 }
 
+function ensureMapMounted() {
+  const root = qs<HTMLElement>('.map-root');
+  if (!root) return;
+  mountMapView(root, {
+    isFavorite: (uuid) => isFav(uuid),
+    getFilters: () => {
+      const extra = listQueryExtras();
+      const filters: SearchParams = { hidebroken: true };
+      if (extra.language) filters.language = extra.language;
+      if (extra.is_https) filters.is_https = extra.is_https;
+      return filters;
+    },
+    onStations: (stations) => {
+      if (state.view !== 'map') return;
+      state.stations = stations;
+      state.hasMore = false;
+    },
+    onViewport: (vp) => {
+      if (state.view !== 'map' || applyingRoute) return;
+      const route = parseHash();
+      if (route?.kind === 'station') return;
+      setHash({ kind: 'map', lat: vp.lat, lon: vp.lon, zoom: vp.zoom });
+    },
+    toast: (message) => showToast(message),
+  });
+}
+
 function renderMain() {
   ensureShell();
-  const content = qs('.content');
+  const content = qs<HTMLElement>('.content');
+  const mapRoot = qs<HTMLElement>('.map-root');
   if (!content) return;
+
+  if (state.view === 'map') {
+    content.hidden = true;
+    if (mapRoot) mapRoot.hidden = false;
+    document.body.classList.add('map-view');
+    ensureMapMounted();
+    showMapView();
+    highlightMapStation(state.current?.stationuuid ?? null);
+    return;
+  }
+
+  document.body.classList.remove('map-view');
+  hideMapView();
+  if (mapRoot) mapRoot.hidden = true;
+  content.hidden = false;
+
   const scrollTop = content.scrollTop;
   content.innerHTML = renderMainHtml();
   // Restore scroll only if same view roughly — simple approach
@@ -2517,6 +2601,7 @@ function renderMobileTabs() {
   if (!tabs) return;
   const items: { view: ViewId; label: string; icon: string }[] = [
     { view: 'discover', label: 'Discover', icon: icons.discover },
+    { view: 'map', label: 'Map', icon: icons.map },
     { view: 'countries', label: 'Places', icon: icons.globe },
     { view: 'favorites', label: 'Saved', icon: icons.heart },
     { view: 'search', label: 'Search', icon: icons.search },
@@ -2592,6 +2677,7 @@ function updatePlaybackUI() {
   renderPlayer();
   syncMediaSession();
   updateHeroResumeUI();
+  if (state.view === 'map') highlightMapStation(state.current?.stationuuid ?? null);
 
   const currentId = state.current?.stationuuid;
   document.querySelectorAll<HTMLElement>('.station-card').forEach((card) => {
@@ -2634,7 +2720,8 @@ function findStation(id: string): Station | undefined {
     state.recent.find((s) => s.stationuuid === id) ||
     state.favorites.find((s) => s.stationuuid === id) ||
     (state.current?.stationuuid === id ? state.current : undefined) ||
-    (state.detailStation?.stationuuid === id ? state.detailStation : undefined)
+    (state.detailStation?.stationuuid === id ? state.detailStation : undefined) ||
+    getMapStations().find((s) => s.stationuuid === id)
   );
 }
 
@@ -2672,6 +2759,7 @@ function reloadCurrentList() {
   else if (state.view === 'search' && state.query.trim()) void loadSearch(state.query.trim(), true);
   else if (state.view === 'countries' && state.selectedCountry)
     void loadCountryStations(state.selectedCountry, true);
+  else if (state.view === 'map') refreshMapStations();
   else renderMain();
 }
 
@@ -2782,6 +2870,28 @@ function ensureAppEvents() {
       case 'goto-discover':
         setView('discover');
         break;
+      case 'open-map':
+        setView('map');
+        break;
+      case 'map-locate':
+        locateOnMap();
+        break;
+      case 'map-alert-ok':
+        dismissMapAlert();
+        break;
+      case 'show-on-map': {
+        const id = t.dataset.id;
+        const station = id ? findStation(id) : state.detailStation;
+        if (!station || typeof station.geo_lat !== 'number' || typeof station.geo_long !== 'number') {
+          showToast('This station has no map location');
+          break;
+        }
+        state.detailStation = null;
+        renderDetail();
+        setView('map');
+        flyToMap(station.geo_lat, station.geo_long, 10);
+        break;
+      }
       case 'fav': {
         e.stopPropagation();
         const id = t.dataset.id;
@@ -3320,7 +3430,9 @@ function bindGlobalKeys() {
         void playRelative(-1);
         break;
       case 'Escape':
-        if (state.detailStation) {
+        if (dismissMapAlert()) {
+          break;
+        } else if (state.detailStation) {
           state.detailStation = null;
           renderDetail();
         } else if (sleepMenuOpen) {

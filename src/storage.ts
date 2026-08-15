@@ -265,6 +265,7 @@ export function loadPrefs(): AppPrefs {
         typeof parsed.browseFilter === 'string' ? parsed.browseFilter : '',
       view:
         view === 'discover' ||
+        view === 'map' ||
         view === 'countries' ||
         view === 'genres' ||
         view === 'favorites' ||

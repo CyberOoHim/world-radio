@@ -24,6 +24,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
   - **Surprise · Anywhere** — Pick random station globally from the community pool.
   - **Surprise · Here** — Pick random station filtered by local country / location.
 - **📍 Near Me** — Geolocation discovery via HTML5 Geolocation with expanding radius (100km to 2500km) and proximity badges (e.g. `12 km`, `450 km`).
+- **🗺️ World Map** — Leaflet map (Carto dark tiles) that plots geo-tagged stations in the current viewport. Pan/zoom to load pins, tap a pin to listen, or jump here from a station’s coordinates. `#/map` and `#/map/:lat,:lon/:zoom` are shareable. An alert (plus an on-map banner) appears when you are offline, because tiles and Radio Browser both need a network.
 - **☀️ Right Now (Time of Day)** — Time-tailored station pick strip (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) following local clock or user-pinned period.
 - **🎵 Mood Chips & Expanded Genres** — Curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag directory.
 - **🎲 Dynamic Random Genre Picker** — Interactive random genre discovery chip with a **"Random all genres" toggle** to switch between curated mood tags and the entire Radio Browser catalog.
@@ -41,7 +42,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 ### 📲 PWA & System Integration
 - **Installable PWA** — Offline app shell caching powered by a Service Worker (`sw.js`).
 - **Media Session API** — OS lock screen and headset controls with station title, country artwork, and smooth line vector icon.
-- **Deep Hash Routing** — Shareable links for stations (`#/station/:uuid`), tags (`#/tag/:tag`), countries (`#/country/:code`), search (`#/search/:q`), near me (`#/near`), and top-level views (`#/`, `#/countries`, `#/genres`, `#/favorites`, `#/recent`).
+- **Deep Hash Routing** — Shareable links for stations (`#/station/:uuid`), tags (`#/tag/:tag`), countries (`#/country/:code`), search (`#/search/:q`), near me (`#/near`), map (`#/map`, `#/map/:lat,:lon/:zoom`), and top-level views (`#/`, `#/countries`, `#/genres`, `#/favorites`, `#/recent`).
 - **Toast Feedback System** — Visual notifications for actions such as copying station share links, favorite updates, and import/export results.
 - **Safe HTML & URL Sanitization** — All user inputs, API strings, and station URLs are strictly validated and escaped against XSS and unsafe protocols.
 
@@ -63,6 +64,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 - **Styling:** Custom CSS design system with responsive layouts & retro-modern radio vector iconography
 - **Typography:** DM Sans & Instrument Serif (via `@fontsource`)
 - **API:** Radio Browser HTTP API (multi-mirror failover & stream URL resolver)
+- **Map:** Leaflet + CARTO Dark Matter tiles (viewport station fetch via `geo_lat` / `geo_long` / `geo_distance`)
 - **Audio:** HTML5 Audio + Web Audio API (BiquadFilter, Convolver, DynamicsCompressor, GainNode)
 - **PWA:** Web App Manifest + Service Worker offline shell
 - **Testing:** Vitest

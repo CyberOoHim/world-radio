@@ -45,6 +45,7 @@ export interface Language {
 
 export type ViewId =
   | 'discover'
+  | 'map'
   | 'countries'
   | 'genres'
   | 'favorites'
