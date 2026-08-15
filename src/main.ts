@@ -79,6 +79,7 @@ import { player } from './player';
 import { parseHash, setHash, stationShareUrl } from './router';
 import { formatSleepRemaining, sleepTimer } from './sleepTimer';
 import {
+  clearAllStorage,
   exportFavoritesJson,
   importFavoritesJson,
   loadFavorites,
@@ -165,6 +166,7 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let navOpen = false;
 let sleepMenuOpen = false;
+let restoreConfirmOpen = false;
 let totalStationHint = 0;
 let loadSeq = 0;
 let eventsBound = false;
@@ -248,6 +250,8 @@ const icons = {
   pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="16" height="16"><path d="M12 21s6.5-5 6.5-10a6.5 6.5 0 10-13 0c0 5 6.5 10 6.5 10z"/><circle cx="12" cy="11" r="2.2" fill="currentColor" stroke="none"/></svg>`,
   map: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M9 4l-5 2v14l5-2 6 2 5-2V4l-5 2-6-2z"/><path d="M9 4v14M15 6v14"/></svg>`,
   external: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" width="16" height="16"><path d="M14 4h6v6M20 4l-9 9"/><path d="M10 6H5a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1v-5"/></svg>`,
+  reload: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15.5-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15.5 6.36L3 16"/></svg>`,
+  restore: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>`,
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -2719,6 +2723,16 @@ function renderNavHtml(): string {
     ${navBtn('favorites', icons.heart, 'Favorites', state.favorites.length)}
     ${navBtn('recent', icons.clock, 'Recent')}
     <div class="nav-footer">
+      <div class="nav-system-actions">
+        <button type="button" class="nav-action-btn" data-action="reload-app" title="Reload app from the web">
+          ${icons.reload}
+          <span>Reload Web App</span>
+        </button>
+        <button type="button" class="nav-action-btn nav-action-btn-danger" data-action="prompt-restore-defaults" title="Restore all default settings and data">
+          ${icons.restore}
+          <span>Restore Defaults</span>
+        </button>
+      </div>
       Streams via <a href="https://www.radio-browser.info/" target="_blank" rel="noopener">Radio Browser</a>
       — community-powered, free radio directory.
       <div class="kbd-hint">Shortcuts: Space play · / search · N/P next · ↑↓ vol · M mute · Esc close</div>
@@ -2767,6 +2781,7 @@ function ensureShell() {
     <nav class="mobile-tabs" aria-label="Primary"></nav>
     <div class="detail-root"></div>
     <div class="fx-modal-root"></div>
+    <div class="confirm-modal-root"></div>
     <div class="toast-root" aria-live="polite"></div>
   `;
   shellBuilt = true;
@@ -2902,6 +2917,47 @@ function renderToast() {
     : '';
 }
 
+function renderConfirmModalHtml(): string {
+  if (!restoreConfirmOpen) return '';
+  return `
+    <div class="confirm-modal-backdrop" data-action="cancel-restore-defaults"></div>
+    <div class="confirm-modal-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-desc">
+      <div class="confirm-modal-header">
+        <div class="confirm-modal-icon-badge" aria-hidden="true">
+          ${icons.restore}
+        </div>
+        <div class="confirm-modal-header-text">
+          <h2 id="confirm-modal-title" class="confirm-modal-title">Restore default settings?</h2>
+          <p id="confirm-modal-desc" class="confirm-modal-desc">
+            This will clear all saved favorites, listening history, custom equalizer presets, and reset all audio settings to their initial values.
+          </p>
+        </div>
+      </div>
+      <div class="confirm-modal-footer">
+        <button type="button" class="btn-confirm-cancel" data-action="cancel-restore-defaults">
+          Cancel
+        </button>
+        <button type="button" class="btn-confirm-danger" data-action="confirm-restore-defaults">
+          Restore Defaults
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderConfirmModal() {
+  ensureShell();
+  const root = qs('.confirm-modal-root');
+  if (!root) return;
+  root.innerHTML = renderConfirmModalHtml();
+  document.body.classList.toggle('confirm-modal-open', restoreConfirmOpen);
+
+  if (restoreConfirmOpen) {
+    const cancelBtn = root.querySelector<HTMLButtonElement>('.btn-confirm-cancel');
+    cancelBtn?.focus();
+  }
+}
+
 function renderMobileTabs() {
   ensureShell();
   const tabs = qs('.mobile-tabs');
@@ -2940,6 +2996,7 @@ function renderAllChrome() {
   renderMobileTabs();
   renderDetail();
   renderFxModal();
+  renderConfirmModal();
   renderToast();
 }
 
@@ -3073,6 +3130,77 @@ function reloadCurrentList() {
     void loadCountryStations(state.selectedCountry, true);
   else if (state.view === 'map') refreshMapStations();
   else renderMain();
+}
+
+async function reloadAppFromWeb(): Promise<void> {
+  showToast('Reloading from web…');
+  try {
+    if ('serviceWorker' in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      for (const reg of registrations) {
+        await reg.update().catch(() => {});
+      }
+    }
+    if ('caches' in window) {
+      const cacheKeys = await caches.keys();
+      await Promise.all(cacheKeys.map((k) => caches.delete(k)));
+    }
+  } catch {
+    // Proceed with reload
+  }
+  const current = new URL(window.location.href);
+  current.searchParams.set('_reload', String(Date.now()));
+  window.location.href = current.toString();
+}
+
+function restoreAllDefaults(): void {
+  sleepTimer.cancel();
+  player.resetDefaults();
+  clearAllStorage();
+
+  state.view = 'discover';
+  state.stations = [];
+  state.favorites = [];
+  state.recent = [];
+  state.current = null;
+  state.selectedCountry = null;
+  state.selectedTag = null;
+  state.volume = 0.75;
+  state.muted = false;
+  state.continentFilter = null;
+  state.browseFilter = '';
+  state.sort = 'clickcount';
+  state.languageFilter = null;
+  state.httpsOnly = true;
+  state.tagPlaybackBehavior = 'keep';
+  state.randomAllGenres = false;
+  state.isRandomGenre = false;
+  state.detailStation = null;
+  state.nearMe = false;
+  state.userLat = null;
+  state.userLon = null;
+  state.timeOfDayMode = 'auto';
+  state.surpriseMode = null;
+  state.favoriteGroupFilter = null;
+  state.recentQuery = '';
+  state.query = '';
+  passportStamps = [];
+
+  if (window.location.hash) {
+    history.replaceState(null, '', window.location.pathname);
+  }
+
+  restoreConfirmOpen = false;
+  navOpen = false;
+  closeFxModal();
+
+  renderNav();
+  renderMobileTabs();
+  renderPlayer();
+  renderDetail();
+  renderConfirmModal();
+  void loadDiscover(true);
+  showToast('All default values restored');
 }
 
 // ─── Events ──────────────────────────────────────────────
@@ -3530,6 +3658,21 @@ function ensureAppEvents() {
         showToast('Favorites exported');
         break;
       }
+      case 'reload-app':
+        void reloadAppFromWeb();
+        break;
+      case 'prompt-restore-defaults':
+        restoreConfirmOpen = true;
+        renderConfirmModal();
+        break;
+      case 'cancel-restore-defaults':
+        restoreConfirmOpen = false;
+        renderConfirmModal();
+        qs<HTMLElement>('[data-action="prompt-restore-defaults"]')?.focus();
+        break;
+      case 'confirm-restore-defaults':
+        restoreAllDefaults();
+        break;
     }
   });
 
@@ -3727,6 +3870,38 @@ function isTypingTarget(el: EventTarget | null): boolean {
 
 function bindGlobalKeys() {
   document.addEventListener('keydown', (e) => {
+    if (restoreConfirmOpen) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        restoreConfirmOpen = false;
+        renderConfirmModal();
+        qs<HTMLElement>('[data-action="prompt-restore-defaults"]')?.focus();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const dialog = qs('.confirm-modal-dialog');
+        if (dialog) {
+          const items = dialog.querySelectorAll<HTMLElement>('button, [tabindex]:not([tabindex="-1"])');
+          if (items.length > 0) {
+            const first = items[0];
+            const last = items[items.length - 1];
+            const active = document.activeElement;
+            if (e.shiftKey && active === first) {
+              e.preventDefault();
+              last.focus();
+            } else if (!e.shiftKey && active === last) {
+              e.preventDefault();
+              first.focus();
+            } else if (active && !dialog.contains(active)) {
+              e.preventDefault();
+              first.focus();
+            }
+          }
+        }
+      }
+      return;
+    }
+
     if (isFxModalOpen()) {
       if (e.key === 'Escape') return;
       if ([' ', 'n', 'N', 'p', 'P', 'm', 'M', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {

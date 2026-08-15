@@ -1545,7 +1545,24 @@ class AudioPlayer {
     this._error = null;
     this.emit();
   }
+
+  resetDefaults() {
+    this.stop();
+    this._userVolume = 0.75;
+    this._volume = 0.75;
+    this._muted = false;
+    this._fxEnabled = false;
+    this._fxPresetId = 'radio';
+    this._customFx = {};
+    this._eqEnabled = false;
+    this._eqPresetId = 'flat';
+    this._eqBands = { ...DEFAULT_EQ_BANDS };
+    this._customEqPresets = [];
+    this.applyOutputVolume();
+    this.emit();
+  }
 }
+
 
 export const player = new AudioPlayer();
 

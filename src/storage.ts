@@ -290,7 +290,7 @@ export function saveLastStation(station: Station | null): void {
   }
 }
 
-const DEFAULT_PREFS: AppPrefs = {
+export const DEFAULT_PREFS: AppPrefs = {
   httpsOnly: true,
   tagPlaybackBehavior: 'keep',
   randomAllGenres: false,
@@ -549,6 +549,39 @@ export function saveCustomEqPresets(presets: CustomEqPreset[]): void {
       .slice(0, 24);
     localStorage.setItem(CUSTOM_EQ_PRESETS_KEY, JSON.stringify(clean));
   } catch {}
+}
+
+export const STORAGE_KEYS = [
+  FAV_KEY,
+  RECENT_KEY,
+  PASSPORT_KEY,
+  MAP_VIEWPORT_KEY,
+  MAP_STYLE_KEY,
+  VOLUME_KEY,
+  MUTE_KEY,
+  LAST_KEY,
+  PREFS_KEY,
+  FX_STATE_KEY,
+  EQ_STATE_KEY,
+  CUSTOM_EQ_PRESETS_KEY,
+] as const;
+
+export function clearAllStorage(): void {
+  try {
+    for (const key of STORAGE_KEYS) {
+      localStorage.removeItem(key);
+    }
+    localStorage.removeItem('world-radio:a2hs-dismissed');
+    localStorage.removeItem('world-radio:sleep-until');
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('world-radio:')) {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch {
+    // Quota / private mode
+  }
 }
 
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clearAllStorage,
   loadMapStyle,
   loadMapViewport,
   sanitizeCustomEqPreset,
@@ -141,3 +142,42 @@ describe('sanitizeCustomEqPreset', () => {
     expect(p?.bands.b60).toBe(3);
   });
 });
+
+describe('clearAllStorage', () => {
+  it('clears all world-radio localStorage items', () => {
+    const memory = new Map<string, string>();
+    memory.set('world-radio:favorites', '[]');
+    memory.set('world-radio:recent', '[]');
+    memory.set('world-radio:prefs', '{}');
+    memory.set('world-radio:volume', '0.5');
+    memory.set('unrelated-key', 'keep-me');
+
+    const stub = {
+      getItem: (k: string) => memory.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        memory.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        memory.delete(k);
+      },
+      key: (i: number) => Array.from(memory.keys())[i] ?? null,
+      get length() {
+        return memory.size;
+      },
+    };
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
+    try {
+      clearAllStorage();
+      expect(memory.has('world-radio:favorites')).toBe(false);
+      expect(memory.has('world-radio:recent')).toBe(false);
+      expect(memory.has('world-radio:prefs')).toBe(false);
+      expect(memory.has('world-radio:volume')).toBe(false);
+      expect(memory.get('unrelated-key')).toBe('keep-me');
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+});
+
