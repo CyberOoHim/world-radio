@@ -345,11 +345,12 @@ function createMap(canvas: HTMLElement) {
 
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  tiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  tiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
     attribution:
       '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>',
     subdomains: 'abcd',
-    maxZoom: 18,
+    maxZoom: 20,
+    className: 'map-tiles',
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);

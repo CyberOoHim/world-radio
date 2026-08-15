@@ -24,7 +24,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
   - **Surprise · Anywhere** — Pick random station globally from the community pool.
   - **Surprise · Here** — Pick random station filtered by local country / location.
 - **📍 Near Me** — Geolocation discovery via HTML5 Geolocation with expanding radius (100km to 2500km) and proximity badges (e.g. `12 km`, `450 km`).
-- **🗺️ World Map** — Leaflet map (Carto dark tiles) that plots geo-tagged stations in the current viewport. Pan/zoom to load pins, tap a pin to listen, jump here from a station’s coordinates, or use **Now playing** to center on the station in the player. `#/map` and `#/map/:lat,:lon/:zoom` are shareable. An alert (plus an on-map banner) appears when you are offline, because tiles and Radio Browser both need a network.
+- **🗺️ World Map** — Leaflet map (Carto Voyager tiles) that plots geo-tagged stations in the current viewport. Pan/zoom to load pins, tap a pin to listen, jump here from a station’s coordinates, or use **Now playing** to center on the station in the player. `#/map` and `#/map/:lat,:lon/:zoom` are shareable. An alert (plus an on-map banner) appears when you are offline, because tiles and Radio Browser both need a network.
 - **☀️ Right Now (Time of Day)** — Time-tailored station pick strip (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) following local clock or user-pinned period.
 - **🎵 Mood Chips & Expanded Genres** — Curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag directory.
 - **🎲 Dynamic Random Genre Picker** — Interactive random genre discovery chip with a **"Random all genres" toggle** to switch between curated mood tags and the entire Radio Browser catalog.
@@ -64,7 +64,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 - **Styling:** Custom CSS design system with responsive layouts & retro-modern radio vector iconography
 - **Typography:** DM Sans & Instrument Serif (via `@fontsource`)
 - **API:** Radio Browser HTTP API (multi-mirror failover & stream URL resolver)
-- **Map:** Leaflet + CARTO Dark Matter tiles (viewport station fetch via `geo_lat` / `geo_long` / `geo_distance`)
+- **Map:** Leaflet + CARTO Voyager tiles (viewport station fetch via `geo_lat` / `geo_long` / `geo_distance`)
 - **Audio:** HTML5 Audio + Web Audio API (BiquadFilter, Convolver, DynamicsCompressor, GainNode)
 - **PWA:** Web App Manifest + Service Worker offline shell
 - **Testing:** Vitest

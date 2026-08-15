@@ -2359,7 +2359,7 @@ body.fx-modal-open {
 .map-canvas .leaflet-container {
   width: 100%;
   height: 100%;
-  background: #0b1020;
+  background: #cddde6;
   font-family: var(--font);
   color: var(--text);
 }
