@@ -1,11 +1,13 @@
 import { DEFAULT_EQ_BANDS, type EqBands } from './equalizer';
 import { sanitizePassportStamp, type PassportStamp } from './mapPassport';
+import { DEFAULT_MAP_STYLE, sanitizeMapStyle, type MapStyleId } from './mapStyle';
 import type { AppPrefs, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, ViewId } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
 const PASSPORT_KEY = 'world-radio:passport';
 const MAP_VIEWPORT_KEY = 'world-radio:map-viewport';
+const MAP_STYLE_KEY = 'world-radio:map-style';
 const VOLUME_KEY = 'world-radio:volume';
 const MUTE_KEY = 'world-radio:muted';
 const LAST_KEY = 'world-radio:last-station';
@@ -204,6 +206,28 @@ export function saveMapViewport(viewport: SavedMapViewport): void {
   if (!clean) return;
   try {
     localStorage.setItem(MAP_VIEWPORT_KEY, JSON.stringify(clean));
+  } catch {
+    // Quota / private mode
+  }
+}
+
+export function loadMapStyle(): MapStyleId {
+  try {
+    const raw = localStorage.getItem(MAP_STYLE_KEY);
+    if (!raw) return DEFAULT_MAP_STYLE;
+    try {
+      return sanitizeMapStyle(JSON.parse(raw));
+    } catch {
+      return sanitizeMapStyle(raw);
+    }
+  } catch {
+    return DEFAULT_MAP_STYLE;
+  }
+}
+
+export function saveMapStyle(style: MapStyleId): void {
+  try {
+    localStorage.setItem(MAP_STYLE_KEY, sanitizeMapStyle(style));
   } catch {
     // Quota / private mode
   }

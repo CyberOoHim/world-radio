@@ -2344,6 +2344,16 @@ body.fx-modal-open {
   background: #1e2c4c !important;
 }
 
+.map-style-field {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.map-style-select {
+  max-width: 8.6rem;
+}
+
 .map-status {
   font-size: 0.8rem;
   color: var(--text-soft);
@@ -2377,6 +2387,14 @@ body.fx-modal-open {
   background: #cddde6;
   font-family: var(--font);
   color: var(--text);
+}
+
+.map-canvas.is-style-terrain .leaflet-container {
+  background: #d4ddd0;
+}
+
+.map-canvas.is-style-satellite .leaflet-container {
+  background: #1a2330;
 }
 
 .map-canvas .leaflet-control-zoom a {

@@ -27,7 +27,8 @@ import {
   stampsNewestFirst,
   type PassportStamp,
 } from './mapPassport';
-import { loadMapViewport, saveMapViewport } from './storage';
+import { MAP_STYLE_IDS, MAP_STYLES, sanitizeMapStyle, type MapStyleId } from './mapStyle';
+import { loadMapStyle, loadMapViewport, saveMapStyle, saveMapViewport } from './storage';
 import type { Station } from './types';
 
 export {
@@ -76,6 +77,7 @@ function stationHasGeo(
 
 let map: L.Map | null = null;
 let tiles: L.TileLayer | null = null;
+let currentStyle: MapStyleId = loadMapStyle();
 let markersLayer: L.LayerGroup | null = null;
 let stampsLayer: L.LayerGroup | null = null;
 let handlers: MapViewHandlers | null = null;
@@ -143,6 +145,69 @@ function wanderBtn(): HTMLButtonElement | null {
 
 function passportBtn(): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>('[data-action="map-passport"]');
+}
+
+function styleSelect(): HTMLSelectElement | null {
+  return document.querySelector<HTMLSelectElement>('[data-action="map-style"]');
+}
+
+function styleSelectHtml(): string {
+  const options = MAP_STYLE_IDS.map((id) => {
+    const spec = MAP_STYLES[id];
+    return `<option value="${spec.id}"${id === currentStyle ? ' selected' : ''}>${escapeHtml(spec.label)}</option>`;
+  }).join('');
+  return `<label class="map-style-field"><span class="sr-only">Map style</span><select class="select-compact map-style-select" data-action="map-style" aria-label="Map style">${options}</select></label>`;
+}
+
+function tileLayerFor(id: MapStyleId): L.TileLayer {
+  const spec = MAP_STYLES[id];
+  const options: L.TileLayerOptions = {
+    attribution: spec.attribution,
+    maxZoom: spec.maxZoom,
+    className: 'map-tiles',
+  };
+  if (spec.subdomains) options.subdomains = spec.subdomains;
+  if (spec.maxNativeZoom != null) options.maxNativeZoom = spec.maxNativeZoom;
+  return L.tileLayer(spec.url, options);
+}
+
+function syncStyleChrome(): void {
+  const el = styleSelect();
+  if (el && el.value !== currentStyle) el.value = currentStyle;
+  const canvas = document.querySelector<HTMLElement>('.map-canvas');
+  if (!canvas) return;
+  canvas.classList.remove('is-style-streets', 'is-style-terrain', 'is-style-satellite');
+  canvas.classList.add(`is-style-${currentStyle}`);
+}
+
+export function getMapStyle(): MapStyleId {
+  return currentStyle;
+}
+
+export function setMapStyle(next: unknown): MapStyleId {
+  const id = sanitizeMapStyle(next);
+  if (id !== currentStyle) {
+    currentStyle = id;
+    saveMapStyle(id);
+    if (map) {
+      if (tiles) {
+        map.removeLayer(tiles);
+        tiles = null;
+      }
+      tiles = tileLayerFor(id).addTo(map);
+    }
+  }
+  syncStyleChrome();
+  return currentStyle;
+}
+
+function bindStyleSelect(): void {
+  const el = styleSelect();
+  if (!el || el.dataset.bound === '1') return;
+  el.dataset.bound = '1';
+  el.addEventListener('change', () => {
+    setMapStyle(el.value);
+  });
 }
 
 function hudEl(): HTMLElement | null {
@@ -630,6 +695,7 @@ function shellHtml(): string {
       <button type="button" class="chip" data-action="map-locate" title="Center the map on your location">📍 Near me</button>
       <button type="button" class="chip" data-action="map-now-playing" title="Nothing is playing" disabled>▶ Now playing</button>
       <button type="button" class="chip" data-action="map-passport" title="Passport — listen to stamp countries">✦ 0</button>
+      ${styleSelectHtml()}
       <span class="map-status">Move the map to discover stations</span>
     </div>
     <div class="map-stage">
@@ -659,13 +725,9 @@ function createMap(canvas: HTMLElement) {
 
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  tiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>',
-    subdomains: 'abcd',
-    maxZoom: 20,
-    className: 'map-tiles',
-  }).addTo(map);
+  currentStyle = loadMapStyle();
+  tiles = tileLayerFor(currentStyle).addTo(map);
+  syncStyleChrome();
 
   markersLayer = L.layerGroup().addTo(map);
   stampsLayer = L.layerGroup().addTo(map);
@@ -695,6 +757,8 @@ export function mountMapView(root: HTMLElement, nextHandlers: MapViewHandlers): 
   if (!map) createMap(canvas);
   bindNetwork();
   bindResize();
+  bindStyleSelect();
+  syncStyleChrome();
   renderPassportChip();
   setMapWanderBusy(wanderBusy);
 }

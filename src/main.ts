@@ -3115,7 +3115,8 @@ function ensureAppEvents() {
       action === 'set-fav-group' ||
       action === 'https-only' ||
       action === 'random-all-genres' ||
-      action === 'import-favs'
+      action === 'import-favs' ||
+      action === 'map-style'
     ) {
       return;
     }
