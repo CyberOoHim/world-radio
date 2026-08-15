@@ -10,8 +10,12 @@ export interface MapBounds {
   east: number;
 }
 
-export function isBrowserOffline(): boolean {
-  return typeof navigator !== 'undefined' && navigator.onLine === false;
+export function isBrowserOffline(
+  nav: { onLine?: boolean } | undefined = typeof navigator !== 'undefined'
+    ? navigator
+    : undefined
+): boolean {
+  return nav !== undefined && nav.onLine === false;
 }
 
 export function haversineMeters(

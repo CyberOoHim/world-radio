@@ -33,12 +33,9 @@ describe('map viewport helpers', () => {
   });
 
   it('treats navigator.onLine === false as offline', () => {
-    const original = (globalThis as { navigator?: unknown }).navigator;
-    (globalThis as { navigator?: unknown }).navigator = { onLine: false };
-    expect(isBrowserOffline()).toBe(true);
-    (globalThis as { navigator?: unknown }).navigator = { onLine: true };
-    expect(isBrowserOffline()).toBe(false);
-    (globalThis as { navigator?: unknown }).navigator = original;
+    expect(isBrowserOffline({ onLine: false })).toBe(true);
+    expect(isBrowserOffline({ onLine: true })).toBe(false);
+    expect(isBrowserOffline(undefined)).toBe(false);
   });
 
   it('explains that tiles and stations need a network', () => {
