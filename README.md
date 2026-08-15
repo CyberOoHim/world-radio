@@ -41,6 +41,8 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 
 ### 📲 PWA & System Integration
 - **Installable PWA** — Offline app shell caching powered by a Service Worker (`sw.js`).
+- **🔄 Reload from Web** — One-click refresh button in the sidebar footer that flushes Service Worker caches and pulls the latest web app bundle directly from the server.
+- **↩️ Restore Default Values** — Safe reset button with an accessible confirmation dialog (`role="alertdialog"`, focus trap, `Escape` to cancel) that clears stored favorites, history, audio effects, and custom equalizer presets back to factory defaults.
 - **Media Session API** — OS lock screen and headset controls with station title, country artwork, and smooth line vector icon.
 - **Deep Hash Routing** — Shareable links for stations (`#/station/:uuid`), tags (`#/tag/:tag`), countries (`#/country/:code`), search (`#/search/:q`), near me (`#/near`), map (`#/map`, `#/map/:lat,:lon/:zoom`), and top-level views (`#/`, `#/countries`, `#/genres`, `#/favorites`, `#/recent`).
 - **Toast Feedback System** — Visual notifications for actions such as copying station share links, favorite updates, and import/export results.
@@ -54,7 +56,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 | `N` / `P` | Next / Previous station in list |
 | `M` | Mute / Unmute toggle |
 | `↑` / `↓` or `←` / `→` | Adjust volume (5% increments) |
-| `Esc` | Close FX/EQ, detail sheet, sleep menu, or nav |
+| `Esc` | Close FX/EQ modal, confirmation dialog, detail sheet, sleep menu, or nav drawer |
 
 ---
 
