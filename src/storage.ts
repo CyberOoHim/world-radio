@@ -1,8 +1,10 @@
 import { DEFAULT_EQ_BANDS, type EqBands } from './equalizer';
+import { sanitizePassportStamp, type PassportStamp } from './mapPassport';
 import type { AppPrefs, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, ViewId } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
+const PASSPORT_KEY = 'world-radio:passport';
 const VOLUME_KEY = 'world-radio:volume';
 const MUTE_KEY = 'world-radio:muted';
 const LAST_KEY = 'world-radio:last-station';
@@ -136,6 +138,32 @@ export function loadRecent(): Station[] {
 export function saveRecent(stations: Station[]): void {
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify(stations.slice(0, 40)));
+  } catch {
+    // Quota / private mode
+  }
+}
+
+/** `null` means no passport has been saved yet (caller may seed from recents). */
+export function loadPassport(): PassportStamp[] | null {
+  try {
+    const raw = localStorage.getItem(PASSPORT_KEY);
+    if (raw == null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map(sanitizePassportStamp)
+      .filter((s): s is PassportStamp => s != null);
+  } catch {
+    return [];
+  }
+}
+
+export function savePassport(stamps: PassportStamp[]): void {
+  try {
+    localStorage.setItem(
+      PASSPORT_KEY,
+      JSON.stringify(stamps.map(sanitizePassportStamp).filter((s): s is PassportStamp => s != null))
+    );
   } catch {
     // Quota / private mode
   }

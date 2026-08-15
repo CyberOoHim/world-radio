@@ -46,6 +46,48 @@ export function shouldLoadPins(zoom: number): boolean {
   return zoom >= MIN_PIN_ZOOM;
 }
 
+/** True if a point sits inside bounds, including views that cross the antimeridian. */
+export function pointInBounds(lat: number, lon: number, bounds: MapBounds): boolean {
+  if (lat < bounds.south || lat > bounds.north) return false;
+  if (bounds.west <= bounds.east) return lon >= bounds.west && lon <= bounds.east;
+  return lon >= bounds.west || lon <= bounds.east;
+}
+
+export type SolarPeriod = 'morning' | 'day' | 'evening' | 'night';
+
+/** Local solar hour (0–24) from longitude — no timezone database required. */
+export function localSolarHour(lon: number, now: Date = new Date()): number {
+  const utc =
+    now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+  return ((utc + lon / 15) % 24 + 24) % 24;
+}
+
+export function solarPeriodFromHour(hour: number): SolarPeriod {
+  const h = ((hour % 24) + 24) % 24;
+  if (h >= 5 && h < 11) return 'morning';
+  if (h >= 11 && h < 17) return 'day';
+  if (h >= 17 && h < 21) return 'evening';
+  return 'night';
+}
+
+export function formatSolarClock(lon: number, now: Date = new Date()): string {
+  const h = localSolarHour(lon, now);
+  const hours = Math.floor(h);
+  const minutes = Math.min(59, Math.floor((h - hours) * 60));
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+/** Short flavor line for the map HUD (sun-relative, not civil timezone). */
+export function solarMoodLabel(hour: number): string {
+  const h = ((hour % 24) + 24) % 24;
+  if (h >= 4 && h < 6) return 'almost dawn';
+  if (h >= 6 && h < 11) return 'morning';
+  if (h >= 11 && h < 14) return 'midday';
+  if (h >= 14 && h < 17) return 'afternoon';
+  if (h >= 17 && h < 21) return 'evening';
+  return 'night';
+}
+
 export const STATION_PIN_ZOOM = 10;
 export const COUNTRY_PIN_ZOOM = 5;
 
@@ -122,6 +164,8 @@ const COUNTRY_CENTROIDS: Record<string, [number, number]> = {
   VN: [14.06, 108.28], VU: [-15.38, 166.96], WS: [-13.76, -172.1], XK: [42.6, 20.9],
   YE: [15.55, 48.52], ZA: [-30.56, 22.94], ZM: [-13.13, 27.85], ZW: [-19.02, 29.15],
 };
+
+export const PASSPORT_COUNTRY_TOTAL = Object.keys(COUNTRY_CENTROIDS).length;
 
 export function countryCentroid(code: string): { lat: number; lon: number } | null {
   const pair = COUNTRY_CENTROIDS[code.trim().toUpperCase()];

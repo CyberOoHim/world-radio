@@ -4,14 +4,29 @@ import 'leaflet/dist/leaflet.css';
 import { getStationsInViewport, type SearchParams } from './api/radioBrowser';
 import { escapeHtml } from './html';
 import {
+  formatSolarClock,
   isBrowserOffline,
+  localSolarHour,
   OFFLINE_MAP_ALERT,
   resolveStationMapTarget,
   shouldLoadPins,
+  solarMoodLabel,
+  solarPeriodFromHour,
   STATION_PIN_ZOOM,
   stationCoords,
+  type SolarPeriod,
   viewportRadiusMeters,
+  type MapBounds,
 } from './mapGeo';
+import {
+  countrySealPosition,
+  isStationStamped,
+  latestStampPerCountry,
+  passportStats,
+  routeStampPoints,
+  stampsNewestFirst,
+  type PassportStamp,
+} from './mapPassport';
 import type { Station } from './types';
 
 export {
@@ -27,6 +42,9 @@ const DEFAULT_ZOOM = 2;
 const FETCH_DEBOUNCE_MS = 320;
 const LOCATE_ZOOM = 9;
 const STATION_ZOOM = STATION_PIN_ZOOM;
+const BLIND_MS = 20_000;
+const HUD_TICK_MS = 30_000;
+const SEAL_MAX_ZOOM = 5;
 
 export interface MapViewport {
   lat: number;
@@ -40,6 +58,7 @@ export interface MapViewHandlers {
   onStations: (stations: Station[]) => void;
   onViewport: (viewport: MapViewport) => void;
   toast: (message: string) => void;
+  playStamp?: (uuid: string) => void;
 }
 
 function countryFlag(code: string): string {
@@ -57,6 +76,7 @@ function stationHasGeo(
 let map: L.Map | null = null;
 let tiles: L.TileLayer | null = null;
 let markersLayer: L.LayerGroup | null = null;
+let stampsLayer: L.LayerGroup | null = null;
 let handlers: MapViewHandlers | null = null;
 let fetchTimer: ReturnType<typeof setTimeout> | null = null;
 let fetchSeq = 0;
@@ -69,6 +89,12 @@ let offlineAlertShown = false;
 let resizeBound = false;
 let netBound = false;
 let pendingView: { center: L.LatLngExpression; zoom: number } | null = null;
+let lastPassport: PassportStamp[] = [];
+let hudStation: Station | null = null;
+let hudTimer: ReturnType<typeof setInterval> | null = null;
+let wanderBusy = false;
+let blind: { station: Station; timer: ReturnType<typeof setTimeout> } | null = null;
+let passportOpen = false;
 
 export function getMapStations(): Station[] {
   return lastStations;
@@ -78,6 +104,17 @@ export function getMapViewport(): MapViewport | null {
   if (!map) return null;
   const c = map.getCenter();
   return { lat: c.lat, lon: c.lng, zoom: map.getZoom() };
+}
+
+export function getMapBounds(): MapBounds | null {
+  if (!map) return null;
+  const b = map.getBounds();
+  return {
+    south: b.getSouth(),
+    west: b.getWest(),
+    north: b.getNorth(),
+    east: b.getEast(),
+  };
 }
 
 export function dismissMapAlert(): boolean {
@@ -99,6 +136,22 @@ function nowPlayingBtn(): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>('[data-action="map-now-playing"]');
 }
 
+function wanderBtn(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-action="map-wander"]');
+}
+
+function passportBtn(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-action="map-passport"]');
+}
+
+function hudEl(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.map-hud');
+}
+
+function passportPanelEl(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.map-passport-panel');
+}
+
 export function syncMapNowPlaying(station: Station | null): void {
   const btn = nowPlayingBtn();
   if (!btn) return;
@@ -111,6 +164,211 @@ export function syncMapNowPlaying(station: Station | null): void {
   btn.title = target
     ? `Center the map on ${station.name}`
     : `${station.name} has no map location`;
+}
+
+export function setMapWanderBusy(busy: boolean): void {
+  wanderBusy = busy;
+  const btn = wanderBtn();
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.textContent = busy ? 'Tuning…' : '🧭 Wander';
+  btn.title = busy ? 'Finding a station somewhere else' : 'Hop to a live station somewhere else';
+}
+
+export function isMapBlind(): boolean {
+  return blind != null;
+}
+
+function placeCaption(station: Station): string {
+  const city = (station.state || '').trim();
+  const country = (station.country || station.countrycode || '').trim();
+  if (city && country && city.toLowerCase() !== country.toLowerCase()) {
+    return `${city}, ${country}`;
+  }
+  return country || station.name;
+}
+
+function solarForStation(station: Station): { lon: number; hour: number; period: SolarPeriod } | null {
+  const target = resolveStationMapTarget(station);
+  if (!target) return null;
+  const hour = localSolarHour(target.lon);
+  return { lon: target.lon, hour, period: solarPeriodFromHour(hour) };
+}
+
+function renderHud() {
+  const el = hudEl();
+  if (!el) return;
+  if (blind) {
+    el.hidden = false;
+    el.classList.add('is-blind');
+    el.innerHTML = `
+      <div class="map-hud-kicker">Shortwave</div>
+      <div class="map-hud-clock">??:??</div>
+      <div class="map-hud-place">Somewhere on the air · listen…</div>
+      <button type="button" class="chip" data-action="map-reveal">Reveal</button>
+    `;
+    return;
+  }
+  const station = hudStation;
+  if (!station) {
+    el.hidden = true;
+    el.classList.remove('is-blind');
+    el.innerHTML = '';
+    return;
+  }
+  const solar = solarForStation(station);
+  const place = placeCaption(station);
+  el.hidden = false;
+  el.classList.remove('is-blind');
+  if (solar) {
+    el.innerHTML = `
+      <div class="map-hud-kicker">Local sun</div>
+      <div class="map-hud-clock">${escapeHtml(formatSolarClock(solar.lon))}</div>
+      <div class="map-hud-place">in ${escapeHtml(place)} · ${escapeHtml(solarMoodLabel(solar.hour))}</div>
+    `;
+  } else {
+    el.innerHTML = `
+      <div class="map-hud-kicker">Now playing</div>
+      <div class="map-hud-clock">${escapeHtml(station.name)}</div>
+      <div class="map-hud-place">${escapeHtml(place)}</div>
+    `;
+  }
+}
+
+export function syncMapHud(station: Station | null): void {
+  hudStation = station;
+  renderHud();
+}
+
+function renderPassportChip() {
+  const btn = passportBtn();
+  if (!btn) return;
+  const stats = passportStats(lastPassport);
+  btn.textContent = `✦ ${stats.countries} / ${stats.total}`;
+  btn.title =
+    stats.countries === 0
+      ? 'Passport — listen to stamp countries'
+      : `Passport · ${stats.countries} ${stats.countries === 1 ? 'country' : 'countries'} · ${stats.cities} ${stats.cities === 1 ? 'city' : 'cities'}`;
+  btn.classList.toggle('active', passportOpen);
+}
+
+function renderPassportPanel() {
+  const panel = passportPanelEl();
+  if (!panel) return;
+  panel.hidden = !passportOpen;
+  if (!passportOpen) return;
+  const stats = passportStats(lastPassport);
+  const rows = stampsNewestFirst(lastPassport);
+  const list = rows.length
+    ? rows
+        .map((stamp) => {
+          const flag = countryFlag(stamp.countrycode);
+          const title = escapeHtml(stamp.country);
+          const detail = [stamp.stationName, stamp.place].filter(Boolean).join(' · ');
+          const idAttr = stamp.stationuuid
+            ? ` data-id="${escapeHtml(stamp.stationuuid)}"`
+            : '';
+          return `<button type="button" class="map-stamp-row" data-action="map-stamp-goto"${idAttr} data-lat="${stamp.lat}" data-lon="${stamp.lon}" data-kind="${stamp.kind}">
+            <span class="map-stamp-flag">${flag}</span>
+            <span class="map-stamp-copy">
+              <strong>${title}</strong>
+              ${detail ? `<span>${escapeHtml(detail)}</span>` : ''}
+            </span>
+          </button>`;
+        })
+        .join('')
+    : `<p class="map-passport-empty">Listen for about 90 seconds to stamp a place. Stations in Recents are already in your book.</p>`;
+  panel.innerHTML = `
+    <div class="map-passport-head">
+      <strong>Passport</strong>
+      <span>${stats.countries} / ${stats.total} countries · ${stats.cities} ${stats.cities === 1 ? 'city' : 'cities'}</span>
+    </div>
+    <div class="map-passport-list">${list}</div>
+  `;
+}
+
+function sealIcon(stamp: PassportStamp): L.DivIcon {
+  return L.divIcon({
+    className: 'map-seal-wrap',
+    html: `<span class="map-seal" title="${escapeHtml(stamp.country)}">${countryFlag(stamp.countrycode)}</span>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+  });
+}
+
+function renderStampLayer() {
+  if (!stampsLayer || !map) return;
+  stampsLayer.clearLayers();
+  const route = routeStampPoints(lastPassport, 12);
+  if (route.length >= 2) {
+    L.polyline(
+      route.map((s) => [s.lat, s.lon] as L.LatLngExpression),
+      {
+        color: '#c4a06a',
+        weight: 2,
+        opacity: 0.72,
+        dashArray: '5 8',
+        interactive: false,
+        className: 'map-route',
+      }
+    ).addTo(stampsLayer);
+  }
+
+  if (map.getZoom() > SEAL_MAX_ZOOM) return;
+  for (const stamp of latestStampPerCountry(lastPassport)) {
+    const pos = countrySealPosition(stamp);
+    const marker = L.marker([pos.lat, pos.lon], {
+      icon: sealIcon(stamp),
+      keyboard: true,
+      title: stamp.country,
+      zIndexOffset: -200,
+    });
+    marker.on('click', () => {
+      gotoMapStamp({
+        lat: stamp.lat,
+        lon: stamp.lon,
+        kind: stamp.kind,
+        stationuuid: stamp.stationuuid,
+      });
+    });
+    marker.addTo(stampsLayer);
+  }
+}
+
+export function syncMapPassport(stamps: PassportStamp[]): void {
+  lastPassport = stamps;
+  renderPassportChip();
+  renderPassportPanel();
+  renderStampLayer();
+  if (lastStations.length) setMarkers(lastStations);
+}
+
+export function togglePassportPanel(): void {
+  passportOpen = !passportOpen;
+  renderPassportChip();
+  renderPassportPanel();
+}
+
+export function closePassportPanel(): boolean {
+  if (!passportOpen) return false;
+  passportOpen = false;
+  renderPassportChip();
+  renderPassportPanel();
+  return true;
+}
+
+export function gotoMapStamp(stamp: {
+  lat: number;
+  lon: number;
+  kind?: 'station' | 'country';
+  stationuuid?: string;
+}): void {
+  closePassportPanel();
+  const zoom = stamp.kind === 'country' ? 5 : STATION_ZOOM;
+  if (stamp.stationuuid) pendingPopupId = stamp.stationuuid;
+  flyToMap(stamp.lat, stamp.lon, zoom);
+  openPendingPopup(false);
+  if (stamp.stationuuid) handlers?.playStamp?.(stamp.stationuuid);
 }
 
 function openPendingPopup(clear: boolean) {
@@ -146,15 +404,33 @@ function clearOfflineAlert() {
 }
 
 function pinHtml(station: Station, playing: boolean): string {
-  const flag = countryFlag(station.countrycode);
-  return `<span class="map-pin${playing ? ' is-playing' : ''}" title="${escapeHtml(station.name)}"><span class="map-pin-flag">${flag}</span></span>`;
+  const mystery = Boolean(blind && blind.station.stationuuid === station.stationuuid);
+  const solar = solarForStation(station);
+  const period = solar?.period ?? 'day';
+  const stamped = isStationStamped(lastPassport, station.stationuuid);
+  const flag = mystery ? '✦' : countryFlag(station.countrycode);
+  const title = mystery ? 'Somewhere on the air' : station.name;
+  return `<span class="map-pin period-${period}${playing ? ' is-playing' : ''}${stamped ? ' is-stamped' : ''}${mystery ? ' is-mystery' : ''}" title="${escapeHtml(title)}"><span class="map-pin-flag">${flag}</span></span>`;
 }
 
 function popupHtml(station: Station): string {
+  if (blind && blind.station.stationuuid === station.stationuuid) {
+    return `
+      <div class="map-popup">
+        <div class="map-popup-name">Somewhere on the air</div>
+        <div class="map-popup-meta">Listen — destination hidden</div>
+        <div class="map-popup-actions">
+          <button type="button" class="chip" data-action="map-reveal">Reveal</button>
+        </div>
+      </div>`;
+  }
   const fav = handlers?.isFavorite(station.stationuuid);
   const country = station.country || station.countrycode || '';
+  const solar = solarForStation(station);
+  const clock = solar ? `${formatSolarClock(solar.lon)} · ${solarMoodLabel(solar.hour)}` : '';
   const meta = [
     country ? `${countryFlag(station.countrycode)} ${escapeHtml(country)}` : '',
+    clock,
     station.bitrate ? `${station.bitrate} kbps` : '',
     station.codec ? escapeHtml(station.codec) : '',
   ]
@@ -191,7 +467,7 @@ function setMarkers(stations: Station[]) {
     const playing = station.stationuuid === playingId;
     const marker = L.marker([station.geo_lat, station.geo_long], {
       icon: pinIcon(station, playing),
-      title: station.name,
+      title: blind && blind.station.stationuuid === station.stationuuid ? 'Somewhere on the air' : station.name,
       keyboard: true,
     });
     marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
@@ -236,6 +512,7 @@ async function loadViewportStations() {
     setMarkers([]);
     handlers.onStations([]);
     setStatus('Zoom in to load stations');
+    renderStampLayer();
     return;
   }
 
@@ -280,6 +557,7 @@ function scheduleFetch() {
     fetchTimer = null;
     void loadViewportStations();
     reportViewport();
+    renderStampLayer();
   }, FETCH_DEBOUNCE_MS);
 }
 
@@ -316,17 +594,36 @@ function bindResize() {
   });
 }
 
+function startHudClock() {
+  if (hudTimer) return;
+  hudTimer = setInterval(() => {
+    if (visible) renderHud();
+  }, HUD_TICK_MS);
+}
+
+function stopHudClock() {
+  if (!hudTimer) return;
+  clearInterval(hudTimer);
+  hudTimer = null;
+}
+
 function shellHtml(): string {
   return `
     <div class="map-offline-banner" role="alert" hidden>
       <strong>Offline.</strong> ${escapeHtml(OFFLINE_MAP_ALERT)}
     </div>
     <div class="map-toolbar">
+      <button type="button" class="chip" data-action="map-wander" title="Hop to a live station somewhere else">🧭 Wander</button>
       <button type="button" class="chip" data-action="map-locate" title="Center the map on your location">📍 Near me</button>
       <button type="button" class="chip" data-action="map-now-playing" title="Nothing is playing" disabled>▶ Now playing</button>
+      <button type="button" class="chip" data-action="map-passport" title="Passport — listen to stamp countries">✦ 0</button>
       <span class="map-status">Move the map to discover stations</span>
     </div>
-    <div class="map-canvas" role="application" aria-label="World radio map"></div>
+    <div class="map-stage">
+      <div class="map-canvas" role="application" aria-label="World radio map"></div>
+      <div class="map-hud" hidden></div>
+      <div class="map-passport-panel" hidden></div>
+    </div>
   `;
 }
 
@@ -352,12 +649,22 @@ function createMap(canvas: HTMLElement) {
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
+  stampsLayer = L.layerGroup().addTo(map);
   map.on('moveend', scheduleFetch);
+  renderStampLayer();
 }
 
 export function mountMapView(root: HTMLElement, nextHandlers: MapViewHandlers): void {
   handlers = nextHandlers;
-  if (!root.querySelector('.map-canvas')) {
+  if (!root.querySelector('[data-action="map-wander"]')) {
+    if (map) {
+      map.remove();
+      map = null;
+      tiles = null;
+      markersLayer = null;
+      stampsLayer = null;
+      markerById = new Map();
+    }
     root.innerHTML = shellHtml();
   }
   const canvas = root.querySelector<HTMLElement>('.map-canvas');
@@ -365,11 +672,14 @@ export function mountMapView(root: HTMLElement, nextHandlers: MapViewHandlers): 
   if (!map) createMap(canvas);
   bindNetwork();
   bindResize();
+  renderPassportChip();
+  setMapWanderBusy(wanderBusy);
 }
 
 export function showMapView(opts?: { center?: [number, number]; zoom?: number }): void {
   const alreadyVisible = visible;
   visible = true;
+  startHudClock();
   if (!map) return;
   if (opts?.center) {
     map.setView(opts.center, opts.zoom ?? Math.max(map.getZoom(), LOCATE_ZOOM));
@@ -383,6 +693,8 @@ export function showMapView(opts?: { center?: [number, number]; zoom?: number })
     } else if (!alreadyVisible) {
       void loadViewportStations();
     }
+    renderStampLayer();
+    renderHud();
   });
 }
 
@@ -393,6 +705,8 @@ export function hideMapView(): void {
     clearTimeout(fetchTimer);
     fetchTimer = null;
   }
+  stopHudClock();
+  closePassportPanel();
 }
 
 export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM): void {
@@ -430,6 +744,45 @@ export function flyToNowPlaying(station: Station): boolean {
   pendingPopupId = null;
   flyToMap(target.lat, target.lon, target.zoom);
   return true;
+}
+
+export function beginBlindWander(station: Station): void {
+  clearMapBlind();
+  hudStation = station;
+  highlightMapStation(station.stationuuid);
+  setStatus('On the air somewhere — listen');
+  if (!resolveStationMapTarget(station)) {
+    renderHud();
+    handlers?.toast('On the air — this station has no map location');
+    return;
+  }
+  blind = {
+    station,
+    timer: window.setTimeout(() => {
+      revealMapWander(true);
+    }, BLIND_MS),
+  };
+  renderHud();
+}
+
+export function revealMapWander(auto = false): boolean {
+  if (!blind) return false;
+  const station = blind.station;
+  clearMapBlind();
+  hudStation = station;
+  const place = placeCaption(station);
+  const ok = flyToNowPlaying(station);
+  renderHud();
+  setStatus(ok ? `Landed in ${place}` : 'On the air');
+  handlers?.toast(auto ? `You landed in ${place}` : `Revealed: ${place}`);
+  return true;
+}
+
+export function clearMapBlind(): void {
+  if (!blind) return;
+  window.clearTimeout(blind.timer);
+  blind = null;
+  renderHud();
 }
 
 export function refreshMapStations(): void {

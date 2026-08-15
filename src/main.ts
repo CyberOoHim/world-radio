@@ -39,19 +39,40 @@ import {
 } from './fxModal';
 import { escapeHtml } from './html';
 import {
+  beginBlindWander,
+  clearMapBlind,
+  closePassportPanel,
   dismissMapAlert,
   flyToMap,
   flyToNowPlaying,
+  getMapBounds,
   getMapStations,
   getMapViewport,
+  gotoMapStamp,
   hideMapView,
   highlightMapStation,
+  isBrowserOffline,
+  isMapBlind,
   locateOnMap,
   mountMapView,
   refreshMapStations,
+  revealMapWander,
+  setMapWanderBusy,
   showMapView,
+  syncMapHud,
   syncMapNowPlaying,
+  syncMapPassport,
+  togglePassportPanel,
 } from './mapView';
+import {
+  PASSPORT_LISTEN_MS,
+  mergeStamp,
+  seedStampsFromStations,
+  stampedCountryCodes,
+  stampFromStation,
+  type PassportStamp,
+} from './mapPassport';
+import { pickWanderOrder } from './mapWander';
 import { safeHttpUrl } from './safeUrl';
 import { updateMediaSession } from './mediaSession';
 import { player } from './player';
@@ -63,12 +84,14 @@ import {
   loadFavorites,
   loadLastStation,
   loadMuted,
+  loadPassport,
   loadPrefs,
   loadRecent,
   loadVolume,
   saveFavorites,
   saveLastStation,
   saveMuted,
+  savePassport,
   savePrefs,
   saveRecent,
   saveVolume,
@@ -152,6 +175,27 @@ let surpriseSeq = 0;
 let surpriseBusy = false;
 /** Bumped to abandon in-flight Near me geolocation + list loads. */
 let nearMeSeq = 0;
+/** Guards concurrent Wander hops. */
+let wanderSeq = 0;
+let wanderBusy = false;
+
+function loadOrSeedPassport(): PassportStamp[] {
+  const stored = loadPassport();
+  if (stored) return stored;
+  const seeded = seedStampsFromStations(state.recent);
+  savePassport(seeded);
+  return seeded;
+}
+
+let passportStamps: PassportStamp[] = loadOrSeedPassport();
+
+const listenAcc = {
+  uuid: null as string | null,
+  ms: 0,
+  lastTick: 0,
+  stamped: false,
+};
+let listenTimer: ReturnType<typeof setInterval> | null = null;
 
 const SURPRISE_BATCH = 20;
 /** ~60s total: pool fetch ≤ 12s, then up to 6 connect attempts. */
@@ -336,6 +380,77 @@ function pushRecent(station: Station) {
   saveRecent(state.recent);
 }
 
+function applyPassportStamp(station: Station): void {
+  const stamp = stampFromStation(station);
+  if (!stamp) return;
+  const result = mergeStamp(passportStamps, stamp);
+  if (!result.added && !result.upgraded) return;
+  passportStamps = result.stamps;
+  savePassport(passportStamps);
+  syncMapPassport(passportStamps);
+  showToast(
+    result.upgraded ? `Passport upgraded: ${stamp.country}` : `Passport stamped: ${stamp.country}`
+  );
+}
+
+function stopListenClock(): void {
+  if (listenAcc.uuid && listenAcc.lastTick) {
+    listenAcc.ms += Date.now() - listenAcc.lastTick;
+    listenAcc.lastTick = 0;
+  }
+  if (listenTimer) {
+    clearInterval(listenTimer);
+    listenTimer = null;
+  }
+}
+
+function tickListenClock(): void {
+  if (!player.playing || !player.station) {
+    stopListenClock();
+    return;
+  }
+  const id = player.station.stationuuid;
+  const now = Date.now();
+  if (listenAcc.uuid !== id) {
+    listenAcc.uuid = id;
+    listenAcc.ms = 0;
+    listenAcc.lastTick = now;
+    listenAcc.stamped = passportStamps.some((s) => s.stationuuid === id);
+    return;
+  }
+  if (!listenAcc.lastTick) listenAcc.lastTick = now;
+  listenAcc.ms += now - listenAcc.lastTick;
+  listenAcc.lastTick = now;
+  if (!listenAcc.stamped && listenAcc.ms >= PASSPORT_LISTEN_MS) {
+    listenAcc.stamped = true;
+    applyPassportStamp(player.station);
+  }
+}
+
+function syncListenClock(): void {
+  if (player.playing && player.station) {
+    const id = player.station.stationuuid;
+    if (listenAcc.uuid !== id) {
+      listenAcc.uuid = id;
+      listenAcc.ms = 0;
+      listenAcc.lastTick = Date.now();
+      listenAcc.stamped = passportStamps.some((s) => s.stationuuid === id);
+    } else if (!listenAcc.lastTick) {
+      listenAcc.lastTick = Date.now();
+    }
+    if (!listenTimer) listenTimer = window.setInterval(tickListenClock, 1000);
+    return;
+  }
+  stopListenClock();
+}
+
+function cancelWanderHunt(): void {
+  wanderSeq++;
+  wanderBusy = false;
+  setMapWanderBusy(false);
+  clearMapBlind();
+}
+
 function syncMediaSession() {
   updateMediaSession(state.current, player.playing, {
     play: () => togglePlayback(),
@@ -347,6 +462,7 @@ function syncMediaSession() {
 }
 
 async function playStation(station: Station) {
+  if (isMapBlind()) clearMapBlind();
   state.current = station;
   state.detailStation = null;
   pushRecent(station);
@@ -404,6 +520,7 @@ function closePlayerAndCleanActivity() {
   // Cancel Surprise · Anywhere / Here retries and stream attempts.
   surpriseSeq++;
   surpriseBusy = false;
+  cancelWanderHunt();
 
   // Cancel Near me geolocation callback + any in-flight discover/search loads.
   nearMeSeq++;
@@ -964,6 +1081,7 @@ function rememberHereContext(ctx: SurpriseContext) {
  * Re-click cancels the previous hunt and starts a new one (no permanent hang).
  */
 async function playSurprise(mode: SurpriseMode = 'anywhere', overrideCtx?: SurpriseContext) {
+  cancelWanderHunt();
   if (surpriseBusy) {
     surpriseSeq++;
     showToast('Restarting surprise…');
@@ -1074,6 +1192,176 @@ function playPeriodMix() {
     periodTags: timeOfDayMoods(period).map((t) => t.id),
   };
   void playSurprise('here', ctx);
+}
+
+function finishWanderPlay(station: Station): void {
+  pushRecent(station);
+  saveLastStation(station);
+  if (!applyingRoute && state.view !== 'map') {
+    setHash({ kind: 'station', uuid: station.stationuuid });
+  }
+  syncMediaSession();
+  updatePlaybackUI();
+  announce(`Playing ${station.name}`);
+  beginBlindWander(station);
+  showToast('On the air — guess where', 2800);
+}
+
+async function runWanderAttempts(
+  pool: Station[],
+  seq: number,
+  deadlineMs: number
+): Promise<SurpriseAttemptResult> {
+  if (!pool.length) return 'failed';
+  const tries = pool.slice(0, SURPRISE_MAX_TRIES);
+  let attempt = 0;
+
+  for (const station of tries) {
+    if (seq !== wanderSeq) return 'cancelled';
+    if (Date.now() > deadlineMs) return 'failed';
+    attempt++;
+    if (!prefersReducedMotion() || attempt === 1) {
+      showToast(attempt > 1 ? `Trying another… (${attempt}/${tries.length})` : 'Tuning the shortwave…');
+    }
+
+    state.current = station;
+    state.detailStation = null;
+    sleepMenuOpen = false;
+    renderPlayer();
+    renderDetail();
+    updatePlaybackUI();
+    announce(`Trying ${station.name}`);
+
+    const remaining = Math.max(2_000, deadlineMs - Date.now());
+    const attemptBudget = Math.min(SURPRISE_PLAY_TIMEOUT_MS + 5_000, remaining);
+    try {
+      await withTimeout(player.play(station), attemptBudget);
+    } catch {
+      if (seq !== wanderSeq) return 'cancelled';
+      continue;
+    }
+    if (seq !== wanderSeq) return 'cancelled';
+
+    if (player.playing && player.station?.stationuuid === station.stationuuid) {
+      finishWanderPlay(station);
+      return 'played';
+    }
+
+    const waitMs = Math.min(
+      SURPRISE_PLAY_TIMEOUT_MS,
+      Math.max(1_500, deadlineMs - Date.now())
+    );
+    const outcome = await player.waitForOutcome(waitMs);
+    if (seq !== wanderSeq) return 'cancelled';
+    if (outcome === 'cancelled') return 'cancelled';
+    if (outcome === 'playing') {
+      finishWanderPlay(station);
+      return 'played';
+    }
+    if (player.error?.includes('Click play')) {
+      finishWanderPlay(station);
+      showToast('Tap play, then listen for the reveal');
+      return 'blocked';
+    }
+  }
+
+  return 'failed';
+}
+
+async function playWander(): Promise<void> {
+  if (isBrowserOffline()) {
+    showToast('Wander needs a connection');
+    return;
+  }
+  if (wanderBusy) {
+    wanderSeq++;
+    showToast('Retuning…');
+  }
+  surpriseSeq++;
+  surpriseBusy = false;
+  state.surpriseMode = null;
+  clearMapBlind();
+
+  const seq = ++wanderSeq;
+  wanderBusy = true;
+  setMapWanderBusy(true);
+
+  const previous = state.current;
+  const excludeId = previous?.stationuuid ?? null;
+  const deadlineMs = Date.now() + SURPRISE_TOTAL_MS;
+  const vp = getMapViewport();
+  const ctx = {
+    bounds: getMapBounds(),
+    zoom: vp?.zoom ?? 2,
+    center: vp ? { lat: vp.lat, lon: vp.lon } : null,
+    stampedCountries: stampedCountryCodes(passportStamps),
+    excludeId,
+  };
+
+  try {
+    showToast('Tuning the shortwave…');
+    const soft = surpriseHttpsFilter();
+    let gathered: Station[] = [];
+    try {
+      gathered = await withTimeout(
+        getRandomStations(SURPRISE_BATCH, { ...soft, has_geo_info: true }),
+        SURPRISE_POOL_TIMEOUT_MS
+      );
+    } catch {
+      gathered = [];
+    }
+    if (seq !== wanderSeq) return;
+
+    let pool = pickWanderOrder(collectSurprisePool([gathered], excludeId), ctx);
+    if (pool.length < 3) {
+      try {
+        const more = await withTimeout(
+          getRandomStations(SURPRISE_BATCH, soft),
+          SURPRISE_POOL_TIMEOUT_MS
+        );
+        if (seq !== wanderSeq) return;
+        pool = pickWanderOrder(collectSurprisePool([gathered, more], excludeId), ctx);
+      } catch {
+        // keep what we have
+      }
+    }
+
+    if (!pool.length) {
+      showToast('No wander station found — try again');
+      return;
+    }
+
+    const result = await runWanderAttempts(pool, seq, deadlineMs);
+    if (seq !== wanderSeq) return;
+    if (result === 'failed') {
+      showToast('No working wander found — try again');
+      if (previous && !player.playing) {
+        state.current = previous;
+        renderPlayer();
+        updatePlaybackUI();
+      }
+    }
+  } catch {
+    if (seq === wanderSeq) showToast('Wander failed — try again');
+  } finally {
+    if (seq === wanderSeq) {
+      wanderBusy = false;
+      setMapWanderBusy(false);
+    }
+  }
+}
+
+function replayPassportStamp(uuid: string): void {
+  if (state.current?.stationuuid === uuid && (player.playing || player.loading)) return;
+  const station = findStation(uuid);
+  if (station) {
+    void playStation(station);
+    return;
+  }
+  void getStationsByUuid(uuid).then((list) => {
+    if (list[0]) void playStation(list[0]);
+    else showToast('Could not replay that stamp');
+  });
 }
 
 /** Dual surprise chips for hero / idle player */
@@ -2524,7 +2812,10 @@ function ensureMapMounted() {
       setHash({ kind: 'map', lat: vp.lat, lon: vp.lon, zoom: vp.zoom });
     },
     toast: (message) => showToast(message),
+    playStamp: (uuid) => replayPassportStamp(uuid),
   });
+  syncMapPassport(passportStamps);
+  syncMapHud(state.current ?? player.station);
 }
 
 function renderMain() {
@@ -2541,6 +2832,8 @@ function renderMain() {
     showMapView();
     highlightMapStation(state.current?.stationuuid ?? player.station?.stationuuid ?? null);
     syncMapNowPlaying(state.current ?? player.station);
+    syncMapHud(state.current ?? player.station);
+    syncMapPassport(passportStamps);
     return;
   }
 
@@ -2684,6 +2977,8 @@ function updatePlaybackUI() {
     highlightMapStation(state.current?.stationuuid ?? player.station?.stationuuid ?? null);
   }
   syncMapNowPlaying(state.current ?? player.station);
+  syncMapHud(state.current ?? player.station);
+  syncListenClock();
 
   const currentId = state.current?.stationuuid;
   document.querySelectorAll<HTMLElement>('.station-card').forEach((card) => {
@@ -2882,10 +3177,35 @@ function ensureAppEvents() {
       case 'map-locate':
         locateOnMap();
         break;
+      case 'map-wander':
+        void playWander();
+        break;
+      case 'map-reveal':
+        if (!revealMapWander(false)) showToast('Nothing to reveal');
+        break;
+      case 'map-passport':
+        togglePassportPanel();
+        break;
+      case 'map-stamp-goto': {
+        const lat = Number(t.dataset.lat);
+        const lon = Number(t.dataset.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) break;
+        gotoMapStamp({
+          lat,
+          lon,
+          kind: t.dataset.kind === 'country' ? 'country' : 'station',
+          stationuuid: t.dataset.id,
+        });
+        break;
+      }
       case 'map-now-playing': {
         const raw = state.current ?? player.station;
         if (!raw) {
           showToast('Nothing is playing');
+          break;
+        }
+        if (isMapBlind()) {
+          revealMapWander(false);
           break;
         }
         const station = findStation(raw.stationuuid) ?? raw;
@@ -3449,6 +3769,8 @@ function bindGlobalKeys() {
         break;
       case 'Escape':
         if (dismissMapAlert()) {
+          break;
+        } else if (closePassportPanel()) {
           break;
         } else if (state.detailStation) {
           state.detailStation = null;

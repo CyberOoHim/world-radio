@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   countryCentroid,
+  formatSolarClock,
   haversineMeters,
   isBrowserOffline,
+  localSolarHour,
   MIN_PIN_ZOOM,
   OFFLINE_MAP_ALERT,
   parseGeoCoord,
+  PASSPORT_COUNTRY_TOTAL,
+  pointInBounds,
   resolveStationMapTarget,
   shouldLoadPins,
+  solarMoodLabel,
+  solarPeriodFromHour,
   viewportRadiusMeters,
 } from './mapGeo';
 
@@ -70,5 +76,33 @@ describe('map viewport helpers', () => {
 
   it('returns null when there is no geo and no country', () => {
     expect(resolveStationMapTarget({ geo_lat: null, geo_long: null, countrycode: '' })).toBeNull();
+  });
+
+  it('treats antimeridian-crossing bounds as wrapping', () => {
+    const bounds = { south: -10, west: 170, north: 10, east: -170 };
+    expect(pointInBounds(0, 175, bounds)).toBe(true);
+    expect(pointInBounds(0, -175, bounds)).toBe(true);
+    expect(pointInBounds(0, 0, bounds)).toBe(false);
+  });
+
+  it('computes solar hour from longitude', () => {
+    const noon = new Date(Date.UTC(2026, 0, 1, 12, 0, 0));
+    expect(localSolarHour(0, noon)).toBeCloseTo(12, 5);
+    expect(localSolarHour(15, noon)).toBeCloseTo(13, 5);
+    expect(localSolarHour(-75, noon)).toBeCloseTo(7, 5);
+    expect(formatSolarClock(0, noon)).toBe('12:00');
+  });
+
+  it('maps solar hour to period and mood', () => {
+    expect(solarPeriodFromHour(7)).toBe('morning');
+    expect(solarPeriodFromHour(13)).toBe('day');
+    expect(solarPeriodFromHour(19)).toBe('evening');
+    expect(solarPeriodFromHour(2)).toBe('night');
+    expect(solarMoodLabel(5.2)).toBe('almost dawn');
+    expect(solarMoodLabel(12)).toBe('midday');
+  });
+
+  it('knows enough country centroids for a passport', () => {
+    expect(PASSPORT_COUNTRY_TOTAL).toBeGreaterThan(180);
   });
 });
