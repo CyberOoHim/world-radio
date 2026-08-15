@@ -2327,6 +2327,7 @@ body.fx-modal-open {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 10px 14px;
   background: rgba(10, 14, 26, 0.78);
@@ -2334,10 +2335,20 @@ body.fx-modal-open {
   backdrop-filter: blur(12px);
 }
 
+.map-toolbar button.chip:disabled,
+.map-toolbar button.chip:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  background: #1e2c4c !important;
+}
+
 .map-status {
   font-size: 0.8rem;
   color: var(--text-soft);
   min-width: 0;
+  flex: 1;
 }
 
 .map-canvas {

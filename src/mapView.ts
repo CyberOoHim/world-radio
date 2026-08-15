@@ -66,6 +66,7 @@ let visible = false;
 let lastStations: Station[] = [];
 let markerById = new Map<string, L.Marker>();
 let playingId: string | null = null;
+let pendingPopupId: string | null = null;
 let offlineAlertShown = false;
 let resizeBound = false;
 let netBound = false;
@@ -94,6 +95,32 @@ function alertEl(): HTMLElement | null {
 
 function statusEl(): HTMLElement | null {
   return document.querySelector<HTMLElement>('.map-status');
+}
+
+function nowPlayingBtn(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-action="map-now-playing"]');
+}
+
+export function syncMapNowPlaying(station: Station | null): void {
+  const btn = nowPlayingBtn();
+  if (!btn) return;
+  const hasGeo = Boolean(station && stationHasGeo(station));
+  btn.disabled = !hasGeo;
+  if (!station) {
+    btn.title = 'Nothing is playing';
+  } else if (!hasGeo) {
+    btn.title = 'This station has no map location';
+  } else {
+    btn.title = `Center the map on ${station.name}`;
+  }
+}
+
+function openPendingPopup(clear: boolean) {
+  if (!pendingPopupId) return;
+  const marker = markerById.get(pendingPopupId);
+  if (!marker) return;
+  marker.openPopup();
+  if (clear) pendingPopupId = null;
 }
 
 function setStatus(text: string) {
@@ -173,6 +200,7 @@ function setMarkers(stations: Station[]) {
     marker.addTo(markersLayer);
     markerById.set(station.stationuuid, marker);
   }
+  openPendingPopup(true);
 }
 
 export function highlightMapStation(uuid: string | null) {
@@ -297,6 +325,7 @@ function shellHtml(): string {
     </div>
     <div class="map-toolbar">
       <button type="button" class="chip" data-action="map-locate" title="Center the map on your location">📍 Near me</button>
+      <button type="button" class="chip" data-action="map-now-playing" title="Nothing is playing" disabled>▶ Now playing</button>
       <span class="map-status">Move the map to discover stations</span>
     </div>
     <div class="map-canvas" role="application" aria-label="World radio map"></div>
@@ -373,6 +402,29 @@ export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM): void {
     return;
   }
   map.setView([lat, lon], zoom);
+}
+
+/** Center the map on a playing station and open its pin when the marker exists. */
+export function flyToNowPlaying(station: Station): boolean {
+  if (!stationHasGeo(station)) return false;
+  highlightMapStation(station.stationuuid);
+  pendingPopupId = station.stationuuid;
+  if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
+    lastStations = [...lastStations, station];
+  }
+  if (markersLayer && !markerById.has(station.stationuuid)) {
+    const marker = L.marker([station.geo_lat, station.geo_long], {
+      icon: pinIcon(station, true),
+      title: station.name,
+      keyboard: true,
+    });
+    marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+    marker.addTo(markersLayer);
+    markerById.set(station.stationuuid, marker);
+  }
+  flyToMap(station.geo_lat, station.geo_long, STATION_ZOOM);
+  openPendingPopup(false);
+  return true;
 }
 
 export function refreshMapStations(): void {

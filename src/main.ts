@@ -41,6 +41,7 @@ import { escapeHtml } from './html';
 import {
   dismissMapAlert,
   flyToMap,
+  flyToNowPlaying,
   getMapStations,
   getMapViewport,
   hideMapView,
@@ -49,6 +50,7 @@ import {
   mountMapView,
   refreshMapStations,
   showMapView,
+  syncMapNowPlaying,
 } from './mapView';
 import { safeHttpUrl } from './safeUrl';
 import { updateMediaSession } from './mediaSession';
@@ -2538,6 +2540,7 @@ function renderMain() {
     ensureMapMounted();
     showMapView();
     highlightMapStation(state.current?.stationuuid ?? null);
+    syncMapNowPlaying(state.current);
     return;
   }
 
@@ -2678,6 +2681,7 @@ function updatePlaybackUI() {
   syncMediaSession();
   updateHeroResumeUI();
   if (state.view === 'map') highlightMapStation(state.current?.stationuuid ?? null);
+  syncMapNowPlaying(state.current);
 
   const currentId = state.current?.stationuuid;
   document.querySelectorAll<HTMLElement>('.station-card').forEach((card) => {
@@ -2876,6 +2880,17 @@ function ensureAppEvents() {
       case 'map-locate':
         locateOnMap();
         break;
+      case 'map-now-playing': {
+        const station = state.current;
+        if (!station) {
+          showToast('Nothing is playing');
+          break;
+        }
+        if (!flyToNowPlaying(station)) {
+          showToast('This station has no map location');
+        }
+        break;
+      }
       case 'map-alert-ok':
         dismissMapAlert();
         break;
