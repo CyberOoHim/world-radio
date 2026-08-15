@@ -5,10 +5,17 @@ import type { AppPrefs, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, Vie
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
 const PASSPORT_KEY = 'world-radio:passport';
+const MAP_VIEWPORT_KEY = 'world-radio:map-viewport';
 const VOLUME_KEY = 'world-radio:volume';
 const MUTE_KEY = 'world-radio:muted';
 const LAST_KEY = 'world-radio:last-station';
 const PREFS_KEY = 'world-radio:prefs';
+
+export interface SavedMapViewport {
+  lat: number;
+  lon: number;
+  zoom: number;
+}
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
@@ -164,6 +171,39 @@ export function savePassport(stamps: PassportStamp[]): void {
       PASSPORT_KEY,
       JSON.stringify(stamps.map(sanitizePassportStamp).filter((s): s is PassportStamp => s != null))
     );
+  } catch {
+    // Quota / private mode
+  }
+}
+
+export function sanitizeMapViewport(raw: unknown): SavedMapViewport | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const lat = toCoord(o.lat);
+  const lon = toCoord(o.lon);
+  if (lat == null || lon == null || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    return null;
+  }
+  const zoomRaw = typeof o.zoom === 'number' ? o.zoom : Number(o.zoom);
+  if (!Number.isFinite(zoomRaw)) return null;
+  return { lat, lon, zoom: Math.min(18, Math.max(2, Math.round(zoomRaw))) };
+}
+
+export function loadMapViewport(): SavedMapViewport | null {
+  try {
+    const raw = localStorage.getItem(MAP_VIEWPORT_KEY);
+    if (!raw) return null;
+    return sanitizeMapViewport(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+export function saveMapViewport(viewport: SavedMapViewport): void {
+  const clean = sanitizeMapViewport(viewport);
+  if (!clean) return;
+  try {
+    localStorage.setItem(MAP_VIEWPORT_KEY, JSON.stringify(clean));
   } catch {
     // Quota / private mode
   }

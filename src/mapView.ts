@@ -27,6 +27,7 @@ import {
   stampsNewestFirst,
   type PassportStamp,
 } from './mapPassport';
+import { loadMapViewport, saveMapViewport } from './storage';
 import type { Station } from './types';
 
 export {
@@ -492,8 +493,19 @@ export function highlightMapStation(uuid: string | null) {
   }
 }
 
+function persistViewport(lat: number, lon: number, zoom: number): void {
+  saveMapViewport({ lat, lon, zoom });
+}
+
+function persistMapViewport(): void {
+  if (!map) return;
+  const c = map.getCenter();
+  persistViewport(c.lat, c.lng, map.getZoom());
+}
+
 function reportViewport() {
   if (!map || !handlers) return;
+  persistMapViewport();
   const c = map.getCenter();
   handlers.onViewport({ lat: c.lat, lon: c.lng, zoom: map.getZoom() });
 }
@@ -584,6 +596,7 @@ function bindNetwork() {
   netBound = true;
   window.addEventListener('online', onOnline);
   window.addEventListener('offline', onOffline);
+  window.addEventListener('pagehide', persistMapViewport);
 }
 
 function bindResize() {
@@ -627,8 +640,14 @@ function shellHtml(): string {
   `;
 }
 
+function savedStartView(): { center: L.LatLngExpression; zoom: number } | null {
+  const saved = loadMapViewport();
+  if (!saved) return null;
+  return { center: [saved.lat, saved.lon], zoom: saved.zoom };
+}
+
 function createMap(canvas: HTMLElement) {
-  const start = pendingView;
+  const start = pendingView ?? savedStartView();
   pendingView = null;
   map = L.map(canvas, {
     zoomControl: false,
@@ -650,7 +669,11 @@ function createMap(canvas: HTMLElement) {
 
   markersLayer = L.layerGroup().addTo(map);
   stampsLayer = L.layerGroup().addTo(map);
-  map.on('moveend', scheduleFetch);
+  map.on('moveend', () => {
+    persistMapViewport();
+    scheduleFetch();
+  });
+  persistMapViewport();
   renderStampLayer();
 }
 
@@ -699,6 +722,7 @@ export function showMapView(opts?: { center?: [number, number]; zoom?: number })
 }
 
 export function hideMapView(): void {
+  persistMapViewport();
   visible = false;
   fetchSeq++;
   if (fetchTimer) {
@@ -710,6 +734,7 @@ export function hideMapView(): void {
 }
 
 export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM): void {
+  persistViewport(lat, lon, zoom);
   if (!map) {
     pendingView = { center: [lat, lon], zoom };
     return;

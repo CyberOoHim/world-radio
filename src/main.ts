@@ -83,6 +83,7 @@ import {
   importFavoritesJson,
   loadFavorites,
   loadLastStation,
+  loadMapViewport,
   loadMuted,
   loadPassport,
   loadPrefs,
@@ -1635,8 +1636,12 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
   persistPrefs();
 
   if (!opts?.skipHash && !applyingRoute) {
-    if (view === 'map') setHash({ kind: 'map' });
-    else setHash({ kind: 'view', view });
+    if (view === 'map') {
+      const vp = getMapViewport() ?? loadMapViewport();
+      setHash(vp ? { kind: 'map', lat: vp.lat, lon: vp.lon, zoom: vp.zoom } : { kind: 'map' });
+    } else {
+      setHash({ kind: 'view', view });
+    }
   }
 
   if (view === 'discover') {
@@ -1864,6 +1869,12 @@ async function applyRouteFromHash() {
       case 'map':
         if (route.lat != null && route.lon != null) {
           flyToMap(route.lat, route.lon, route.zoom ?? 9);
+        } else {
+          const saved = loadMapViewport();
+          if (saved) {
+            flyToMap(saved.lat, saved.lon, saved.zoom);
+            setHash({ kind: 'map', lat: saved.lat, lon: saved.lon, zoom: saved.zoom });
+          }
         }
         setView('map', { skipHash: true });
         break;

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeCustomEqPreset, sanitizeEqBands, sanitizeStation } from './storage';
+import {
+  loadMapViewport,
+  sanitizeCustomEqPreset,
+  sanitizeEqBands,
+  sanitizeMapViewport,
+  sanitizeStation,
+  saveMapViewport,
+} from './storage';
 
 describe('sanitizeStation', () => {
   it('requires a uuid and coerces numbers', () => {
@@ -41,6 +48,52 @@ describe('sanitizeEqBands', () => {
     expect(bands.b150).toBe(-12);
     expect(bands.b1k).toBe(0);
     expect(bands.b16k).toBe(0);
+  });
+});
+
+describe('sanitizeMapViewport', () => {
+  it('accepts a map center and clamps zoom to the Leaflet range', () => {
+    expect(sanitizeMapViewport({ lat: 35.68, lon: 139.77, zoom: 10 })).toEqual({
+      lat: 35.68,
+      lon: 139.77,
+      zoom: 10,
+    });
+    expect(sanitizeMapViewport({ lat: '51.5', lon: '-0.12', zoom: '4.4' })).toEqual({
+      lat: 51.5,
+      lon: -0.12,
+      zoom: 4,
+    });
+    expect(sanitizeMapViewport({ lat: 0, lon: 0, zoom: 1 })?.zoom).toBe(2);
+    expect(sanitizeMapViewport({ lat: 0, lon: 0, zoom: 99 })?.zoom).toBe(18);
+  });
+
+  it('rejects missing or out-of-range coordinates', () => {
+    expect(sanitizeMapViewport(null)).toBeNull();
+    expect(sanitizeMapViewport({ lat: 91, lon: 0, zoom: 4 })).toBeNull();
+    expect(sanitizeMapViewport({ lat: 0, lon: 181, zoom: 4 })).toBeNull();
+    expect(sanitizeMapViewport({ lat: 0, lon: 0 })).toBeNull();
+  });
+
+  it('round-trips through localStorage', () => {
+    const memory = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => memory.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        memory.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        memory.delete(k);
+      },
+    };
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
+    try {
+      saveMapViewport({ lat: 40.7, lon: -74.0, zoom: 9 });
+      expect(loadMapViewport()).toEqual({ lat: 40.7, lon: -74.0, zoom: 9 });
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
   });
 });
 
