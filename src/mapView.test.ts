@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  countryCentroid,
   haversineMeters,
   isBrowserOffline,
   MIN_PIN_ZOOM,
   OFFLINE_MAP_ALERT,
+  parseGeoCoord,
+  resolveStationMapTarget,
   shouldLoadPins,
   viewportRadiusMeters,
 } from './mapGeo';
@@ -41,5 +44,31 @@ describe('map viewport helpers', () => {
   it('explains that tiles and stations need a network', () => {
     expect(OFFLINE_MAP_ALERT.toLowerCase()).toContain('offline');
     expect(OFFLINE_MAP_ALERT.toLowerCase()).toContain('tiles');
+  });
+
+  it('parses numeric and string coordinates', () => {
+    expect(parseGeoCoord(12.5)).toBe(12.5);
+    expect(parseGeoCoord('51.5')).toBe(51.5);
+    expect(parseGeoCoord('')).toBeNull();
+    expect(parseGeoCoord(null)).toBeNull();
+  });
+
+  it('flies to exact coordinates when a station has geo', () => {
+    const target = resolveStationMapTarget({ geo_lat: 40.7, geo_long: -74.0, countrycode: 'US' });
+    expect(target?.kind).toBe('station');
+    expect(target?.lat).toBeCloseTo(40.7);
+    expect(target?.lon).toBeCloseTo(-74.0);
+  });
+
+  it('falls back to the country when a station has no coordinates', () => {
+    const target = resolveStationMapTarget({ geo_lat: null, geo_long: null, countrycode: 'us' });
+    const us = countryCentroid('US');
+    expect(target?.kind).toBe('country');
+    expect(target?.lat).toBe(us?.lat);
+    expect(target?.lon).toBe(us?.lon);
+  });
+
+  it('returns null when there is no geo and no country', () => {
+    expect(resolveStationMapTarget({ geo_lat: null, geo_long: null, countrycode: '' })).toBeNull();
   });
 });

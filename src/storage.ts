@@ -12,6 +12,15 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
+function toCoord(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 export function sanitizeStation(raw: unknown): Station | null {
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Record<string, unknown>;
@@ -39,8 +48,8 @@ export function sanitizeStation(raw: unknown): Station | null {
     lastcheckok: typeof s.lastcheckok === 'number' ? s.lastcheckok : 0,
     clickcount: typeof s.clickcount === 'number' ? s.clickcount : 0,
     clicktrend: typeof s.clicktrend === 'number' ? s.clicktrend : 0,
-    geo_lat: typeof s.geo_lat === 'number' && Number.isFinite(s.geo_lat) ? s.geo_lat : null,
-    geo_long: typeof s.geo_long === 'number' && Number.isFinite(s.geo_long) ? s.geo_long : null,
+    geo_lat: toCoord(s.geo_lat),
+    geo_long: toCoord(s.geo_long),
     geo_distance: typeof s.geo_distance === 'number' && Number.isFinite(s.geo_distance) ? s.geo_distance : null,
     group:
       typeof s.group === 'string' && s.group.trim()

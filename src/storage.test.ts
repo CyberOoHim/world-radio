@@ -21,6 +21,17 @@ describe('sanitizeStation', () => {
     expect(s?.geo_lat).toBe(12.5);
     expect(s?.group).toBe('Night jazz');
   });
+
+  it('coerces string geo coordinates from the API', () => {
+    const s = sanitizeStation({
+      stationuuid: 'u2',
+      name: 'City FM',
+      geo_lat: '51.5074',
+      geo_long: '-0.1278',
+    });
+    expect(s?.geo_lat).toBeCloseTo(51.5074);
+    expect(s?.geo_long).toBeCloseTo(-0.1278);
+  });
 });
 
 describe('sanitizeEqBands', () => {

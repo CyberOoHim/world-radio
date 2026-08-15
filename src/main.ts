@@ -2539,8 +2539,8 @@ function renderMain() {
     document.body.classList.add('map-view');
     ensureMapMounted();
     showMapView();
-    highlightMapStation(state.current?.stationuuid ?? null);
-    syncMapNowPlaying(state.current);
+    highlightMapStation(state.current?.stationuuid ?? player.station?.stationuuid ?? null);
+    syncMapNowPlaying(state.current ?? player.station);
     return;
   }
 
@@ -2680,8 +2680,10 @@ function updatePlaybackUI() {
   renderPlayer();
   syncMediaSession();
   updateHeroResumeUI();
-  if (state.view === 'map') highlightMapStation(state.current?.stationuuid ?? null);
-  syncMapNowPlaying(state.current);
+  if (state.view === 'map') {
+    highlightMapStation(state.current?.stationuuid ?? player.station?.stationuuid ?? null);
+  }
+  syncMapNowPlaying(state.current ?? player.station);
 
   const currentId = state.current?.stationuuid;
   document.querySelectorAll<HTMLElement>('.station-card').forEach((card) => {
@@ -2881,11 +2883,12 @@ function ensureAppEvents() {
         locateOnMap();
         break;
       case 'map-now-playing': {
-        const station = state.current;
-        if (!station) {
+        const raw = state.current ?? player.station;
+        if (!raw) {
           showToast('Nothing is playing');
           break;
         }
+        const station = findStation(raw.stationuuid) ?? raw;
         if (!flyToNowPlaying(station)) {
           showToast('This station has no map location');
         }

@@ -6,7 +6,10 @@ import { escapeHtml } from './html';
 import {
   isBrowserOffline,
   OFFLINE_MAP_ALERT,
+  resolveStationMapTarget,
   shouldLoadPins,
+  STATION_PIN_ZOOM,
+  stationCoords,
   viewportRadiusMeters,
 } from './mapGeo';
 import type { Station } from './types';
@@ -23,7 +26,7 @@ const DEFAULT_CENTER: L.LatLngExpression = [20, 10];
 const DEFAULT_ZOOM = 2;
 const FETCH_DEBOUNCE_MS = 320;
 const LOCATE_ZOOM = 9;
-const STATION_ZOOM = 10;
+const STATION_ZOOM = STATION_PIN_ZOOM;
 
 export interface MapViewport {
   lat: number;
@@ -48,12 +51,7 @@ function countryFlag(code: string): string {
 function stationHasGeo(
   station: Station
 ): station is Station & { geo_lat: number; geo_long: number } {
-  return (
-    typeof station.geo_lat === 'number' &&
-    Number.isFinite(station.geo_lat) &&
-    typeof station.geo_long === 'number' &&
-    Number.isFinite(station.geo_long)
-  );
+  return stationCoords(station) != null;
 }
 
 let map: L.Map | null = null;
@@ -104,15 +102,15 @@ function nowPlayingBtn(): HTMLButtonElement | null {
 export function syncMapNowPlaying(station: Station | null): void {
   const btn = nowPlayingBtn();
   if (!btn) return;
-  const hasGeo = Boolean(station && stationHasGeo(station));
-  btn.disabled = !hasGeo;
+  btn.disabled = !station;
   if (!station) {
     btn.title = 'Nothing is playing';
-  } else if (!hasGeo) {
-    btn.title = 'This station has no map location';
-  } else {
-    btn.title = `Center the map on ${station.name}`;
+    return;
   }
+  const target = resolveStationMapTarget(station);
+  btn.title = target
+    ? `Center the map on ${station.name}`
+    : `${station.name} has no map location`;
 }
 
 function openPendingPopup(clear: boolean) {
@@ -405,26 +403,32 @@ export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM): void {
   map.setView([lat, lon], zoom);
 }
 
-/** Center the map on a playing station and open its pin when the marker exists. */
+/** Center the map on a playing station (exact pin, or country if it has no coordinates). */
 export function flyToNowPlaying(station: Station): boolean {
-  if (!stationHasGeo(station)) return false;
+  const target = resolveStationMapTarget(station);
+  if (!target) return false;
   highlightMapStation(station.stationuuid);
-  pendingPopupId = station.stationuuid;
-  if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
-    lastStations = [...lastStations, station];
+  if (target.kind === 'station' && stationHasGeo(station)) {
+    pendingPopupId = station.stationuuid;
+    if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
+      lastStations = [...lastStations, station];
+    }
+    if (markersLayer && !markerById.has(station.stationuuid)) {
+      const marker = L.marker([station.geo_lat, station.geo_long], {
+        icon: pinIcon(station, true),
+        title: station.name,
+        keyboard: true,
+      });
+      marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+      marker.addTo(markersLayer);
+      markerById.set(station.stationuuid, marker);
+    }
+    flyToMap(target.lat, target.lon, target.zoom);
+    openPendingPopup(false);
+    return true;
   }
-  if (markersLayer && !markerById.has(station.stationuuid)) {
-    const marker = L.marker([station.geo_lat, station.geo_long], {
-      icon: pinIcon(station, true),
-      title: station.name,
-      keyboard: true,
-    });
-    marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
-    marker.addTo(markersLayer);
-    markerById.set(station.stationuuid, marker);
-  }
-  flyToMap(station.geo_lat, station.geo_long, STATION_ZOOM);
-  openPendingPopup(false);
+  pendingPopupId = null;
+  flyToMap(target.lat, target.lon, target.zoom);
   return true;
 }
 
