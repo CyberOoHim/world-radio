@@ -13,7 +13,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 ### 🎧 Audio Player & Sound Processing
 - **Resilient Playback Engine** — Automatic HTTP-to-HTTPS upgrade for secure streams with fallback to original stream URLs.
 - **Failover & Reconnect** — Multi-mirror API failover (`de1`, `nl1`, `at1`, `fr1`) with automated mirror probe monitoring and stream connection timeouts.
-- **Web Audio FX & 8-Band Equalizer** — Built-in spatial audio environment presets (Music Hall, Cathedral, Radio Booth, etc.), voice effects, and customizable 8-band graphic equalizer with custom preset saving. *(Audio FX & EQ are automatically bypassed on iOS/iPadOS to ensure smooth native streaming).*
+- **Web Audio FX & 8-Band Equalizer** — Built-in spatial audio environment presets (Music Hall, Cathedral, Radio Booth, etc.), voice effects, and customizable 8-band graphic equalizer with custom preset creation, naming, and deletion. *(Audio FX & EQ are automatically bypassed on iOS/iPadOS to ensure smooth native streaming).*
 - **Soft Volume Fades** — Smooth ~400ms volume fade-in on playback start and gentle fade-out when sleep timer finishes.
 - **Close & Hard-Stop** — Dedicated close button to stop playback, detach stream source, and cancel in-flight network requests.
 - **Resume Last Station** — Quick action button and automatic restoration of the last played station across reloads.
@@ -24,15 +24,22 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
   - **Surprise · Anywhere** — Pick random station globally from the community pool.
   - **Surprise · Here** — Pick random station filtered by local country / location.
 - **📍 Near Me** — Geolocation discovery via HTML5 Geolocation with expanding radius (100km to 2500km) and proximity badges (e.g. `12 km`, `450 km`).
-- **🗺️ World Map** — Leaflet map that plots geo-tagged stations in the current viewport. Choose **Streets** (Carto Voyager, default), **Terrain** (Esri World Topo — mountains, rivers, contours), or **Satellite** (Esri World Imagery) from a toolbar dropdown; the last style is remembered across reloads. Pan/zoom to load pins, tap a pin to listen, jump here from a station’s coordinates, or use **Now playing** to center on the station in the player. The last center and zoom are remembered across reloads (and written into `#/map/:lat,:lon/:zoom`). **Wander** hops to a live station somewhere else and hides the place name for 20 seconds. Pins tint by the station’s local sun, with a clock HUD for whatever is playing. A **passport** stamps countries (and city pins) after ~90 seconds of listening; existing Recents are seeded so the map already feels like yours. `#/map` and `#/map/:lat,:lon/:zoom` are shareable. An alert (plus an on-map banner) appears when you are offline, because tiles and Radio Browser both need a network.
-- **☀️ Right Now (Time of Day)** — Time-tailored station pick strip (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) following local clock or user-pinned period.
-- **🎵 Mood Chips & Expanded Genres** — Curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag directory.
-- **🎲 Dynamic Random Genre Picker** — Interactive random genre discovery chip with a **"Random all genres" toggle** to switch between curated mood tags and the entire Radio Browser catalog.
-- **🌐 Countries & Continents** — Filterable directory by continent (Africa, Asia, Europe, North America, South America, Oceania) and country.
+- **🗺️ World Map & Passport** — Leaflet map that plots geo-tagged stations in the current viewport:
+  - **Styles:** Streets (Carto Voyager, default), Terrain (Esri World Topo), and Satellite (Esri World Imagery) with state persistence.
+  - **Interactive Pins:** Tinted by local sun position (day/night) with a real-time station clock HUD.
+  - **Wander Mode:** Hops to a random global station with 20s blind listening (hidden place name) and manual reveal.
+  - **Listening Passport:** Stamps visited countries and cities after ≥90s of listening; jump directly to any stamped place on the map.
+  - **Offline Detection:** Banner notifications when offline.
+- **☀️ Right Now (Time of Day)** — Station mood strip following local clock or chosen period (Morning 🌅, Day ☀️, Evening 🌇, Night 🌙) with a **"Play Period Mix"** button for instant curated playback.
+- **🎵 Mood Chips & Expanded Genres** — Curated mood tags (Jazz, Classical, Lo-Fi, Country, Latin, Sports, Metal, Indie, 80s, Soundtrack, Ambient, Chillout, etc.) plus full tag catalog.
+- **🎲 Dynamic Random Genre Picker** — Pick random genres with a **"Random all genres" toggle** to switch between curated mood tags and the full catalog.
+- **🌐 Countries & Continents** — Directory filterable by continent (Africa, Asia, Europe, North America, South America, Oceania) and country.
 
 ### 🔍 Search, Filters & Organization
 - **Instant Search** — Real-time debounced search by station name, city, tag, or keyword.
-- **Sorting Options** — Sort stations by Popularity, Trending, Votes, Name, Bitrate, or Random (with real-time cache-busting timestamp parameter for fresh dynamic random picks on every click).
+- **Sorting Options** — Sort stations by Popularity, Trending, Votes, Name, Bitrate, or Random (dynamic cache-busting shuffle).
+- **Tag Playback Behavior** — Configure behavior on tag selection: *Keep current station*, *Play 1st station*, or *Play random station*.
+- **Station Details Sheet** — Detailed inspect sheet showing bitrate, codec, votes, click counts, click trends, country flag, broadcast language, tags, coordinates, homepage link, direct stream link, and a **"Show on Map"** shortcut.
 - **HTTPS-Only Toggle** — Default-ON filter (`httpsOnly: true`) to prevent browser mixed-content playback blocks on HTTPS web hosts.
 - **Language Filter** — Filter stations by broadcast language.
 - **Snapshot Favorites & Folders** — Save stations as full offline snapshots (up to 200 stations) with customizable folder organization.
@@ -40,7 +47,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 - **Recent History** — Track recently played stations (up to 40 stations) with search and clear capabilities.
 
 ### 📲 PWA & System Integration
-- **Installable PWA** — Offline app shell caching powered by a Service Worker (`sw.js`).
+- **Installable PWA** — Offline app shell caching powered by a Service Worker (`sw.js`) and Add-to-Home-Screen (A2HS) install prompt.
 - **🔄 Reload from Web** — One-click refresh button in the sidebar footer that flushes Service Worker caches and pulls the latest web app bundle directly from the server.
 - **↩️ Restore Default Values** — Safe reset button with an accessible confirmation dialog (`role="alertdialog"`, focus trap, `Escape` to cancel) that clears stored favorites, history, audio effects, and custom equalizer presets back to factory defaults.
 - **Media Session API** — OS lock screen and headset controls with station title, country artwork, and smooth line vector icon.
