@@ -48,6 +48,7 @@ Powered by the community-driven [Radio Browser](https://www.radio-browser.info/)
 
 ### 📲 PWA & System Integration
 - **Installable PWA** — Offline app shell caching powered by a Service Worker (`sw.js`) and Add-to-Home-Screen (A2HS) install prompt.
+- **🔤 Font Size Adjustment** — Sidebar `A−` / `100%` / `A+` controls (80% to 130% range) with instant app-wide typography scaling and persistent preference storage.
 - **🔄 Reload from Web** — One-click refresh button in the sidebar footer that flushes Service Worker caches and pulls the latest web app bundle directly from the server.
 - **↩️ Restore Default Values** — Safe reset button with an accessible confirmation dialog (`role="alertdialog"`, focus trap, `Escape` to cancel) that clears stored favorites, history, audio effects, and custom equalizer presets back to factory defaults.
 - **Media Session API** — OS lock screen and headset controls with station title, country artwork, and smooth line vector icon.

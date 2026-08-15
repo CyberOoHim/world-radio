@@ -29,6 +29,7 @@
   --focus: 0 0 0 3px rgba(125, 211, 192, 0.45);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  --font-scale: 1;
 }
 
 *,
@@ -37,6 +38,10 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+html {
+  font-size: calc(16px * var(--font-scale, 1));
 }
 
 html,
@@ -303,6 +308,80 @@ body.is-playing .orb {
   font-size: 0.72rem;
   color: var(--text-muted);
   line-height: 1.4;
+}
+
+.nav-font-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.nav-font-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.nav-font-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav-font-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 25px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.nav-font-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.nav-font-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.nav-font-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.nav-font-btn.nav-font-reset {
+  min-width: 44px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--accent);
+  background: rgba(125, 211, 192, 0.08);
+  border-color: rgba(125, 211, 192, 0.22);
+}
+
+.nav-font-btn.nav-font-reset:hover:not(:disabled) {
+  background: rgba(125, 211, 192, 0.18);
+  border-color: rgba(125, 211, 192, 0.4);
+  color: #ffffff;
 }
 
 .nav-system-actions {

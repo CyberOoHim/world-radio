@@ -12,6 +12,7 @@ const VOLUME_KEY = 'world-radio:volume';
 const MUTE_KEY = 'world-radio:muted';
 const LAST_KEY = 'world-radio:last-station';
 const PREFS_KEY = 'world-radio:prefs';
+const FONT_SCALE_KEY = 'world-radio:font-scale';
 
 export interface SavedMapViewport {
   lat: number;
@@ -551,6 +552,26 @@ export function saveCustomEqPresets(presets: CustomEqPreset[]): void {
   } catch {}
 }
 
+export function loadFontScale(): number {
+  try {
+    const raw = localStorage.getItem(FONT_SCALE_KEY);
+    if (!raw) return 1.0;
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.min(1.3, Math.max(0.8, Math.round(n * 100) / 100)) : 1.0;
+  } catch {
+    return 1.0;
+  }
+}
+
+export function saveFontScale(scale: number): void {
+  try {
+    const clamped = Math.min(1.3, Math.max(0.8, Math.round(scale * 100) / 100));
+    localStorage.setItem(FONT_SCALE_KEY, String(clamped));
+  } catch {
+    // Quota / private mode
+  }
+}
+
 export const STORAGE_KEYS = [
   FAV_KEY,
   RECENT_KEY,
@@ -564,6 +585,7 @@ export const STORAGE_KEYS = [
   FX_STATE_KEY,
   EQ_STATE_KEY,
   CUSTOM_EQ_PRESETS_KEY,
+  FONT_SCALE_KEY,
 ] as const;
 
 export function clearAllStorage(): void {
@@ -583,5 +605,6 @@ export function clearAllStorage(): void {
     // Quota / private mode
   }
 }
+
 
 

@@ -83,6 +83,7 @@ import {
   exportFavoritesJson,
   importFavoritesJson,
   loadFavorites,
+  loadFontScale,
   loadLastStation,
   loadMapViewport,
   loadMuted,
@@ -91,6 +92,7 @@ import {
   loadRecent,
   loadVolume,
   saveFavorites,
+  saveFontScale,
   saveLastStation,
   saveMuted,
   savePassport,
@@ -167,6 +169,8 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let navOpen = false;
 let sleepMenuOpen = false;
 let restoreConfirmOpen = false;
+let fontScale = loadFontScale();
+document.documentElement.style.setProperty('--font-scale', String(fontScale));
 let totalStationHint = 0;
 let loadSeq = 0;
 let eventsBound = false;
@@ -2723,6 +2727,20 @@ function renderNavHtml(): string {
     ${navBtn('favorites', icons.heart, 'Favorites', state.favorites.length)}
     ${navBtn('recent', icons.clock, 'Recent')}
     <div class="nav-footer">
+      <div class="nav-font-control">
+        <span class="nav-font-label">Text Size</span>
+        <div class="nav-font-btns">
+          <button type="button" class="nav-font-btn" data-action="font-size-dec" title="Decrease font size" aria-label="Decrease font size" ${fontScale <= 0.8 ? 'disabled' : ''}>
+            A−
+          </button>
+          <button type="button" class="nav-font-btn nav-font-reset" data-action="font-size-reset" title="Reset font size to default (100%)" aria-label="Reset font size to 100%">
+            ${Math.round(fontScale * 100)}%
+          </button>
+          <button type="button" class="nav-font-btn" data-action="font-size-inc" title="Increase font size" aria-label="Increase font size" ${fontScale >= 1.3 ? 'disabled' : ''}>
+            A+
+          </button>
+        </div>
+      </div>
       <div class="nav-system-actions">
         <button type="button" class="nav-action-btn" data-action="reload-app" title="Reload app from the web">
           ${icons.reload}
@@ -3132,6 +3150,17 @@ function reloadCurrentList() {
   else renderMain();
 }
 
+function applyFontScale(scale: number, opts?: { toast?: boolean }) {
+  fontScale = Math.min(1.3, Math.max(0.8, Math.round(scale * 100) / 100));
+  saveFontScale(fontScale);
+  document.documentElement.style.setProperty('--font-scale', String(fontScale));
+  renderNav();
+  if (opts?.toast) {
+    const percent = Math.round(fontScale * 100);
+    showToast(percent === 100 ? 'Text size: 100% (Default)' : `Text size: ${percent}%`);
+  }
+}
+
 async function reloadAppFromWeb(): Promise<void> {
   showToast('Reloading from web…');
   try {
@@ -3157,6 +3186,9 @@ function restoreAllDefaults(): void {
   sleepTimer.cancel();
   player.resetDefaults();
   clearAllStorage();
+
+  fontScale = 1.0;
+  document.documentElement.style.setProperty('--font-scale', '1');
 
   state.view = 'discover';
   state.stations = [];
@@ -3658,6 +3690,15 @@ function ensureAppEvents() {
         showToast('Favorites exported');
         break;
       }
+      case 'font-size-dec':
+        applyFontScale(fontScale - 0.05, { toast: true });
+        break;
+      case 'font-size-inc':
+        applyFontScale(fontScale + 0.05, { toast: true });
+        break;
+      case 'font-size-reset':
+        applyFontScale(1.0, { toast: true });
+        break;
       case 'reload-app':
         void reloadAppFromWeb();
         break;
