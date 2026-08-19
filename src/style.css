@@ -1384,44 +1384,28 @@ button.browse-card:hover,
   height: 24px;
 }
 
-.eq {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 18px;
-  opacity: 0;
-  transition: opacity 0.3s;
+.player-connection {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
+  opacity: 0.35;
+  transition: opacity 0.25s ease, color 0.25s ease;
+  user-select: none;
+  flex-shrink: 0;
 }
 
-.eq.on {
+.player-connection.on {
   opacity: 1;
+  color: var(--accent);
 }
 
-.eq span {
-  width: 3px;
-  border-radius: 2px;
-  background: var(--accent);
-  transform: scaleY(0.4);
-  transform-origin: bottom;
-}
-
-.eq.on span {
-  animation: eq 0.9s ease-in-out infinite alternate;
-}
-
-html.is-backgrounded .eq.on span,
-html.power-saver-active .eq.on span {
-  animation-play-state: paused !important;
-}
-
-.eq span:nth-child(1) { height: 40%; animation-delay: 0s; }
-.eq span:nth-child(2) { height: 80%; animation-delay: 0.15s; }
-.eq span:nth-child(3) { height: 55%; animation-delay: 0.3s; }
-.eq span:nth-child(4) { height: 90%; animation-delay: 0.1s; }
-
-@keyframes eq {
-  from { transform: scaleY(0.4); }
-  to { transform: scaleY(1); }
+.player-connection svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .player-volume {
@@ -1808,7 +1792,7 @@ body.fx-modal-open {
     justify-content: center;
   }
 
-  .eq {
+  .player-connection {
     display: none;
   }
 
@@ -1887,10 +1871,6 @@ body.fx-modal-open {
   .orb {
     animation: none !important;
     opacity: 0.22;
-  }
-
-  .eq span {
-    animation: none !important;
   }
 
   .player-art.live::after {
