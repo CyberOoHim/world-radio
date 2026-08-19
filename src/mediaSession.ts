@@ -8,6 +8,14 @@ export interface MediaSessionHandlers {
   stop?: () => void;
 }
 
+function toAbsoluteUrl(src: string): string {
+  try {
+    return new URL(src, window.location.href).href;
+  } catch {
+    return src;
+  }
+}
+
 export function updateMediaSession(
   station: Station | null,
   playing: boolean,
@@ -22,17 +30,19 @@ export function updateMediaSession(
     return;
   }
 
-  const artwork: MediaImage[] = [];
-  if (station.favicon) {
-    artwork.push({
+  const artwork: MediaImage[] = [
+    { src: toAbsoluteUrl('./icon-512.png?v=4'), sizes: '512x512', type: 'image/png' },
+    { src: toAbsoluteUrl('./icon-192.png?v=4'), sizes: '192x192', type: 'image/png' },
+    { src: toAbsoluteUrl('./apple-touch-icon.png?v=4'), sizes: '180x180', type: 'image/png' },
+    { src: toAbsoluteUrl('./favicon-32x32.png?v=4'), sizes: '32x32', type: 'image/png' },
+  ];
+
+  if (station.favicon && station.favicon.trim().length > 0) {
+    artwork.unshift({
       src: station.favicon,
       sizes: '96x96',
     });
   }
-  artwork.push(
-    { src: './icon-192.png', sizes: '192x192', type: 'image/png' },
-    { src: './icon-512.png', sizes: '512x512', type: 'image/png' }
-  );
 
   try {
     ms.metadata = new MediaMetadata({
