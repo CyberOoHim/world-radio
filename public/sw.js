@@ -1,9 +1,13 @@
 /* World Radio — minimal shell cache (no audio streams). */
-const CACHE = 'world-radio-shell-v3';
+const CACHE = 'world-radio-shell-v4';
 const PRECACHE = [
   './',
   './index.html',
+  './favicon.ico',
   './favicon.svg',
+  './favicon-32x32.png',
+  './favicon-16x16.png',
+  './apple-touch-icon.png',
   './icon-192.png',
   './icon-512.png',
   './manifest.webmanifest'
