@@ -132,6 +132,8 @@ img {
   filter: blur(80px);
   opacity: 0.28;
   transition: transform 1.2s var(--ease), opacity 0.8s ease;
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
 }
 
 .orb-a {
@@ -166,17 +168,32 @@ body.is-playing .orb {
   animation-duration: 14s;
 }
 
+html.is-backgrounded .orb,
+body.view-map .orb,
+html.power-saver-active .orb {
+  animation-play-state: paused !important;
+}
+
+body.view-map .ambient,
+html.power-saver-active .ambient {
+  opacity: 0.15;
+}
+
+html.power-saver-active .ambient::after {
+  display: none;
+}
+
 @keyframes drift-a {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(80px, 60px) scale(1.15); }
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(80px, 60px, 0) scale(1.15); }
 }
 @keyframes drift-b {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(-70px, 90px) scale(1.1); }
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(-70px, 90px, 0) scale(1.1); }
 }
 @keyframes drift-c {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(50px, -70px) scale(1.2); }
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(50px, -70px, 0) scale(1.2); }
 }
 
 /* App shell — always above ambient background */
@@ -1384,7 +1401,17 @@ button.browse-card:hover,
   width: 3px;
   border-radius: 2px;
   background: var(--accent);
+  transform: scaleY(0.4);
+  transform-origin: bottom;
+}
+
+.eq.on span {
   animation: eq 0.9s ease-in-out infinite alternate;
+}
+
+html.is-backgrounded .eq.on span,
+html.power-saver-active .eq.on span {
+  animation-play-state: paused !important;
 }
 
 .eq span:nth-child(1) { height: 40%; animation-delay: 0s; }
@@ -2955,6 +2982,25 @@ body.confirm-modal-open {
   }
 }
 
+/* ─── Power Saver & Energy Efficiency Modes ─────────────── */
+html.power-saver-active .radar-ring {
+  animation: none !important;
+}
 
+html.is-backgrounded .spinner,
+html.is-backgrounded .skeleton-card,
+html.is-backgrounded .radar-ring {
+  animation-play-state: paused !important;
+}
 
+.eco-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 
+.eco-chip.is-active {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #4ade80;
+}

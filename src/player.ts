@@ -58,7 +58,7 @@ class AudioPlayer {
   private triedOriginalFallback = false;
   /** True after we already fell back from CORS/WebAudio → dry for this generation. */
   private triedDryFallback = false;
-  private fadeTimer: ReturnType<typeof setInterval> | null = null;
+  private fadeTimer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout> | null = null;
   private _userVolume = 0.75;
   /** True only when the user intentionally paused (not a stream stall). */
   private userPaused = false;
@@ -174,6 +174,17 @@ class AudioPlayer {
     if (this.audioCtx.state === 'suspended') {
       try {
         await this.audioCtx.resume();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private async suspendAudioContext(): Promise<void> {
+    if (!this.audioCtx) return;
+    if (this.audioCtx.state === 'running') {
+      try {
+        await this.audioCtx.suspend();
       } catch {
         // ignore
       }
@@ -593,6 +604,7 @@ class AudioPlayer {
     }
     this.pipelineKey = null;
     this._webAudioRouted = false;
+    void this.suspendAudioContext();
   }
 
   get station() {
@@ -1072,22 +1084,34 @@ class AudioPlayer {
 
   fadeOutThen(ms: number, done: () => void) {
     this.cancelFade();
-    const useMaster = Boolean(this.masterGain && this._webAudioRouted);
+    const useMaster = Boolean(this.masterGain && this._webAudioRouted && this.audioCtx);
     const start = useMaster && this.masterGain ? this.masterGain.gain.value : this.audio.volume;
     if (start <= 0.01 || this._muted) {
       done();
       return;
+    }
+    if (useMaster && this.masterGain && this.audioCtx) {
+      try {
+        const g = this.masterGain.gain;
+        const now = this.audioCtx.currentTime;
+        g.cancelScheduledValues(now);
+        g.setValueAtTime(start, now);
+        g.linearRampToValueAtTime(0, now + ms / 1000);
+        this.fadeTimer = setTimeout(() => {
+          this.fadeTimer = null;
+          done();
+        }, ms);
+        return;
+      } catch {
+        // fall through to interval
+      }
     }
     const steps = Math.max(6, Math.floor(ms / 50));
     let i = 0;
     this.fadeTimer = setInterval(() => {
       i++;
       const level = start * (1 - i / steps);
-      if (useMaster && this.masterGain) {
-        this.masterGain.gain.value = level;
-      } else {
-        this.audio.volume = level;
-      }
+      this.audio.volume = level;
       if (i >= steps) {
         this.cancelFade();
         done();
@@ -1097,7 +1121,8 @@ class AudioPlayer {
 
   private cancelFade() {
     if (this.fadeTimer != null) {
-      clearInterval(this.fadeTimer);
+      clearInterval(this.fadeTimer as unknown as number);
+      clearTimeout(this.fadeTimer as unknown as number);
       this.fadeTimer = null;
     }
     if (this.masterGain && this.audioCtx) {
@@ -1514,6 +1539,7 @@ class AudioPlayer {
     this.userPaused = true;
     this.clearPauseWatch();
     this.audio.pause();
+    void this.suspendAudioContext();
   }
 
   stop() {
@@ -1543,6 +1569,7 @@ class AudioPlayer {
     this._playing = false;
     this._loading = false;
     this._error = null;
+    void this.suspendAudioContext();
     this.emit();
   }
 

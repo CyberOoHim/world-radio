@@ -4,6 +4,7 @@ import {
   loadFontScale,
   loadMapStyle,
   loadMapViewport,
+  loadPrefs,
   sanitizeCustomEqPreset,
   sanitizeEqBands,
   sanitizeMapViewport,
@@ -11,6 +12,7 @@ import {
   saveFontScale,
   saveMapStyle,
   saveMapViewport,
+  savePrefs,
 } from './storage';
 
 describe('sanitizeStation', () => {
@@ -214,4 +216,44 @@ describe('fontScale persistence', () => {
   });
 });
 
+describe('loadPrefs and savePrefs', () => {
+  it('loads default prefs with powerSaver auto', () => {
+    const memory = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => memory.get(k) ?? null,
+      setItem: (k: string, v: string) => memory.set(k, String(v)),
+      removeItem: (k: string) => memory.delete(k),
+    };
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
+    try {
+      const prefs = loadPrefs();
+      expect(prefs.powerSaver).toBe('auto');
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
 
+  it('sanitizes and roundtrips powerSaver on/off/auto', () => {
+    const memory = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => memory.get(k) ?? null,
+      setItem: (k: string, v: string) => memory.set(k, String(v)),
+      removeItem: (k: string) => memory.delete(k),
+    };
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
+    try {
+      savePrefs({ ...loadPrefs(), powerSaver: 'on' });
+      expect(loadPrefs().powerSaver).toBe('on');
+      savePrefs({ ...loadPrefs(), powerSaver: 'off' });
+      expect(loadPrefs().powerSaver).toBe('off');
+      memory.set('world-radio:prefs', JSON.stringify({ powerSaver: 'invalid' }));
+      expect(loadPrefs().powerSaver).toBe('auto');
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+});

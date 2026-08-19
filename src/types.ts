@@ -61,6 +61,7 @@ export type TimeOfDayPeriod = 'morning' | 'day' | 'evening' | 'night';
 export type TimeOfDayMode = 'auto' | TimeOfDayPeriod;
 export type SurpriseMode = 'anywhere' | 'here';
 export type TagPlaybackBehavior = 'keep' | 'first' | 'random';
+export type PowerSaverMode = 'auto' | 'on' | 'off';
 
 export interface AppState {
   view: ViewId;
@@ -103,6 +104,7 @@ export interface AppState {
   surpriseMode: SurpriseMode | null;
   favoriteGroupFilter: string | null;
   recentQuery: string;
+  powerSaver: PowerSaverMode;
 }
 
 export interface AppPrefs {
@@ -119,4 +121,5 @@ export interface AppPrefs {
   browseFilter: string;
   view: ViewId;
   favoriteGroupFilter: string | null;
+  powerSaver: PowerSaverMode;
 }

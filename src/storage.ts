@@ -1,7 +1,7 @@
 import { DEFAULT_EQ_BANDS, type EqBands } from './equalizer';
 import { sanitizePassportStamp, type PassportStamp } from './mapPassport';
 import { DEFAULT_MAP_STYLE, sanitizeMapStyle, type MapStyleId } from './mapStyle';
-import type { AppPrefs, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, ViewId } from './types';
+import type { AppPrefs, PowerSaverMode, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, ViewId } from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
@@ -305,6 +305,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   browseFilter: '',
   view: 'discover',
   favoriteGroupFilter: null,
+  powerSaver: 'auto',
 };
 
 function sanitizeTimeOfDayMode(v: unknown): TimeOfDayMode {
@@ -318,6 +319,13 @@ function sanitizeTimeOfDayMode(v: unknown): TimeOfDayMode {
     return v;
   }
   return DEFAULT_PREFS.timeOfDayMode;
+}
+
+function sanitizePowerSaverMode(v: unknown): PowerSaverMode {
+  if (v === 'auto' || v === 'on' || v === 'off') {
+    return v;
+  }
+  return DEFAULT_PREFS.powerSaver;
 }
 
 export function loadPrefs(): AppPrefs {
@@ -379,6 +387,7 @@ export function loadPrefs(): AppPrefs {
         typeof parsed.favoriteGroupFilter === 'string' && parsed.favoriteGroupFilter.trim()
           ? parsed.favoriteGroupFilter.trim().slice(0, 40)
           : null,
+      powerSaver: sanitizePowerSaverMode(parsed.powerSaver),
     };
   } catch {
     return { ...DEFAULT_PREFS };

@@ -765,9 +765,9 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
   wetBpG.connect(bpMerge);
   head = bpMerge;
 
-  // Distortion Waveshaper
+  // Distortion Waveshaper (oversample 'none' when flat to avoid polyphase filtering overhead)
   const shaper = ctx.createWaveShaper();
-  shaper.oversample = '2x';
+  shaper.oversample = 'none';
   head.connect(shaper);
   head = shaper;
 
@@ -778,6 +778,7 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
   ringOsc.type = 'sine';
   const ringDepth = ctx.createGain();
   const ringMerge = ctx.createGain();
+  let ringOscStarted = false;
 
   head.connect(ringDry);
   head.connect(ringVca);
@@ -785,31 +786,19 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
   ringDepth.connect(ringVca.gain);
   ringDry.connect(ringMerge);
   ringVca.connect(ringMerge);
-  try {
-    ringOsc.start(0);
-    activeOscs.push(ringOsc);
-  } catch {}
   head = ringMerge;
 
   // Hiss / Noise Generator
   const noiseGain = ctx.createGain();
   const noiseMerge = ctx.createGain();
   head.connect(noiseMerge);
+  let noiseSrc: AudioBufferSourceNode | null = null;
+  let noiseStarted = false;
 
   const noiseBufSize = Math.floor(ctx.sampleRate * 2);
   const noiseBuf = ctx.createBuffer(1, noiseBufSize, ctx.sampleRate);
   const nd = noiseBuf.getChannelData(0);
   for (let i = 0; i < noiseBufSize; i++) nd[i] = Math.random() * 2 - 1;
-  const noiseSrc = ctx.createBufferSource();
-  noiseSrc.buffer = noiseBuf;
-  noiseSrc.loop = true;
-  noiseSrc.connect(noiseGain);
-  noiseGain.connect(noiseMerge);
-  try {
-    noiseSrc.start(0);
-    activeSources.push(noiseSrc);
-  } catch {}
-  head = noiseMerge;
 
   // Delay & Feedback
   const delayDry = ctx.createGain();
@@ -840,16 +829,13 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
   chorusLfo.connect(chorusLfoGain);
   chorusLfoGain.connect(chorusDelay.delayTime);
   const chorusMerge = ctx.createGain();
+  let chorusLfoStarted = false;
 
   head.connect(chorusDry);
   head.connect(chorusDelay);
   chorusDelay.connect(chorusWet);
   chorusDry.connect(chorusMerge);
   chorusWet.connect(chorusMerge);
-  try {
-    chorusLfo.start(0);
-    activeOscs.push(chorusLfo);
-  } catch {}
   head = chorusMerge;
 
   // Tremolo
@@ -860,10 +846,7 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
   tremoloLfo.connect(tremoloDepth);
   tremoloDepth.connect(tremoloGain.gain);
   head.connect(tremoloGain);
-  try {
-    tremoloLfo.start(0);
-    activeOscs.push(tremoloLfo);
-  } catch {}
+  let tremoloLfoStarted = false;
   head = tremoloGain;
 
   // Vibrato: delay-line pitch wobble (LFO on delayTime).
@@ -874,10 +857,7 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
   const vibDepth = ctx.createGain();
   vibLfo.connect(vibDepth);
   vibDepth.connect(vibDelay.delayTime);
-  try {
-    vibLfo.start(0);
-    activeOscs.push(vibLfo);
-  } catch {}
+  let vibLfoStarted = false;
   head.connect(vibDelay);
   head = vibDelay;
 
@@ -957,9 +937,10 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
     bpFilter.frequency.value = Math.max(50, fx.bpFreq || 1200);
     bpFilter.Q.value = Math.max(0.2, fx.bpQ || 1);
 
-    // Distortion
+    // Distortion: only oversample if distortion is actually active
     const dist = fx.distortion || 0;
     if (dist > 0.001) {
+      shaper.oversample = '2x';
       const n = 256;
       const curve = new Float32Array(n);
       for (let i = 0; i < n; i++) {
@@ -968,12 +949,20 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
       }
       shaper.curve = curve;
     } else {
+      shaper.oversample = 'none';
       shaper.curve = null;
     }
 
-    // Ring mod
+    // Ring mod: start oscillator on-demand
     const ring = fx.ringFreq || 0;
     if (ring > 0.1) {
+      if (!ringOscStarted) {
+        try {
+          ringOsc.start(0);
+          activeOscs.push(ringOsc);
+          ringOscStarted = true;
+        } catch {}
+      }
       ringDry.gain.value = 0.35;
       ringDepth.gain.value = 0.65;
       ringOsc.frequency.value = ring;
@@ -982,8 +971,21 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
       ringDepth.gain.value = 0;
     }
 
-    // Noise
-    noiseGain.gain.value = fx.noiseMix || 0;
+    // Noise: start buffer source on-demand
+    const nMix = fx.noiseMix || 0;
+    noiseGain.gain.value = nMix;
+    if (nMix > 0.001 && !noiseStarted) {
+      try {
+        noiseSrc = ctx.createBufferSource();
+        noiseSrc.buffer = noiseBuf;
+        noiseSrc.loop = true;
+        noiseSrc.connect(noiseGain);
+        noiseGain.connect(noiseMerge);
+        noiseSrc.start(0);
+        activeSources.push(noiseSrc);
+        noiseStarted = true;
+      } catch {}
+    }
 
     // Delay
     const dMix = Math.max(0, Math.min(1, fx.delayMix || 0));
@@ -992,31 +994,58 @@ export function buildFxChain(ctx: AudioContext, initialFx: FxConfig): FxChain {
     delayNode.delayTime.value = Math.min(1.5, Math.max(0, fx.delayTime || 0));
     delayFb.gain.value = Math.min(0.9, fx.delayFeedback || 0);
 
-    // Chorus / Flanger
+    // Chorus / Flanger: start LFO on-demand
     const cMix = Math.max(fx.chorus || 0, fx.flanger || 0);
     chorusDry.gain.value = 1 - cMix * 0.7;
     chorusWet.gain.value = cMix * 0.7;
-    if (fx.flanger > 0.01) {
-      chorusDelay.delayTime.value = 0.004;
-      chorusLfo.frequency.value = 0.35;
-      chorusLfoGain.gain.value = 0.0025;
-    } else {
-      chorusDelay.delayTime.value = 0.012;
-      chorusLfo.frequency.value = 1.4;
-      chorusLfoGain.gain.value = 0.004;
+    if (cMix > 0.001) {
+      if (!chorusLfoStarted) {
+        try {
+          chorusLfo.start(0);
+          activeOscs.push(chorusLfo);
+          chorusLfoStarted = true;
+        } catch {}
+      }
+      if (fx.flanger > 0.01) {
+        chorusDelay.delayTime.value = 0.004;
+        chorusLfo.frequency.value = 0.35;
+        chorusLfoGain.gain.value = 0.0025;
+      } else {
+        chorusDelay.delayTime.value = 0.012;
+        chorusLfo.frequency.value = 1.4;
+        chorusLfoGain.gain.value = 0.004;
+      }
     }
 
-    // Tremolo
+    // Tremolo: start LFO on-demand
     const tMix = fx.tremolo || 0;
     tremoloGain.gain.value = 1 - tMix * 0.5;
     tremoloDepth.gain.value = tMix * 0.5;
-    tremoloLfo.frequency.value = fx.tremoloRate || 5;
+    if (tMix > 0.001) {
+      if (!tremoloLfoStarted) {
+        try {
+          tremoloLfo.start(0);
+          activeOscs.push(tremoloLfo);
+          tremoloLfoStarted = true;
+        } catch {}
+      }
+      tremoloLfo.frequency.value = fx.tremoloRate || 5;
+    }
 
-    // Vibrato
+    // Vibrato: start LFO on-demand
     const vMix = Math.max(0, Math.min(1, fx.vibrato || 0));
     vibDelay.delayTime.value = 0.008;
     vibDepth.gain.value = vMix * 0.0065;
-    vibLfo.frequency.value = Math.max(0.05, fx.vibratoRate || 5);
+    if (vMix > 0.001) {
+      if (!vibLfoStarted) {
+        try {
+          vibLfo.start(0);
+          activeOscs.push(vibLfo);
+          vibLfoStarted = true;
+        } catch {}
+      }
+      vibLfo.frequency.value = Math.max(0.05, fx.vibratoRate || 5);
+    }
 
     // Bitcrush / sample-rate crush
     crushBits = Math.max(0, Math.min(1, fx.bitcrush || 0));

@@ -104,6 +104,7 @@ import {
 import type {
   AppState,
   Country,
+  PowerSaverMode,
   SleepMinutes,
   SortId,
   Station,
@@ -162,6 +163,7 @@ const state: AppState = {
   surpriseMode: null,
   favoriteGroupFilter: prefs.favoriteGroupFilter,
   recentQuery: '',
+  powerSaver: prefs.powerSaver,
 };
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -171,6 +173,63 @@ let sleepMenuOpen = false;
 let restoreConfirmOpen = false;
 let fontScale = loadFontScale();
 document.documentElement.style.setProperty('--font-scale', String(fontScale));
+
+let batteryLevel: number | null = null;
+let isDischarging: boolean | null = null;
+
+function isPowerSaverActive(): boolean {
+  if (state.powerSaver === 'on') return true;
+  if (state.powerSaver === 'off') return false;
+  // 'auto' mode
+  if (typeof navigator !== 'undefined') {
+    const nav = navigator as unknown as { connection?: { saveData?: boolean } };
+    if (nav.connection?.saveData) return true;
+    if (batteryLevel != null && batteryLevel <= 0.20 && isDischarging === true) return true;
+  }
+  return false;
+}
+
+function syncPowerSaverClass(): void {
+  const active = isPowerSaverActive();
+  document.documentElement.classList.toggle('power-saver-active', active);
+}
+
+function initPowerSaver(): void {
+  syncPowerSaverClass();
+  if (typeof navigator !== 'undefined' && 'getBattery' in navigator) {
+    (navigator as unknown as { getBattery: () => Promise<EventTarget & { level: number; charging: boolean }> })
+      .getBattery()
+      .then((battery) => {
+        batteryLevel = battery.level;
+        isDischarging = !battery.charging;
+        syncPowerSaverClass();
+
+        battery.addEventListener('levelchange', () => {
+          batteryLevel = battery.level;
+          syncPowerSaverClass();
+        });
+        battery.addEventListener('chargingchange', () => {
+          isDischarging = !battery.charging;
+          syncPowerSaverClass();
+        });
+      })
+      .catch(() => {
+        // Battery API not available or blocked
+      });
+  }
+}
+
+initPowerSaver();
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    const isHidden = document.visibilityState === 'hidden';
+    document.documentElement.classList.toggle('is-backgrounded', isHidden);
+    if (!isHidden) {
+      syncPowerSaverClass();
+    }
+  });
+}
 let totalStationHint = 0;
 let loadSeq = 0;
 let eventsBound = false;
@@ -202,7 +261,7 @@ const listenAcc = {
   lastTick: 0,
   stamped: false,
 };
-let listenTimer: ReturnType<typeof setInterval> | null = null;
+let listenTimer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval> | null = null;
 
 const SURPRISE_BATCH = 20;
 /** ~60s total: pool fetch ≤ 12s, then up to 6 connect attempts. */
@@ -326,6 +385,7 @@ function persistPrefs() {
     browseFilter: state.browseFilter,
     view: state.view,
     favoriteGroupFilter: state.favoriteGroupFilter,
+    powerSaver: state.powerSaver,
   });
 }
 
@@ -408,7 +468,8 @@ function stopListenClock(): void {
     listenAcc.lastTick = 0;
   }
   if (listenTimer) {
-    clearInterval(listenTimer);
+    clearTimeout(listenTimer as unknown as number);
+    clearInterval(listenTimer as unknown as number);
     listenTimer = null;
   }
 }
@@ -425,7 +486,10 @@ function tickListenClock(): void {
     listenAcc.ms = 0;
     listenAcc.lastTick = now;
     listenAcc.stamped = passportStamps.some((s) => s.stationuuid === id);
-    return;
+    if (listenAcc.stamped) {
+      stopListenClock();
+      return;
+    }
   }
   if (!listenAcc.lastTick) listenAcc.lastTick = now;
   listenAcc.ms += now - listenAcc.lastTick;
@@ -433,6 +497,11 @@ function tickListenClock(): void {
   if (!listenAcc.stamped && listenAcc.ms >= PASSPORT_LISTEN_MS) {
     listenAcc.stamped = true;
     applyPassportStamp(player.station);
+    stopListenClock();
+    return;
+  }
+  if (listenAcc.stamped) {
+    stopListenClock();
   }
 }
 
@@ -447,7 +516,17 @@ function syncListenClock(): void {
     } else if (!listenAcc.lastTick) {
       listenAcc.lastTick = Date.now();
     }
-    if (!listenTimer) listenTimer = window.setInterval(tickListenClock, 1000);
+    if (listenAcc.stamped) {
+      stopListenClock();
+      return;
+    }
+    const remaining = Math.max(500, PASSPORT_LISTEN_MS - listenAcc.ms);
+    if (listenTimer) {
+      clearTimeout(listenTimer as unknown as number);
+      clearInterval(listenTimer as unknown as number);
+      listenTimer = null;
+    }
+    listenTimer = window.setTimeout(tickListenClock, remaining);
     return;
   }
   stopListenClock();
@@ -1985,7 +2064,7 @@ function stationArtHtml(station: Station, cls = 'station-art'): string {
   const favicon = safeHttpUrl(station.favicon);
   if (favicon) {
     return `<div class="${cls}" data-fallback="${initial}">
-      <img src="${escapeHtml(favicon)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+      <img src="${escapeHtml(favicon)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"
         onerror="const p=this.parentElement;this.remove();if(p)p.textContent=p.dataset.fallback||'♪'"/>
     </div>`;
   }
@@ -2102,6 +2181,14 @@ function filterBar(): string {
             <option value="keep" ${state.tagPlaybackBehavior === 'keep' ? 'selected' : ''}>Keep current station</option>
             <option value="first" ${state.tagPlaybackBehavior === 'first' ? 'selected' : ''}>Play 1st station</option>
             <option value="random" ${state.tagPlaybackBehavior === 'random' ? 'selected' : ''}>Play random station</option>
+          </select>
+        </label>
+        <label class="toggle-select" title="Power Saver mode: optimizes battery and CPU/GPU by pausing ambient backdrop animations">
+          <span>⚡ Power saver:</span>
+          <select class="select-compact" data-action="power-saver">
+            <option value="auto" ${state.powerSaver === 'auto' ? 'selected' : ''}>Auto (Battery)</option>
+            <option value="on" ${state.powerSaver === 'on' ? 'selected' : ''}>On (Save energy)</option>
+            <option value="off" ${state.powerSaver === 'off' ? 'selected' : ''}>Off</option>
           </select>
         </label>
       </div>
@@ -3216,6 +3303,8 @@ function restoreAllDefaults(): void {
   state.favoriteGroupFilter = null;
   state.recentQuery = '';
   state.query = '';
+  state.powerSaver = 'auto';
+  syncPowerSaverClass();
   passportStamps = [];
 
   if (window.location.hash) {
@@ -3749,6 +3838,22 @@ function ensureAppEvents() {
           keep: 'On selection: Keep current station',
           first: 'On selection: Play 1st station',
           random: 'On selection: Play random station',
+        };
+        showToast(labels[mode]);
+        renderMain();
+      }
+      return;
+    }
+    if (t.dataset.action === 'power-saver' && t instanceof HTMLSelectElement) {
+      const mode = t.value as PowerSaverMode;
+      if (mode === 'auto' || mode === 'on' || mode === 'off') {
+        state.powerSaver = mode;
+        persistPrefs();
+        syncPowerSaverClass();
+        const labels: Record<PowerSaverMode, string> = {
+          auto: 'Power saver: Auto (Battery-aware)',
+          on: 'Power saver: Enabled (Low energy)',
+          off: 'Power saver: Disabled',
         };
         showToast(labels[mode]);
         renderMain();

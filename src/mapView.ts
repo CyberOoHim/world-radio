@@ -662,6 +662,16 @@ function bindNetwork() {
   window.addEventListener('online', onOnline);
   window.addEventListener('offline', onOffline);
   window.addEventListener('pagehide', persistMapViewport);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      if (visible) {
+        renderHud();
+        startHudClock();
+      }
+    } else {
+      stopHudClock();
+    }
+  });
 }
 
 function bindResize() {
@@ -673,9 +683,9 @@ function bindResize() {
 }
 
 function startHudClock() {
-  if (hudTimer) return;
+  if (hudTimer || !visible || document.visibilityState === 'hidden') return;
   hudTimer = setInterval(() => {
-    if (visible) renderHud();
+    if (visible && document.visibilityState !== 'hidden') renderHud();
   }, HUD_TICK_MS);
 }
 

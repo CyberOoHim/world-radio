@@ -5,6 +5,7 @@ const SLEEP_UNTIL_KEY = 'world-radio:sleep-until';
 class SleepTimer {
   private until: number | null = null;
   private tickId: ReturnType<typeof setInterval> | null = null;
+  private fireTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<SleepListener>();
   private onFire: (() => void) | null = null;
   private visibilityBound = false;
@@ -35,7 +36,7 @@ class SleepTimer {
     this.clearTimerOnly();
     this.until = Date.now() + minutes * 60_000;
     this.persist();
-    this.tickId = setInterval(() => this.tick(), 1000);
+    this.scheduleTimers();
     this.bindVisibility();
     this.emit();
   }
@@ -52,7 +53,7 @@ class SleepTimer {
       }
       this.clearTimerOnly();
       this.until = until;
-      this.tickId = setInterval(() => this.tick(), 1000);
+      this.scheduleTimers();
       this.emit();
       this.tick();
     } catch {
@@ -71,6 +72,24 @@ class SleepTimer {
     if (this.tickId != null) {
       clearInterval(this.tickId);
       this.tickId = null;
+    }
+    if (this.fireTimeoutId != null) {
+      clearTimeout(this.fireTimeoutId);
+      this.fireTimeoutId = null;
+    }
+  }
+
+  private scheduleTimers() {
+    this.clearTimerOnly();
+    const rem = this.remainingMs;
+    if (rem == null || rem <= 0) return;
+
+    // Single precise timeout for timer expiration
+    this.fireTimeoutId = setTimeout(() => this.tick(), rem);
+
+    // Only run 1s UI ticker when the document is currently visible
+    if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+      this.tickId = setInterval(() => this.tick(), 1000);
     }
   }
 
@@ -109,7 +128,18 @@ class SleepTimer {
     if (this.visibilityBound || typeof document === 'undefined') return;
     this.visibilityBound = true;
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') this.tick();
+      if (document.visibilityState === 'visible') {
+        this.tick();
+        if (this.active && !this.tickId) {
+          this.tickId = setInterval(() => this.tick(), 1000);
+        }
+      } else {
+        // When hidden, pause 1s UI ticker to save CPU/battery wakeups
+        if (this.tickId != null) {
+          clearInterval(this.tickId);
+          this.tickId = null;
+        }
+      }
     });
   }
 

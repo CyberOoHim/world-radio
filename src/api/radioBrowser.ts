@@ -421,7 +421,22 @@ export async function getStationsInViewport(
   });
 }
 
+const TAXONOMY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let countriesCache: { data: Country[]; expires: number } | null = null;
+const tagsCache = new Map<number, { data: Tag[]; expires: number }>();
+const languagesCache = new Map<number, { data: Language[]; expires: number }>();
+
+export function clearTaxonomyCache(): void {
+  countriesCache = null;
+  tagsCache.clear();
+  languagesCache.clear();
+}
+
 export async function getCountries(): Promise<Country[]> {
+  const now = Date.now();
+  if (countriesCache && countriesCache.expires > now) {
+    return countriesCache.data;
+  }
   const list = await apiFetch<unknown>(
     '/json/countries?order=stationcount&reverse=true&hidebroken=true'
   );
@@ -436,10 +451,18 @@ export async function getCountries(): Promise<Country[]> {
     if (!iso || count <= 0) continue;
     out.push({ name, iso_3166_1: iso, stationcount: count });
   }
+  if (out.length) {
+    countriesCache = { data: out, expires: now + TAXONOMY_CACHE_TTL_MS };
+  }
   return out;
 }
 
 export async function getTags(limit = 120): Promise<Tag[]> {
+  const now = Date.now();
+  const cached = tagsCache.get(limit);
+  if (cached && cached.expires > now) {
+    return cached.data;
+  }
   const list = await apiFetch<unknown>(
     `/json/tags?order=stationcount&reverse=true&hidebroken=true&limit=${limit}`
   );
@@ -453,10 +476,18 @@ export async function getTags(limit = 120): Promise<Tag[]> {
     if (!name || count <= 0) continue;
     out.push({ name, stationcount: count });
   }
+  if (out.length) {
+    tagsCache.set(limit, { data: out, expires: now + TAXONOMY_CACHE_TTL_MS });
+  }
   return out;
 }
 
 export async function getLanguages(limit = 80): Promise<Language[]> {
+  const now = Date.now();
+  const cached = languagesCache.get(limit);
+  if (cached && cached.expires > now) {
+    return cached.data;
+  }
   try {
     const list = await apiFetch<unknown>(
       `/json/languages?order=stationcount&reverse=true&hidebroken=true&limit=${limit}`
@@ -474,6 +505,9 @@ export async function getLanguages(limit = 80): Promise<Language[]> {
         iso_639: typeof l.iso_639 === 'string' ? l.iso_639 : undefined,
         stationcount: count,
       });
+    }
+    if (out.length) {
+      languagesCache.set(limit, { data: out, expires: now + TAXONOMY_CACHE_TTL_MS });
     }
     return out;
   } catch {
