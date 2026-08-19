@@ -44,7 +44,8 @@ export function isAppleTouchDevice(): boolean {
 }
 
 class AudioPlayer {
-  private audio = new Audio();
+  private audio: HTMLAudioElement =
+    typeof Audio !== 'undefined' ? new Audio() : ({} as HTMLAudioElement);
   private listeners = new Set<PlayerListener>();
   private _station: Station | null = null;
   private _playing = false;
@@ -108,8 +109,10 @@ class AudioPlayer {
     this._customEqPresets = loadCustomEqPresets();
 
     // Always a plain non-CORS element by default (reliable live radio).
-    this.initAudioElement(false);
-    this.bindVisibilityResume();
+    if (typeof Audio !== 'undefined') {
+      this.initAudioElement(false);
+      this.bindVisibilityResume();
+    }
   }
 
   async unlockAudio(): Promise<void> {
@@ -611,7 +614,7 @@ class AudioPlayer {
     return this._station;
   }
   get playing() {
-    return this._playing;
+    return this._playing && !this.userPaused;
   }
   get loading() {
     return this._loading;
@@ -1502,10 +1505,8 @@ class AudioPlayer {
       if (fallback) void this.play(fallback);
       return;
     }
-    if (this._playing && !this.audio.paused) {
-      this.userPaused = true;
-      this.clearPauseWatch();
-      this.audio.pause();
+    if (this._playing && !this.userPaused) {
+      this.pause();
       return;
     }
     // Resume or reconnect.
@@ -1538,8 +1539,17 @@ class AudioPlayer {
   pause() {
     this.userPaused = true;
     this.clearPauseWatch();
-    this.audio.pause();
+    this.clearDryReconnect();
+    this.cancelFade();
+    try {
+      this.audio.pause();
+    } catch {
+      // ignore
+    }
     void this.suspendAudioContext();
+    this._playing = false;
+    this._loading = false;
+    this.emit();
   }
 
   stop() {
@@ -1552,8 +1562,16 @@ class AudioPlayer {
     this.clearDryReconnect();
     this._reconnecting = false;
     this.dryReconnectAttempts = 0;
-    this.audio.pause();
-    this.audio.removeAttribute('src');
+    try {
+      this.audio.pause();
+    } catch {
+      // ignore
+    }
+    try {
+      this.audio.removeAttribute('src');
+    } catch {
+      // ignore
+    }
     try {
       this.audio.load();
     } catch {
