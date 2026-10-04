@@ -168,7 +168,25 @@ function tileLayerFor(id: MapStyleId): L.TileLayer {
   };
   if (spec.subdomains) options.subdomains = spec.subdomains;
   if (spec.maxNativeZoom != null) options.maxNativeZoom = spec.maxNativeZoom;
-  return L.tileLayer(spec.url, options);
+  if (spec.detectRetina != null) options.detectRetina = spec.detectRetina;
+  if (spec.crossOrigin != null) options.crossOrigin = spec.crossOrigin;
+
+  const layer = L.tileLayer(spec.url, options);
+
+  // If a tile fails to load on the streets layer (e.g. rate limit, bad API key, network blip),
+  // fallback gracefully to OpenStreetMap standard tiles so the user never sees broken squares.
+  if (id === 'streets') {
+    layer.on('tileerror', (event: L.TileEvent) => {
+      const img = event.tile as HTMLImageElement | undefined;
+      if (img && !img.dataset.fallbackTried && event.coords) {
+        img.dataset.fallbackTried = '1';
+        const { x, y, z } = event.coords;
+        img.src = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+      }
+    });
+  }
+
+  return layer;
 }
 
 function syncStyleChrome(): void {
@@ -304,6 +322,25 @@ function renderHud() {
 export function syncMapHud(station: Station | null): void {
   hudStation = station;
   renderHud();
+  if (
+    station &&
+    stationHasGeo(station) &&
+    playingId === station.stationuuid &&
+    markersLayer &&
+    !markerById.has(station.stationuuid)
+  ) {
+    if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
+      lastStations = [...lastStations, station];
+    }
+    const marker = L.marker([station.geo_lat, station.geo_long], {
+      icon: pinIcon(station, true),
+      title: blind && blind.station.stationuuid === station.stationuuid ? 'Somewhere on the air' : station.name,
+      keyboard: true,
+    });
+    marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+    marker.addTo(markersLayer);
+    markerById.set(station.stationuuid, marker);
+  }
 }
 
 function renderPassportChip() {
@@ -552,9 +589,26 @@ export function highlightMapStation(uuid: string | null) {
     if (old && m) m.setIcon(pinIcon(old, false));
   }
   if (uuid) {
-    const cur = lastStations.find((s) => s.stationuuid === uuid);
-    const m = markerById.get(uuid);
-    if (cur && m) m.setIcon(pinIcon(cur, true));
+    let cur = lastStations.find((s) => s.stationuuid === uuid);
+    if (!cur && hudStation && hudStation.stationuuid === uuid && stationHasGeo(hudStation)) {
+      cur = hudStation;
+      lastStations = [...lastStations, cur];
+    }
+    if (cur && stationHasGeo(cur)) {
+      const m = markerById.get(uuid);
+      if (m) {
+        m.setIcon(pinIcon(cur, true));
+      } else if (markersLayer) {
+        const marker = L.marker([cur.geo_lat, cur.geo_long], {
+          icon: pinIcon(cur, true),
+          title: blind && blind.station.stationuuid === cur.stationuuid ? 'Somewhere on the air' : cur.name,
+          keyboard: true,
+        });
+        marker.bindPopup(popupHtml(cur), { maxWidth: 280, className: 'map-leaflet-popup' });
+        marker.addTo(markersLayer);
+        markerById.set(cur.stationuuid, marker);
+      }
+    }
   }
 }
 
@@ -585,9 +639,10 @@ async function loadViewportStations() {
 
   const zoom = map.getZoom();
   if (!shouldLoadPins(zoom)) {
-    lastStations = [];
-    setMarkers([]);
-    handlers.onStations([]);
+    const active = hudStation && stationHasGeo(hudStation) ? [hudStation] : [];
+    lastStations = active;
+    setMarkers(active);
+    handlers.onStations(active);
     setStatus('Zoom in to load stations');
     renderStampLayer();
     return;
@@ -608,6 +663,9 @@ async function loadViewportStations() {
     const list = await getStationsInViewport(center.lat, center.lng, radius, handlers.getFilters());
     if (seq !== fetchSeq || !visible) return;
     const geo = list.filter(stationHasGeo);
+    if (hudStation && stationHasGeo(hudStation) && !geo.some((s) => s.stationuuid === hudStation?.stationuuid)) {
+      geo.push(hudStation);
+    }
     lastStations = geo;
     setMarkers(geo);
     handlers.onStations(geo);

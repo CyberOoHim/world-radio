@@ -5,7 +5,7 @@ import {
   DEFAULT_MAP_STYLE,
   MAP_STYLE_IDS,
   MAP_STYLES,
-  OSM_STANDARD_URL,
+  normalizeCartoApiKey,
   sanitizeMapStyle,
 } from './mapStyle';
 
@@ -28,19 +28,42 @@ describe('map styles', () => {
     expect(MAP_STYLES.satellite.url).toContain('World_Imagery');
   });
 
-  it('falls back to OpenStreetMap standard tiles without an API key', () => {
+  it('uses CARTO Voyager directly when no API key is configured', () => {
     const streets = buildStreetsStyle('');
-    expect(streets.url).toBe(OSM_STANDARD_URL);
-    expect(streets.attribution.toLowerCase()).toContain('openstreetmap');
-    expect(streets.maxZoom).toBe(19);
+    expect(streets.url).toBe(CARTO_VOYAGER_BASE_URL);
+    expect(streets.attribution.toLowerCase()).toContain('carto');
+    expect(streets.maxZoom).toBe(20);
+    expect(streets.subdomains).toBe('abcd');
+    expect(streets.detectRetina).toBe(true);
+    expect(streets.crossOrigin).toBe(true);
   });
 
-  it('uses CARTO Voyager when an API key is configured', () => {
+  it('uses CARTO Voyager with key parameter when an API key is configured', () => {
     const streetsWithKey = buildStreetsStyle('my-carto-key');
     expect(streetsWithKey.url).toBe(`${CARTO_VOYAGER_BASE_URL}?key=my-carto-key`);
     expect(streetsWithKey.attribution.toLowerCase()).toContain('carto');
     expect(streetsWithKey.maxZoom).toBe(20);
     expect(streetsWithKey.subdomains).toBe('abcd');
+    expect(streetsWithKey.detectRetina).toBe(true);
+  });
+
+  it('normalizes CARTO API keys from full URLs, query strings, and quoted strings', () => {
+    expect(normalizeCartoApiKey('')).toBe('');
+    expect(normalizeCartoApiKey(null)).toBe('');
+    expect(normalizeCartoApiKey('  sample_key_abc  ')).toBe('sample_key_abc');
+    expect(normalizeCartoApiKey('"sample_key_abc"')).toBe('sample_key_abc');
+    expect(normalizeCartoApiKey('key=sample_key_abc')).toBe('sample_key_abc');
+    expect(normalizeCartoApiKey('?key=sample_key_abc')).toBe('sample_key_abc');
+    expect(
+      normalizeCartoApiKey(
+        'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=sample_key_abc'
+      )
+    ).toBe('sample_key_abc');
+
+    const streetsFromUrl = buildStreetsStyle(
+      'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=extracted-token'
+    );
+    expect(streetsFromUrl.url).toBe(`${CARTO_VOYAGER_BASE_URL}?key=extracted-token`);
   });
 });
 

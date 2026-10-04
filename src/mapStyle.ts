@@ -13,6 +13,8 @@ export interface MapStyleSpec {
   maxZoom: number;
   maxNativeZoom?: number;
   background: string;
+  detectRetina?: boolean;
+  crossOrigin?: boolean | 'anonymous' | 'use-credentials' | '';
 }
 
 export const CARTO_VOYAGER_BASE_URL =
@@ -26,42 +28,59 @@ export const OSM_STANDARD_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 export const OSM_STANDARD_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
 
+export function normalizeCartoApiKey(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  let key = raw.trim();
+  if (!key) return '';
+
+  // Extract key parameter if user pasted full URL or query snippet (e.g. ?key=... or key=...)
+  if (key.includes('key=')) {
+    const match = key.match(/[?&]key=([^&#\s]+)/) || key.match(/^key=([^&#\s]+)/);
+    if (match?.[1]) {
+      try {
+        key = decodeURIComponent(match[1]);
+      } catch {
+        key = match[1];
+      }
+    }
+  }
+
+  // Strip wrapping quotes if user pasted '"key"'
+  key = key.replace(/^["']|["']$/g, '').trim();
+  return key;
+}
+
 export function getCartoApiKey(): string {
   try {
     if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CARTO_API_KEY) {
-      return String(import.meta.env.VITE_CARTO_API_KEY).trim();
+      return normalizeCartoApiKey(import.meta.env.VITE_CARTO_API_KEY);
     }
   } catch {
     // ignore
   }
   if (typeof window !== 'undefined') {
     const globalKey = (window as unknown as { CARTO_API_KEY?: string }).CARTO_API_KEY;
-    if (globalKey) return String(globalKey).trim();
+    if (globalKey) return normalizeCartoApiKey(globalKey);
   }
   return '';
 }
 
 export function buildStreetsStyle(apiKey?: string): MapStyleSpec {
-  const key = (apiKey !== undefined ? apiKey : getCartoApiKey()).trim();
-  if (key) {
-    return {
-      id: 'streets',
-      label: 'Streets',
-      url: `${CARTO_VOYAGER_BASE_URL}?key=${encodeURIComponent(key)}`,
-      attribution: CARTO_VOYAGER_ATTRIBUTION,
-      subdomains: 'abcd',
-      maxZoom: 20,
-      background: '#cddde6',
-    };
-  }
+  const raw = apiKey !== undefined ? apiKey : getCartoApiKey();
+  const key = normalizeCartoApiKey(raw);
+  const url = key
+    ? `${CARTO_VOYAGER_BASE_URL}?key=${encodeURIComponent(key)}`
+    : CARTO_VOYAGER_BASE_URL;
 
-  // Fallback to OpenStreetMap standard tiles when no CARTO API key is provided
   return {
     id: 'streets',
     label: 'Streets',
-    url: OSM_STANDARD_URL,
-    attribution: OSM_STANDARD_ATTRIBUTION,
-    maxZoom: 19,
+    url,
+    attribution: CARTO_VOYAGER_ATTRIBUTION,
+    subdomains: 'abcd',
+    detectRetina: true,
+    crossOrigin: true,
+    maxZoom: 20,
     background: '#cddde6',
   };
 }

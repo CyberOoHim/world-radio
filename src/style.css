@@ -2719,6 +2719,7 @@ body.fx-modal-open {
   box-shadow: inset 0 0 90px rgba(6, 9, 17, 0.45);
 }
 
+.map-canvas.leaflet-container,
 .map-canvas .leaflet-container {
   width: 100%;
   height: 100%;
@@ -2727,10 +2728,12 @@ body.fx-modal-open {
   color: var(--text);
 }
 
+.map-canvas.is-style-terrain.leaflet-container,
 .map-canvas.is-style-terrain .leaflet-container {
   background: #111a1a;
 }
 
+.map-canvas.is-style-satellite.leaflet-container,
 .map-canvas.is-style-satellite .leaflet-container {
   background: #060913;
 }
