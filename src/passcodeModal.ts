@@ -5,18 +5,36 @@ let isOpen = false;
 let isSubmitting = false;
 let errorMessage = '';
 let showPasscode = false;
+let currentPasscode = '';
 let copiedToken = false;
 let onAuthSuccessCallback: (() => void) | null = null;
 
+const ICON_EYE = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+
+const ICON_EYE_OFF = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 export function isPasscodeModalOpen(): boolean {
   return isOpen;
+}
+
+export function isPasscodeVisible(): boolean {
+  return showPasscode;
+}
+
+export function getCurrentPasscodeValue(): string {
+  return currentPasscode;
+}
+
+export function setCurrentPasscodeValue(val: string): void {
+  currentPasscode = val;
 }
 
 export function openPasscodeModal(onSuccess?: () => void): void {
   isOpen = true;
   errorMessage = '';
   isSubmitting = false;
-  showPasscode = false;
+  showPasscode = false; // Default invisible
+  currentPasscode = '';
   copiedToken = false;
   if (onSuccess) onAuthSuccessCallback = onSuccess;
   renderPasscodeModal();
@@ -31,6 +49,8 @@ export function closePasscodeModal(): void {
   isOpen = false;
   errorMessage = '';
   isSubmitting = false;
+  showPasscode = false; // Reset to default invisible
+  currentPasscode = '';
   copiedToken = false;
   renderPasscodeModal();
 }
@@ -140,6 +160,7 @@ export function renderPasscodeModalHtml(): string {
                     id="passcode-input"
                     type="${showPasscode ? 'text' : 'password'}"
                     class="auth-input passcode-input"
+                    value="${escapeHtml(currentPasscode)}"
                     placeholder="Enter passcode (e.g. radio-2026)"
                     autocomplete="current-password"
                     required
@@ -147,11 +168,13 @@ export function renderPasscodeModalHtml(): string {
                   />
                   <button
                     type="button"
-                    class="auth-toggle-visibility"
+                    class="auth-toggle-visibility ${showPasscode ? 'is-active' : ''}"
                     data-action="toggle-passcode-visibility"
                     aria-label="${showPasscode ? 'Hide passcode' : 'Show passcode'}"
+                    aria-pressed="${showPasscode ? 'true' : 'false'}"
+                    title="${showPasscode ? 'Hide passcode' : 'Show passcode'}"
                   >
-                    ${showPasscode ? '👁️' : '🔒'}
+                    ${showPasscode ? ICON_EYE_OFF : ICON_EYE}
                   </button>
                 </div>
                 <div class="auth-hint">Default development passcode: <code>radio-2026</code> (configured via <code>APP_PASSCODE</code>)</div>
@@ -177,12 +200,24 @@ export function renderPasscodeModalHtml(): string {
 export function renderPasscodeModal(): void {
   let root = document.querySelector('.auth-modal-root');
   if (!root) {
+    const app = document.querySelector('#app');
     root = document.createElement('div');
     root.className = 'auth-modal-root';
-    document.body.appendChild(root);
+    if (app) {
+      app.appendChild(root);
+    } else {
+      document.body.appendChild(root);
+    }
   }
   root.innerHTML = renderPasscodeModalHtml();
   document.body.classList.toggle('auth-modal-open', isOpen);
+
+  const input = root.querySelector<HTMLInputElement>('.passcode-input');
+  if (input) {
+    input.addEventListener('input', () => {
+      currentPasscode = input.value;
+    });
+  }
 }
 
 export async function handlePasscodeSubmit(form: HTMLFormElement): Promise<void> {
@@ -190,6 +225,7 @@ export async function handlePasscodeSubmit(form: HTMLFormElement): Promise<void>
   if (!input) return;
 
   const code = input.value.trim();
+  currentPasscode = input.value;
   if (!code) {
     errorMessage = 'Please enter a passcode.';
     renderPasscodeModal();
@@ -204,6 +240,8 @@ export async function handlePasscodeSubmit(form: HTMLFormElement): Promise<void>
   isSubmitting = false;
 
   if (res.success) {
+    currentPasscode = '';
+    showPasscode = false;
     if (onAuthSuccessCallback) {
       onAuthSuccessCallback();
       onAuthSuccessCallback = null;
@@ -225,5 +263,31 @@ export async function handleLogout(): Promise<void> {
 
 export function togglePasscodeVisibility(): void {
   showPasscode = !showPasscode;
-  renderPasscodeModal();
+  const input = document.querySelector<HTMLInputElement>('.passcode-input');
+  const btn = document.querySelector<HTMLButtonElement>('.auth-toggle-visibility');
+
+  if (input && btn) {
+    const val = input.value;
+    currentPasscode = val;
+    input.type = showPasscode ? 'text' : 'password';
+    input.value = val;
+
+    btn.setAttribute('aria-label', showPasscode ? 'Hide passcode' : 'Show passcode');
+    btn.setAttribute('title', showPasscode ? 'Hide passcode' : 'Show passcode');
+    btn.setAttribute('aria-pressed', showPasscode ? 'true' : 'false');
+    btn.classList.toggle('is-active', showPasscode);
+    btn.innerHTML = showPasscode ? ICON_EYE_OFF : ICON_EYE;
+
+    if (document.activeElement !== btn) {
+      input.focus();
+      try {
+        const len = val.length;
+        input.setSelectionRange(len, len);
+      } catch {
+        // ignore
+      }
+    }
+  } else {
+    renderPasscodeModal();
+  }
 }

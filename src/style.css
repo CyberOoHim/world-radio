@@ -3453,7 +3453,7 @@ html.is-backgrounded .radar-ring {
 
 .auth-input {
   width: 100%;
-  padding: 12px 42px 12px 14px;
+  padding: 12px 46px 12px 14px;
   background: rgba(2, 6, 23, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 10px;
@@ -3471,18 +3471,46 @@ html.is-backgrounded .radar-ring {
 
 .auth-toggle-visibility {
   position: absolute;
-  right: 10px;
-  background: transparent;
-  border: none;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
   cursor: pointer;
-  padding: 6px;
-  font-size: 1.05rem;
-  opacity: 0.7;
-  transition: opacity 0.15s ease;
+  padding: 0;
+  transition: all 0.15s ease;
+  user-select: none;
 }
 
 .auth-toggle-visibility:hover {
-  opacity: 1;
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.auth-toggle-visibility:focus-visible {
+  outline: none;
+  color: #38bdf8;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+}
+
+.auth-toggle-visibility.is-active {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.auth-toggle-visibility svg {
+  display: block;
+  pointer-events: none;
 }
 
 .auth-hint {
