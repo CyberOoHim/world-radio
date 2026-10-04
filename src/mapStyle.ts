@@ -15,37 +15,85 @@ export interface MapStyleSpec {
   background: string;
 }
 
-export const MAP_STYLES: Record<MapStyleId, MapStyleSpec> = {
-  streets: {
+export const CARTO_VOYAGER_BASE_URL =
+  'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+
+export const CARTO_VOYAGER_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>';
+
+export const OSM_STANDARD_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+export const OSM_STANDARD_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
+
+export function getCartoApiKey(): string {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CARTO_API_KEY) {
+      return String(import.meta.env.VITE_CARTO_API_KEY).trim();
+    }
+  } catch {
+    // ignore
+  }
+  if (typeof window !== 'undefined') {
+    const globalKey = (window as unknown as { CARTO_API_KEY?: string }).CARTO_API_KEY;
+    if (globalKey) return String(globalKey).trim();
+  }
+  return '';
+}
+
+export function buildStreetsStyle(apiKey?: string): MapStyleSpec {
+  const key = (apiKey !== undefined ? apiKey : getCartoApiKey()).trim();
+  if (key) {
+    return {
+      id: 'streets',
+      label: 'Streets',
+      url: `${CARTO_VOYAGER_BASE_URL}?key=${encodeURIComponent(key)}`,
+      attribution: CARTO_VOYAGER_ATTRIBUTION,
+      subdomains: 'abcd',
+      maxZoom: 20,
+      background: '#cddde6',
+    };
+  }
+
+  // Fallback to OpenStreetMap standard tiles when no CARTO API key is provided
+  return {
     id: 'streets',
     label: 'Streets',
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>',
-    subdomains: 'abcd',
-    maxZoom: 20,
+    url: OSM_STANDARD_URL,
+    attribution: OSM_STANDARD_ATTRIBUTION,
+    maxZoom: 19,
     background: '#cddde6',
+  };
+}
+
+export const TERRAIN_STYLE: MapStyleSpec = {
+  id: 'terrain',
+  label: 'Terrain',
+  url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+  attribution:
+    'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Esri, TomTom, Garmin, FAO, NOAA, USGS, &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+  maxZoom: 19,
+  maxNativeZoom: 19,
+  background: '#d4ddd0',
+};
+
+export const SATELLITE_STYLE: MapStyleSpec = {
+  id: 'satellite',
+  label: 'Satellite',
+  url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  attribution:
+    'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Esri, Maxar, Earthstar Geographics',
+  maxZoom: 19,
+  maxNativeZoom: 19,
+  background: '#1a2330',
+};
+
+export const MAP_STYLES: Record<MapStyleId, MapStyleSpec> = {
+  get streets() {
+    return buildStreetsStyle();
   },
-  terrain: {
-    id: 'terrain',
-    label: 'Terrain',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-    attribution:
-      'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Esri, TomTom, Garmin, FAO, NOAA, USGS, &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-    maxZoom: 19,
-    maxNativeZoom: 19,
-    background: '#d4ddd0',
-  },
-  satellite: {
-    id: 'satellite',
-    label: 'Satellite',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attribution:
-      'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Esri, Maxar, Earthstar Geographics',
-    maxZoom: 19,
-    maxNativeZoom: 19,
-    background: '#1a2330',
-  },
+  terrain: TERRAIN_STYLE,
+  satellite: SATELLITE_STYLE,
 };
 
 export function sanitizeMapStyle(raw: unknown): MapStyleId {

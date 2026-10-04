@@ -6,7 +6,7 @@
   "type": "module",
   "homepage": "https://CyberOoHim.github.io/world_radio/",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "tsc && vite build",
     "test": "vitest run",
     "preview": "vite preview",

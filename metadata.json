@@ -1,0 +1,7 @@
+{
+  "name": "World Radio",
+  "description": "Listen to thousands of live radio stations from every corner of the planet.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
