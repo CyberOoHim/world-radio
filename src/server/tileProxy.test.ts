@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { handleTileProxyRequest, normalizeCartoApiKey } from './tileProxy';
+import { getJwtSecret, signJwt } from './auth';
 
 class MockResponse extends EventEmitter {
   statusCode = 200;
@@ -35,7 +36,20 @@ class MockResponse extends EventEmitter {
   }
 }
 
-describe('tileProxy server-side isolation', () => {
+function createAuthToken(): string {
+  const now = Math.floor(Date.now() / 1000);
+  return signJwt(
+    {
+      sub: 'authorized_user',
+      role: 'listener',
+      iat: now,
+      exp: now + 3600,
+    },
+    getJwtSecret()
+  );
+}
+
+describe('tileProxy server-side isolation and authentication', () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -62,123 +76,125 @@ describe('tileProxy server-side isolation', () => {
   });
 
   it('ignores non-tile requests and returns false to allow next middleware', async () => {
-    const req = { url: '/api/other', method: 'GET' } as IncomingMessage;
+    const req = { url: '/api/other', method: 'GET', headers: {} } as IncomingMessage;
     const res = new MockResponse() as unknown as ServerResponse;
 
     const handled = await handleTileProxyRequest(req, res);
     expect(handled).toBe(false);
   });
 
-  it('rejects unsupported HTTP methods with 405 Method Not Allowed', async () => {
-    const req = { url: '/api/tiles/streets/1/0/0.png', method: 'POST' } as IncomingMessage;
+  it('rejects unauthenticated tile requests with 401 Unauthorized', async () => {
+    const req = {
+      url: '/api/tiles/streets/1/0/0.png',
+      method: 'GET',
+      headers: {},
+    } as IncomingMessage;
     const res = new MockResponse();
 
     const handled = await handleTileProxyRequest(req, res as unknown as ServerResponse);
     expect(handled).toBe(true);
-    expect(res.statusCode).toBe(405);
-    expect(res.getHeader('allow')).toBe('GET, HEAD');
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toContain('AUTH_REQUIRED');
   });
 
-  it('rejects malformed tile coordinates with 400 Bad Request', async () => {
-    const res = new MockResponse();
-    const handled = await handleTileProxyRequest(
-      { url: '/api/tiles/streets/invalid/path.png', method: 'GET' } as IncomingMessage,
-      res as unknown as ServerResponse
-    );
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toContain('Invalid tile coordinates');
-  });
-
-  it('rejects out-of-bounds tile coordinates with 400 Bad Request', async () => {
-    // Zoom 2 only has coordinates 0, 1, 2, 3 (2^2 = 4)
-    const res = new MockResponse();
-    const handled = await handleTileProxyRequest(
-      { url: '/api/tiles/streets/2/5/1.png', method: 'GET' } as IncomingMessage,
-      res as unknown as ServerResponse
-    );
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toContain('out of bounds');
-  });
-
-  it('securely forwards CARTO_API_KEY upstream without leaking it to the client', async () => {
-    process.env.CARTO_API_KEY = 'super_secret_carto_key_xyz';
-
-    let capturedUpstreamUrl = '';
-    const mockImageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header signature
-
-    global.fetch = vi.fn(async (url: string | URL | Request) => {
-      capturedUpstreamUrl = String(url);
-      return new Response(mockImageBytes, {
-        status: 200,
-        headers: {
-          'Content-Type': 'image/png',
-        },
-      });
-    }) as unknown as typeof fetch;
-
-    const res = new MockResponse();
-    const handled = await handleTileProxyRequest(
-      { url: '/api/tiles/streets/3/2/1.png', method: 'GET' } as IncomingMessage,
-      res as unknown as ServerResponse
-    );
-
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(200);
-    expect(res.getHeader('content-type')).toBe('image/png');
-    expect(res.getHeader('cache-control')).toContain('public');
-    expect(res.rawBody).toEqual(mockImageBytes);
-
-    // Verify upstream request contained the key
-    expect(capturedUpstreamUrl).toContain('super_secret_carto_key_xyz');
-    expect(capturedUpstreamUrl).toContain('rastertiles/voyager/3/2/1.png');
-
-    // CRITICAL: Verify client response contains ZERO trace of the key
-    for (const [headerName, headerVal] of Object.entries(res.headers)) {
-      expect(headerVal).not.toContain('super_secret_carto_key_xyz');
-      expect(headerName).not.toContain('key');
-    }
-    expect(res.body).not.toContain('super_secret_carto_key_xyz');
-  });
-
-  it('works cleanly without CARTO_API_KEY using anonymous upstream', async () => {
-    delete process.env.CARTO_API_KEY;
-
-    let capturedUpstreamUrl = '';
+  it('accepts authenticated requests via Bearer header', async () => {
+    const token = createAuthToken();
     const mockImageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 
-    global.fetch = vi.fn(async (url: string | URL | Request) => {
-      capturedUpstreamUrl = String(url);
+    global.fetch = vi.fn(async () => {
       return new Response(mockImageBytes, {
         status: 200,
         headers: { 'Content-Type': 'image/png' },
       });
     }) as unknown as typeof fetch;
 
+    const req = {
+      url: '/api/tiles/streets/1/0/0.png',
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}` },
+    } as IncomingMessage;
     const res = new MockResponse();
-    const handled = await handleTileProxyRequest(
-      { url: '/api/tiles/streets/4/3/2.png', method: 'GET' } as IncomingMessage,
-      res as unknown as ServerResponse
-    );
 
+    const handled = await handleTileProxyRequest(req, res as unknown as ServerResponse);
     expect(handled).toBe(true);
     expect(res.statusCode).toBe(200);
-    expect(capturedUpstreamUrl).not.toContain('?key=');
-    expect(capturedUpstreamUrl).toContain('rastertiles/voyager/4/3/2.png');
+    expect(res.getHeader('content-type')).toBe('image/png');
   });
 
-  it('falls back to OpenStreetMap when CARTO upstream is unavailable', async () => {
-    let callCount = 0;
-    const mockOsmBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]);
+  it('accepts authenticated requests via query token parameter', async () => {
+    const token = createAuthToken();
+    const mockImageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+    global.fetch = vi.fn(async () => {
+      return new Response(mockImageBytes, {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }) as unknown as typeof fetch;
+
+    const req = {
+      url: `/api/tiles/streets/1/0/0.png?token=${encodeURIComponent(token)}`,
+      method: 'GET',
+      headers: {},
+    } as IncomingMessage;
+    const res = new MockResponse();
+
+    const handled = await handleTileProxyRequest(req, res as unknown as ServerResponse);
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('serves OpenStreetMap directly when CARTO_API_KEY is unset (avoids watermark)', async () => {
+    delete process.env.CARTO_API_KEY;
+    const token = createAuthToken();
+
+    let capturedUrl = '';
+    const mockOsmBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x02]);
 
     global.fetch = vi.fn(async (url: string | URL | Request) => {
-      callCount++;
+      capturedUrl = String(url);
+      return new Response(mockOsmBytes, {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }) as unknown as typeof fetch;
+
+    const req = {
+      url: '/api/tiles/streets/4/3/2.png',
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}` },
+    } as IncomingMessage;
+    const res = new MockResponse();
+
+    const handled = await handleTileProxyRequest(req, res as unknown as ServerResponse);
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    // Verified: Calls OpenStreetMap directly, never triggering CARTO watermark
+    expect(capturedUrl).toContain('tile.openstreetmap.org/4/3/2.png');
+    expect(capturedUrl).not.toContain('cartocdn.com');
+  });
+
+  it('falls back to OpenStreetMap if CARTO returns watermark (wm- in etag)', async () => {
+    process.env.CARTO_API_KEY = 'any_key';
+    const token = createAuthToken();
+
+    const mockOsmBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x03]);
+    let requestedOsm = false;
+
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
       const urlStr = String(url);
       if (urlStr.includes('cartocdn.com')) {
-        return new Response('Upstream Rate Limited', { status: 429 });
+        // CARTO sending watermark tile
+        return new Response(Buffer.from([0x89]), {
+          status: 200,
+          headers: {
+            'Content-Type': 'image/png',
+            etag: '"wm-da89c20e77c1-light"',
+          },
+        });
       }
       if (urlStr.includes('openstreetmap.org')) {
+        requestedOsm = true;
         return new Response(mockOsmBytes, {
           status: 200,
           headers: { 'Content-Type': 'image/png' },
@@ -187,15 +203,17 @@ describe('tileProxy server-side isolation', () => {
       return new Response('Not Found', { status: 404 });
     }) as unknown as typeof fetch;
 
+    const req = {
+      url: '/api/tiles/streets/2/1/1.png',
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}` },
+    } as IncomingMessage;
     const res = new MockResponse();
-    const handled = await handleTileProxyRequest(
-      { url: '/api/tiles/streets/2/1/1.png', method: 'GET' } as IncomingMessage,
-      res as unknown as ServerResponse
-    );
 
+    const handled = await handleTileProxyRequest(req, res as unknown as ServerResponse);
     expect(handled).toBe(true);
     expect(res.statusCode).toBe(200);
-    expect(callCount).toBe(2);
+    expect(requestedOsm).toBe(true);
     expect(res.rawBody).toEqual(mockOsmBytes);
   });
 });

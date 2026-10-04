@@ -28,6 +28,7 @@ import {
   type PassportStamp,
 } from './mapPassport';
 import { MAP_STYLE_IDS, MAP_STYLES, sanitizeMapStyle, type MapStyleId } from './mapStyle';
+import { getAuthenticatedTileUrl } from './auth';
 import { loadMapStyle, loadMapViewport, saveMapStyle, saveMapViewport } from './storage';
 import type { Station } from './types';
 
@@ -161,6 +162,7 @@ function styleSelectHtml(): string {
 
 function tileLayerFor(id: MapStyleId): L.TileLayer {
   const spec = MAP_STYLES[id];
+  const tileUrl = id === 'streets' ? getAuthenticatedTileUrl(spec.url) : spec.url;
   const options: L.TileLayerOptions = {
     attribution: spec.attribution,
     maxZoom: spec.maxZoom,
@@ -171,7 +173,7 @@ function tileLayerFor(id: MapStyleId): L.TileLayer {
   if (spec.detectRetina != null) options.detectRetina = spec.detectRetina;
   if (spec.crossOrigin != null) options.crossOrigin = spec.crossOrigin;
 
-  const layer = L.tileLayer(spec.url, options);
+  const layer = L.tileLayer(tileUrl, options);
 
   // If a tile fails to load on the streets layer (e.g. rate limit, bad API key, network blip),
   // fallback gracefully to OpenStreetMap standard tiles so the user never sees broken squares.
@@ -187,6 +189,16 @@ function tileLayerFor(id: MapStyleId): L.TileLayer {
   }
 
   return layer;
+}
+
+export function reloadMapTiles(): void {
+  if (map) {
+    if (tiles) {
+      map.removeLayer(tiles);
+      tiles = null;
+    }
+    tiles = tileLayerFor(currentStyle).addTo(map);
+  }
 }
 
 function syncStyleChrome(): void {
@@ -761,6 +773,7 @@ function shellHtml(): string {
     <div class="map-toolbar">
       <button type="button" class="chip" data-action="map-wander" title="Hop to a live station somewhere else">🧭 Wander</button>
       <button type="button" class="chip" data-action="map-locate" title="Center the map on your location">📍 Near me</button>
+      <button type="button" class="chip map-auth-chip" data-action="open-auth-modal" title="Backend Access Passcode &amp; JWT">🔑 Passcode</button>
       <button type="button" class="chip" data-action="map-now-playing" title="Nothing is playing" disabled>▶ Now playing</button>
       <button type="button" class="chip" data-action="map-passport" title="Passport — listen to stamp countries">✦ 0</button>
       ${styleSelectHtml()}

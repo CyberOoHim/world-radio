@@ -56,6 +56,7 @@ import {
   locateOnMap,
   mountMapView,
   refreshMapStations,
+  reloadMapTiles,
   revealMapWander,
   setMapWanderBusy,
   showMapView,
@@ -64,6 +65,16 @@ import {
   syncMapPassport,
   togglePassportPanel,
 } from './mapView';
+import { checkAuthStatus, getAuthState, subscribeAuth } from './auth';
+import {
+  closePasscodeModal,
+  copyJwtToken,
+  handleLogout,
+  handlePasscodeSubmit,
+  isPasscodeModalOpen,
+  openPasscodeModal,
+  togglePasscodeVisibility,
+} from './passcodeModal';
 import {
   PASSPORT_LISTEN_MS,
   mergeStamp,
@@ -316,6 +327,8 @@ const icons = {
   reload: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15.5-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15.5 6.36L3 16"/></svg>`,
   restore: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>`,
   connection: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 14v8"/></svg>`,
+  lock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
+  unlock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`,
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -2325,6 +2338,9 @@ function renderDiscover(): string {
       </div>
       <div class="hero-actions">
         ${surpriseActionsHtml()}
+        <button type="button" class="chip chip-auth ${getAuthState().authenticated ? 'active' : ''}" data-action="open-auth-modal" title="Backend Access (Passcode / JWT)">
+          ${getAuthState().authenticated ? '🔓 Backend Connected' : '🔑 Passcode / Auth'}
+        </button>
         <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me">${icons.pin} Near me</button>
         <button type="button" class="chip" data-action="open-map">${icons.map} Map</button>
         ${
@@ -2814,6 +2830,11 @@ function renderNavHtml(): string {
     <div class="nav-section">Library</div>
     ${navBtn('favorites', icons.heart, 'Favorites', state.favorites.length)}
     ${navBtn('recent', icons.clock, 'Recent')}
+    <div class="nav-section">Access &amp; Security</div>
+    <button type="button" class="nav-btn ${getAuthState().authenticated ? 'active' : ''}" data-action="open-auth-modal" title="Backend Access Passcode">
+      ${getAuthState().authenticated ? icons.unlock : icons.lock}
+      <span>Backend Access (${getAuthState().authenticated ? 'Unlocked' : 'Passcode'})</span>
+    </button>
     <div class="nav-footer">
       <div class="nav-font-control">
         <span class="nav-font-label">Text Size</span>
@@ -2878,7 +2899,13 @@ function ensureShell() {
             spellcheck="false"
           />
         </div>
-        <div class="stats-pill"><strong>—</strong> online</div>
+        <div class="topbar-actions">
+          <div class="stats-pill"><strong>—</strong> online</div>
+          <button type="button" class="auth-status-btn is-locked" data-action="open-auth-modal" title="Backend Access (Passcode / JWT)">
+            <span class="auth-status-dot"></span>
+            <span class="auth-status-text">Passcode</span>
+          </button>
+        </div>
       </div>
       <div class="content" tabindex="-1"></div>
       <div class="map-root" hidden></div>
@@ -2888,6 +2915,7 @@ function ensureShell() {
     <div class="detail-root"></div>
     <div class="fx-modal-root"></div>
     <div class="confirm-modal-root"></div>
+    <div class="auth-modal-root"></div>
     <div class="toast-root" aria-live="polite"></div>
   `;
   shellBuilt = true;
@@ -2913,6 +2941,16 @@ function renderTopbar() {
         ? `${Math.floor(totalStationHint / 1000) >= 1 ? `${Math.floor(totalStationHint / 1000)}k+` : totalStationHint} stations`
         : 'World stations';
     pill.innerHTML = `<strong>${stationCountLabel}</strong> online`;
+  }
+  const auth = getAuthState();
+  const authBtn = qs<HTMLButtonElement>('.auth-status-btn');
+  if (authBtn) {
+    authBtn.className = `auth-status-btn ${auth.authenticated ? 'is-authenticated' : 'is-locked'}`;
+    authBtn.title = `Backend Access (${auth.authenticated ? 'JWT Authenticated' : 'Passcode Required'})`;
+    authBtn.innerHTML = `
+      <span class="auth-status-dot"></span>
+      <span class="auth-status-text">${auth.authenticated ? 'Connected' : 'Passcode'}</span>
+    `;
   }
   const input = qs<HTMLInputElement>('.search-input');
   if (input && document.activeElement !== input) {
@@ -3615,6 +3653,33 @@ function ensureAppEvents() {
       case 'toggle-fx-modal':
         toggleFxModal();
         break;
+      case 'open-auth-modal':
+        openPasscodeModal(() => {
+          reloadMapTiles();
+          showToast('Passcode verified! Backend connected.');
+          renderTopbar();
+          renderNav();
+        });
+        break;
+      case 'close-auth-modal':
+        closePasscodeModal();
+        break;
+      case 'auth-logout':
+        void handleLogout().then(() => {
+          reloadMapTiles();
+          showToast('Logged out from backend.');
+          renderTopbar();
+          renderNav();
+        });
+        break;
+      case 'toggle-passcode-visibility':
+        togglePasscodeVisibility();
+        break;
+      case 'copy-jwt-token':
+        void copyJwtToken().then((ok) => {
+          if (ok) showToast('JWT string copied to clipboard!');
+        });
+        break;
       case 'open-eq-tab':
         openFxModal('Equalizer');
         break;
@@ -4005,6 +4070,17 @@ function ensureAppEvents() {
       }
     }
   });
+
+  document.addEventListener('submit', (e) => {
+    const target = e.target as HTMLElement | null;
+    if (target instanceof HTMLFormElement && target.dataset.action === 'submit-passcode') {
+      e.preventDefault();
+      void handlePasscodeSubmit(target).then(() => {
+        renderTopbar();
+        renderNav();
+      });
+    }
+  });
 }
 
 function isTypingTarget(el: EventTarget | null): boolean {
@@ -4017,6 +4093,14 @@ function isTypingTarget(el: EventTarget | null): boolean {
 
 function bindGlobalKeys() {
   document.addEventListener('keydown', (e) => {
+    if (isPasscodeModalOpen()) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closePasscodeModal();
+        return;
+      }
+    }
+
     if (restoreConfirmOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -4195,6 +4279,16 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 
 sleepTimer.restore();
+
+void checkAuthStatus().then(() => {
+  renderTopbar();
+  renderNav();
+});
+subscribeAuth(() => {
+  renderTopbar();
+  renderNav();
+  reloadMapTiles();
+});
 
 renderAllChrome();
 void ensureMeta();

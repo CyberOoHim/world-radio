@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { handleTileProxyRequest } from './src/server/tileProxy.ts';
+import { handleAuthRequest } from './src/server/auth.ts';
 
 // Load .env file for local production execution if present
 function loadEnv(): void {
@@ -51,6 +52,20 @@ const MIME_TYPES: Record<string, string> = {
 const server = http.createServer(async (req, res) => {
   // Security headers
   res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // Handle auth routes (/api/auth/*)
+  try {
+    const authHandled = await handleAuthRequest(req, res);
+    if (authHandled) return;
+  } catch (err) {
+    console.error('Auth error:', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Internal server error in auth handler' }));
+    }
+    return;
+  }
 
   // Handle tile proxy routes (/api/tiles/streets/*)
   try {

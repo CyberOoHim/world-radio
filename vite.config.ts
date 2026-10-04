@@ -1,14 +1,16 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import { handleTileProxyRequest } from './src/server/tileProxy.ts';
+import { handleAuthRequest } from './src/server/auth.ts';
 
-function tileProxyPlugin(): Plugin {
+function serverApiPlugin(): Plugin {
   return {
-    name: 'tile-proxy',
+    name: 'server-api-plugin',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         try {
-          const handled = await handleTileProxyRequest(req, res);
-          if (!handled) next();
+          if (await handleAuthRequest(req, res)) return;
+          if (await handleTileProxyRequest(req, res)) return;
+          next();
         } catch (err) {
           next(err);
         }
@@ -17,8 +19,9 @@ function tileProxyPlugin(): Plugin {
     configurePreviewServer(server) {
       server.middlewares.use(async (req, res, next) => {
         try {
-          const handled = await handleTileProxyRequest(req, res);
-          if (!handled) next();
+          if (await handleAuthRequest(req, res)) return;
+          if (await handleTileProxyRequest(req, res)) return;
+          next();
         } catch (err) {
           next(err);
         }
@@ -29,13 +32,19 @@ function tileProxyPlugin(): Plugin {
 
 /**
  * Relative base so assets work on GitHub project Pages and custom subpaths.
- * Server proxy middleware securely isolates API keys (e.g. CARTO_API_KEY) from frontend leaks.
+ * Server proxy middleware securely handles passcode/JWT auth and tile proxying.
  */
 export default defineConfig(({ mode }) => {
   // Load environment variables strictly for server-side proxy use
   const env = loadEnv(mode, process.cwd(), '');
   if (env.CARTO_API_KEY && !process.env.CARTO_API_KEY) {
     process.env.CARTO_API_KEY = env.CARTO_API_KEY;
+  }
+  if (env.APP_PASSCODE && !process.env.APP_PASSCODE) {
+    process.env.APP_PASSCODE = env.APP_PASSCODE;
+  }
+  if (env.JWT_SECRET && !process.env.JWT_SECRET) {
+    process.env.JWT_SECRET = env.JWT_SECRET;
   }
 
   return {
@@ -52,6 +61,6 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       assetsDir: 'assets',
     },
-    plugins: [tileProxyPlugin()],
+    plugins: [serverApiPlugin()],
   };
 });
