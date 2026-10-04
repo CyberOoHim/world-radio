@@ -915,7 +915,7 @@ export function beginBlindWander(station: Station): void {
   }
   blind = {
     station,
-    timer: window.setTimeout(() => {
+    timer: setTimeout(() => {
       revealMapWander(true);
     }, BLIND_MS),
   };

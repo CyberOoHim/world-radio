@@ -3,13 +3,15 @@ import {
   buildStreetsStyle,
   CARTO_VOYAGER_BASE_URL,
   DEFAULT_MAP_STYLE,
+  getCartoApiKey,
   MAP_STYLE_IDS,
   MAP_STYLES,
   normalizeCartoApiKey,
   sanitizeMapStyle,
+  STREETS_PROXY_URL,
 } from './mapStyle';
 
-describe('map styles', () => {
+describe('map styles and security isolation', () => {
   it('defaults unknown values to streets', () => {
     expect(sanitizeMapStyle(undefined)).toBe(DEFAULT_MAP_STYLE);
     expect(sanitizeMapStyle('voyager')).toBe('streets');
@@ -17,20 +19,22 @@ describe('map styles', () => {
     expect(sanitizeMapStyle('satellite')).toBe('satellite');
   });
 
-  it('offers streets, terrain, and satellite over https', () => {
+  it('offers streets, terrain, and satellite over secure protocols and proxies', () => {
     expect([...MAP_STYLE_IDS]).toEqual(['streets', 'terrain', 'satellite']);
     for (const id of MAP_STYLE_IDS) {
-      expect(MAP_STYLES[id].url.startsWith('https://')).toBe(true);
+      const url = MAP_STYLES[id].url;
+      expect(url.startsWith('https://') || url.startsWith('/api/')).toBe(true);
       expect(MAP_STYLES[id].label.length).toBeGreaterThan(0);
       expect(MAP_STYLES[id].attribution.toLowerCase()).toMatch(/openstreetmap|esri|carto/);
     }
+    expect(MAP_STYLES.streets.url).toBe(STREETS_PROXY_URL);
     expect(MAP_STYLES.terrain.url).toContain('World_Topo_Map');
     expect(MAP_STYLES.satellite.url).toContain('World_Imagery');
   });
 
-  it('uses CARTO Voyager directly when no API key is configured', () => {
-    const streets = buildStreetsStyle('');
-    expect(streets.url).toBe(CARTO_VOYAGER_BASE_URL);
+  it('routes streets style through secure backend proxy by default', () => {
+    const streets = buildStreetsStyle();
+    expect(streets.url).toBe(STREETS_PROXY_URL);
     expect(streets.attribution.toLowerCase()).toContain('carto');
     expect(streets.maxZoom).toBe(20);
     expect(streets.subdomains).toBe('abcd');
@@ -38,16 +42,33 @@ describe('map styles', () => {
     expect(streets.crossOrigin).toBe(true);
   });
 
-  it('uses CARTO Voyager with key parameter when an API key is configured', () => {
-    const streetsWithKey = buildStreetsStyle('my-carto-key');
-    expect(streetsWithKey.url).toBe(`${CARTO_VOYAGER_BASE_URL}?key=my-carto-key`);
-    expect(streetsWithKey.attribution.toLowerCase()).toContain('carto');
-    expect(streetsWithKey.maxZoom).toBe(20);
-    expect(streetsWithKey.subdomains).toBe('abcd');
-    expect(streetsWithKey.detectRetina).toBe(true);
+  it('guarantees frontend API key getter never leaks secrets', () => {
+    expect(getCartoApiKey()).toBe('');
   });
 
-  it('normalizes CARTO API keys from full URLs, query strings, and quoted strings', () => {
+  it('sanitizes and strips API keys from tile URLs to prevent frontend leakage', () => {
+    // If a raw token is passed, it falls back to the secure proxy URL and never creates a ?key= query
+    const streetsFromToken = buildStreetsStyle('my-carto-key');
+    expect(streetsFromToken.url).toBe(STREETS_PROXY_URL);
+    expect(streetsFromToken.url).not.toContain('my-carto-key');
+    expect(streetsFromToken.url).not.toContain('key=');
+
+    // If an external URL with a key query parameter is passed, the key is stripped
+    const streetsFromUrl = buildStreetsStyle(
+      'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=extracted-token'
+    );
+    expect(streetsFromUrl.url).not.toContain('extracted-token');
+    expect(streetsFromUrl.url).not.toContain('key=');
+    expect(streetsFromUrl.url).toBe(
+      'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
+    );
+
+    // Clean base URL passes through without modification
+    const streetsClean = buildStreetsStyle(CARTO_VOYAGER_BASE_URL);
+    expect(streetsClean.url).toBe(CARTO_VOYAGER_BASE_URL);
+  });
+
+  it('normalizes CARTO API keys safely for server-side processing', () => {
     expect(normalizeCartoApiKey('')).toBe('');
     expect(normalizeCartoApiKey(null)).toBe('');
     expect(normalizeCartoApiKey('  sample_key_abc  ')).toBe('sample_key_abc');
@@ -59,11 +80,5 @@ describe('map styles', () => {
         'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=sample_key_abc'
       )
     ).toBe('sample_key_abc');
-
-    const streetsFromUrl = buildStreetsStyle(
-      'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=extracted-token'
-    );
-    expect(streetsFromUrl.url).toBe(`${CARTO_VOYAGER_BASE_URL}?key=extracted-token`);
   });
 });
-

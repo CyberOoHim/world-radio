@@ -527,7 +527,7 @@ function syncListenClock(): void {
       clearInterval(listenTimer as unknown as number);
       listenTimer = null;
     }
-    listenTimer = window.setTimeout(tickListenClock, remaining);
+    listenTimer = setTimeout(tickListenClock, remaining);
     return;
   }
   stopListenClock();

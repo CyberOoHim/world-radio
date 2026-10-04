@@ -8,12 +8,14 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "tsc && vite build",
+    "start": "node server.ts",
     "test": "vitest run",
     "preview": "vite preview",
     "deploy:check": "npm run build && node -e \"const fs=require('fs');const h=fs.readFileSync('dist/index.html','utf8');if(h.includes('/src/main.ts')||h.includes('src=\\\"/assets')){console.error('Bad asset paths in dist/index.html');process.exit(1)}console.log('dist OK');\""
   },
   "devDependencies": {
     "@types/leaflet": "^1.9.22",
+    "@types/node": "^26.6.4",
     "typescript": "~6.0.2",
     "vite": "^8.1.1",
     "vitest": "^3.2.4"

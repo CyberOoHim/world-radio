@@ -17,6 +17,13 @@ export interface MapStyleSpec {
   crossOrigin?: boolean | 'anonymous' | 'use-credentials' | '';
 }
 
+/**
+ * Server-side tile proxy endpoint.
+ * Keeps CARTO_API_KEY securely isolated on the backend. No secret keys or auth
+ * parameters are ever bundled into client JavaScript or sent over client network requests.
+ */
+export const STREETS_PROXY_URL = '/api/tiles/streets/{z}/{x}/{y}{r}.png';
+
 export const CARTO_VOYAGER_BASE_URL =
   'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
 
@@ -28,12 +35,15 @@ export const OSM_STANDARD_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 export const OSM_STANDARD_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
 
+/**
+ * Normalizes an API key string.
+ * Kept as a pure utility function.
+ */
 export function normalizeCartoApiKey(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   let key = raw.trim();
   if (!key) return '';
 
-  // Extract key parameter if user pasted full URL or query snippet (e.g. ?key=... or key=...)
   if (key.includes('key=')) {
     const match = key.match(/[?&]key=([^&#\s]+)/) || key.match(/^key=([^&#\s]+)/);
     if (match?.[1]) {
@@ -45,32 +55,38 @@ export function normalizeCartoApiKey(raw: unknown): string {
     }
   }
 
-  // Strip wrapping quotes if user pasted '"key"'
   key = key.replace(/^["']|["']$/g, '').trim();
   return key;
 }
 
+/**
+ * Frontend API key getter.
+ * Always returns an empty string on the client because secret API keys
+ * are strictly isolated on the server proxy (/api/tiles/streets/*).
+ */
 export function getCartoApiKey(): string {
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CARTO_API_KEY) {
-      return normalizeCartoApiKey(import.meta.env.VITE_CARTO_API_KEY);
-    }
-  } catch {
-    // ignore
-  }
-  if (typeof window !== 'undefined') {
-    const globalKey = (window as unknown as { CARTO_API_KEY?: string }).CARTO_API_KEY;
-    if (globalKey) return normalizeCartoApiKey(globalKey);
-  }
   return '';
 }
 
-export function buildStreetsStyle(apiKey?: string): MapStyleSpec {
-  const raw = apiKey !== undefined ? apiKey : getCartoApiKey();
-  const key = normalizeCartoApiKey(raw);
-  const url = key
-    ? `${CARTO_VOYAGER_BASE_URL}?key=${encodeURIComponent(key)}`
-    : CARTO_VOYAGER_BASE_URL;
+/**
+ * Builds the map style specification for the Streets layer.
+ * Routes through the server proxy endpoint by default, ensuring all credentials
+ * remain solidly isolated on the backend without leaking to the frontend.
+ */
+export function buildStreetsStyle(customUrl?: string): MapStyleSpec {
+  let url = STREETS_PROXY_URL;
+
+  if (customUrl && typeof customUrl === 'string') {
+    const trimmed = customUrl.trim();
+    // If a valid URL or path template was passed, sanitize away any leaked key query parameters
+    if (trimmed.startsWith('/') || /^https?:\/\//i.test(trimmed)) {
+      let cleaned = trimmed
+        .replace(/([?&])(key|apiKey|api_key)=[^&#]*/gi, '$1')
+        .replace(/[?&]+$/, '')
+        .replace(/\?&/, '?');
+      url = cleaned;
+    }
+  }
 
   return {
     id: 'streets',
