@@ -140,7 +140,7 @@ img {
 .orb-a {
   width: 440px;
   height: 440px;
-  background: #2dd4bf;
+  background: #10b981;
   top: -80px;
   left: -60px;
   animation: drift-a 24s ease-in-out infinite alternate;
@@ -149,7 +149,7 @@ img {
 .orb-b {
   width: 400px;
   height: 400px;
-  background: #818cf8;
+  background: #059669;
   top: 22%;
   right: -100px;
   animation: drift-b 30s ease-in-out infinite alternate;
@@ -158,7 +158,7 @@ img {
 .orb-c {
   width: 340px;
   height: 340px;
-  background: #a78bfa;
+  background: #34d399;
   bottom: 12%;
   left: 28%;
   animation: drift-c 26s ease-in-out infinite alternate;
@@ -238,25 +238,28 @@ html.power-saver-active .ambient::after {
 .brand-mark {
   width: 42px;
   height: 42px;
-  border-radius: 12px;
-  background: radial-gradient(circle at 35% 35%, #16243d, #090e1a);
-  border: 1.5px solid rgba(45, 212, 191, 0.45);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 16px rgba(45, 212, 191, 0.2);
+  border-radius: 11px;
+  background: linear-gradient(135deg, #30D158 0%, #10B981 30%, #047857 70%, #022C22 100%);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 20px rgba(48, 209, 88, 0.35);
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  color: var(--accent);
+  color: #ffffff;
+  overflow: hidden;
   transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
 
 .brand-mark:hover {
-  transform: scale(1.04);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), 0 0 24px rgba(45, 212, 191, 0.35);
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4), 0 0 26px rgba(48, 209, 88, 0.55);
 }
 
 .brand-mark svg {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
+  color: #ffffff;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.4));
 }
 
 .brand-text h1 {
@@ -3645,4 +3648,223 @@ html.is-backgrounded .radar-ring {
   vertical-align: middle;
   margin-right: 6px;
 }
+
+/* ─── Share Modal with QR Code Card Preview ───────────────────────── */
+.share-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 16, 0.78);
+  backdrop-filter: blur(10px);
+  z-index: 150;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.share-modal-container {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 151;
+  padding: 16px;
+  pointer-events: none;
+}
+
+.share-modal-card {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 480px;
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(175deg, #131d33 0%, #0a0f1d 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 20px;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.85), 0 0 35px rgba(56, 189, 248, 0.12);
+  overflow: hidden;
+  animation: modalPop 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.share-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.share-modal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.share-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.share-modal-close {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.share-modal-close:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.share-modal-body {
+  padding: 18px 20px 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.share-modal-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #f8fafc;
+  letter-spacing: -0.01em;
+}
+
+.share-modal-desc {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #94a3b8;
+  line-height: 1.45;
+}
+
+.share-card-preview-wrap {
+  width: 100%;
+  max-width: 320px;
+  margin: 4px auto 8px;
+  background: #090e1a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.share-card-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 30px;
+  color: #94a3b8;
+  font-size: 0.82rem;
+}
+
+.share-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2.5px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.share-card-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  object-fit: contain;
+}
+
+.share-url-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(2, 6, 23, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 4px 6px 4px 12px;
+}
+
+.share-url-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-url-input:focus {
+  outline: none;
+  color: #f8fafc;
+}
+
+.share-copy-btn {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.share-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.share-download-btn {
+  padding: 9px 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  flex: 1;
+  justify-content: center;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.share-native-btn {
+  padding: 9px 14px;
+  font-size: 0.88rem;
+}
+
+@media (max-width: 480px) {
+  .share-modal-actions {
+    flex-direction: column;
+  }
+  .share-download-btn,
+  .share-native-btn {
+    width: 100%;
+    text-align: center;
+  }
+}
+
 

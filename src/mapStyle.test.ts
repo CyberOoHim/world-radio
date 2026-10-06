@@ -12,9 +12,11 @@ import {
 } from './mapStyle';
 
 describe('map styles and security isolation', () => {
-  it('defaults unknown values to streets', () => {
+  it('defaults unknown values to satellite', () => {
+    expect(DEFAULT_MAP_STYLE).toBe('satellite');
     expect(sanitizeMapStyle(undefined)).toBe(DEFAULT_MAP_STYLE);
-    expect(sanitizeMapStyle('voyager')).toBe('streets');
+    expect(sanitizeMapStyle('voyager')).toBe('satellite');
+    expect(sanitizeMapStyle('streets')).toBe('streets');
     expect(sanitizeMapStyle('terrain')).toBe('terrain');
     expect(sanitizeMapStyle('satellite')).toBe('satellite');
   });

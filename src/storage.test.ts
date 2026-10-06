@@ -105,7 +105,7 @@ describe('sanitizeMapViewport', () => {
 });
 
 describe('map style persistence', () => {
-  it('round-trips streets, terrain, and satellite and defaults junk to streets', () => {
+  it('round-trips streets, terrain, and satellite and defaults junk to satellite', () => {
     const memory = new Map<string, string>();
     const stub = {
       getItem: (k: string) => memory.get(k) ?? null,
@@ -119,13 +119,15 @@ describe('map style persistence', () => {
     const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
     try {
+      expect(loadMapStyle()).toBe('satellite');
+      saveMapStyle('streets');
       expect(loadMapStyle()).toBe('streets');
       saveMapStyle('terrain');
       expect(loadMapStyle()).toBe('terrain');
       saveMapStyle('satellite');
       expect(loadMapStyle()).toBe('satellite');
       memory.set('world-radio:map-style', 'voyager');
-      expect(loadMapStyle()).toBe('streets');
+      expect(loadMapStyle()).toBe('satellite');
     } finally {
       if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
       else delete (globalThis as { localStorage?: unknown }).localStorage;

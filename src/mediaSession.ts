@@ -31,10 +31,10 @@ export function updateMediaSession(
   }
 
   const artwork: MediaImage[] = [
-    { src: toAbsoluteUrl('./icon-512.png?v=4'), sizes: '512x512', type: 'image/png' },
-    { src: toAbsoluteUrl('./icon-192.png?v=4'), sizes: '192x192', type: 'image/png' },
-    { src: toAbsoluteUrl('./apple-touch-icon.png?v=4'), sizes: '180x180', type: 'image/png' },
-    { src: toAbsoluteUrl('./favicon-32x32.png?v=4'), sizes: '32x32', type: 'image/png' },
+    { src: toAbsoluteUrl('./icon-512.png?v=6'), sizes: '512x512', type: 'image/png' },
+    { src: toAbsoluteUrl('./icon-192.png?v=6'), sizes: '192x192', type: 'image/png' },
+    { src: toAbsoluteUrl('./apple-touch-icon.png?v=6'), sizes: '180x180', type: 'image/png' },
+    { src: toAbsoluteUrl('./favicon-32x32.png?v=6'), sizes: '32x32', type: 'image/png' },
   ];
 
   if (station.favicon && station.favicon.trim().length > 0) {

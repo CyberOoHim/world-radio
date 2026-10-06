@@ -57,6 +57,8 @@ import {
   mountMapView,
   refreshMapStations,
   reloadMapTiles,
+  focusAndSelectMapStation,
+  getSelectedMapStation,
   revealMapWander,
   setMapWanderBusy,
   showMapView,
@@ -65,6 +67,7 @@ import {
   syncMapPassport,
   togglePassportPanel,
 } from './mapView';
+import { openShareModal } from './shareModal';
 import { checkAuthStatus, getAuthState, subscribeAuth } from './auth';
 import {
   closePasscodeModal,
@@ -87,7 +90,7 @@ import { pickWanderOrder } from './mapWander';
 import { safeHttpUrl } from './safeUrl';
 import { updateMediaSession } from './mediaSession';
 import { player } from './player';
-import { parseHash, setHash, stationShareUrl } from './router';
+import { mapShareUrl, parseHash, setHash, stationShareUrl } from './router';
 import { formatSleepRemaining, sleepTimer } from './sleepTimer';
 import {
   clearAllStorage,
@@ -1978,6 +1981,23 @@ async function applyRouteFromHash() {
           }
         }
         setView('map', { skipHash: true });
+        if (route.stationUuid) {
+          let st = findStation(route.stationUuid);
+          if (!st) {
+            try {
+              const res = await getStationsByUuid(route.stationUuid);
+              st = res[0] ?? undefined;
+            } catch {
+              st = undefined;
+            }
+          }
+          if (st) {
+            state.current = st;
+            focusAndSelectMapStation(st);
+            renderPlayer();
+            updatePlaybackUI();
+          }
+        }
         break;
       case 'station': {
         let station =
@@ -3239,26 +3259,21 @@ function findStation(id: string): Station | undefined {
 }
 
 async function shareStation(station: Station) {
-  const url = stationShareUrl(station.stationuuid);
-  const data = {
-    title: station.name,
-    text: `Listen to ${station.name} on World Radio`,
+  let url: string;
+  const isMap = state.view === 'map';
+  if (isMap) {
+    const vp = getMapViewport();
+    url = mapShareUrl(vp, station.stationuuid);
+  } else {
+    url = stationShareUrl(station.stationuuid);
+  }
+
+  void openShareModal({
+    station,
     url,
-  };
-  try {
-    if (navigator.share) {
-      await navigator.share(data);
-      return;
-    }
-  } catch {
-    // user cancelled or failed — fall through to clipboard
-  }
-  try {
-    await navigator.clipboard.writeText(url);
-    showToast('Link copied');
-  } catch {
-    showToast(url);
-  }
+    isMap,
+    toast: showToast,
+  });
 }
 
 function openDetail(station: Station) {
@@ -3552,9 +3567,32 @@ function ensureAppEvents() {
         break;
       case 'share': {
         const id = t.dataset.id || state.current?.stationuuid;
-        if (!id) return;
-        const station = findStation(id);
-        if (station) void shareStation(station);
+        const station = id ? findStation(id) : getSelectedMapStation() || state.current;
+        if (station) {
+          void shareStation(station);
+        } else if (state.view === 'map') {
+          const vp = getMapViewport();
+          const url = mapShareUrl(vp);
+          void openShareModal({
+            station: { name: 'World Radio Map' },
+            url,
+            isMap: true,
+            toast: showToast,
+          });
+        }
+        break;
+      }
+      case 'map-toolbar-share': {
+        const station =
+          getSelectedMapStation() || state.current || state.detailStation || (getMapStations()[0] ?? null);
+        const vp = getMapViewport();
+        const url = mapShareUrl(vp, station?.stationuuid);
+        void openShareModal({
+          station: station ?? { name: 'World Radio Map' },
+          url,
+          isMap: true,
+          toast: showToast,
+        });
         break;
       }
       case 'mute':

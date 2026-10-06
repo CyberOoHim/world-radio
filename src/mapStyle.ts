@@ -1,6 +1,6 @@
 export type MapStyleId = 'streets' | 'terrain' | 'satellite';
 
-export const DEFAULT_MAP_STYLE: MapStyleId = 'streets';
+export const DEFAULT_MAP_STYLE: MapStyleId = 'satellite';
 
 export const MAP_STYLE_IDS: readonly MapStyleId[] = ['streets', 'terrain', 'satellite'];
 
@@ -132,5 +132,5 @@ export const MAP_STYLES: Record<MapStyleId, MapStyleSpec> = {
 };
 
 export function sanitizeMapStyle(raw: unknown): MapStyleId {
-  return raw === 'terrain' || raw === 'satellite' ? raw : DEFAULT_MAP_STYLE;
+  return raw === 'streets' || raw === 'terrain' || raw === 'satellite' ? raw : DEFAULT_MAP_STYLE;
 }

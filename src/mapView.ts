@@ -99,6 +99,18 @@ let hudTimer: ReturnType<typeof setInterval> | null = null;
 let wanderBusy = false;
 let blind: { station: Station; timer: ReturnType<typeof setTimeout> } | null = null;
 let passportOpen = false;
+let currentSelectedStation: Station | null = null;
+
+export function getSelectedMapStation(): Station | null {
+  return (
+    currentSelectedStation ||
+    (playingId ? lastStations.find((s) => s.stationuuid === playingId) ?? null : null)
+  );
+}
+
+export function setSelectedMapStation(station: Station | null): void {
+  currentSelectedStation = station;
+}
 
 export function getMapStations(): Station[] {
   return lastStations;
@@ -491,6 +503,8 @@ function openPendingPopup(clear: boolean) {
   const marker = markerById.get(pendingPopupId);
   if (!marker) return;
   marker.openPopup();
+  const found = lastStations.find((s) => s.stationuuid === pendingPopupId);
+  if (found) currentSelectedStation = found;
   if (clear) pendingPopupId = null;
 }
 
@@ -558,6 +572,7 @@ function popupHtml(station: Station): string {
       <div class="map-popup-actions">
         <button type="button" class="chip" data-action="play" data-id="${escapeHtml(station.stationuuid)}">Listen</button>
         <button type="button" class="chip" data-action="fav" data-id="${escapeHtml(station.stationuuid)}">${fav ? '♥ Saved' : '♡ Save'}</button>
+        <button type="button" class="chip" data-action="share" data-id="${escapeHtml(station.stationuuid)}">Share</button>
         <button type="button" class="chip" data-action="detail" data-id="${escapeHtml(station.stationuuid)}">Details</button>
       </div>
     </div>`;
@@ -584,6 +599,9 @@ function setMarkers(stations: Station[]) {
       icon: pinIcon(station, playing),
       title: blind && blind.station.stationuuid === station.stationuuid ? 'Somewhere on the air' : station.name,
       keyboard: true,
+    });
+    marker.on('click', () => {
+      currentSelectedStation = station;
     });
     marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
     marker.addTo(markersLayer);
@@ -776,6 +794,7 @@ function shellHtml(): string {
       <button type="button" class="chip map-auth-chip" data-action="open-auth-modal" title="Backend Access Passcode &amp; JWT">🔑 Passcode</button>
       <button type="button" class="chip" data-action="map-now-playing" title="Nothing is playing" disabled>▶ Now playing</button>
       <button type="button" class="chip" data-action="map-passport" title="Passport — listen to stamp countries">✦ 0</button>
+      <button type="button" class="chip" data-action="map-toolbar-share" title="Share current map selection">🔗 Share</button>
       ${styleSelectHtml()}
       <span class="map-status">Move the map to discover stations</span>
     </div>
@@ -914,6 +933,31 @@ export function flyToNowPlaying(station: Station): boolean {
   pendingPopupId = null;
   flyToMap(target.lat, target.lon, target.zoom);
   return true;
+}
+
+export function focusAndSelectMapStation(station: Station): void {
+  currentSelectedStation = station;
+  highlightMapStation(station.stationuuid);
+  if (stationHasGeo(station)) {
+    pendingPopupId = station.stationuuid;
+    if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
+      lastStations = [...lastStations, station];
+    }
+    if (markersLayer && !markerById.has(station.stationuuid)) {
+      const marker = L.marker([station.geo_lat, station.geo_long], {
+        icon: pinIcon(station, playingId === station.stationuuid),
+        title: station.name,
+        keyboard: true,
+      });
+      marker.on('click', () => {
+        currentSelectedStation = station;
+      });
+      marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+      marker.addTo(markersLayer);
+      markerById.set(station.stationuuid, marker);
+    }
+    openPendingPopup(false);
+  }
 }
 
 export function beginBlindWander(station: Station): void {
