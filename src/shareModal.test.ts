@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { generateShareCard, isShareModalOpen, closeShareModal, BOTTOM_BRAND_TEXT } from './shareModal';
 
 describe('share card generation and QR modal', () => {
-  it('has exact POJ spelling Sè-kài Lá-ji-o͘h with round-dotted unaccented i', () => {
-    expect(BOTTOM_BRAND_TEXT).toBe('Sè-kài Lá-ji-o͘h');
-    // Ensure 'i' in 'ji' is character 'i' (charCode 105, regular round dot), NOT accented 'í' (charCode 237)
-    expect(BOTTOM_BRAND_TEXT.includes('ji')).toBe(true);
-    expect(BOTTOM_BRAND_TEXT.includes('jí')).toBe(false);
-    expect(BOTTOM_BRAND_TEXT.includes('Lá')).toBe(true);
+  it('has exact POJ spelling Sè-kài La-jí-o͘h with acute-accented jí', () => {
+    expect(BOTTOM_BRAND_TEXT).toBe('Sè-kài La-jí-o͘h');
+    // Ensure 'í' in 'jí' is acute-accented (charCode 237), and 'a' in 'La' is unaccented
+    expect(BOTTOM_BRAND_TEXT.includes('jí')).toBe(true);
+    expect(BOTTOM_BRAND_TEXT.includes('La')).toBe(true);
+    expect(BOTTOM_BRAND_TEXT.includes('Lá')).toBe(false);
   });
 
   it('generates share card dataUrl with QR code for stations', async () => {

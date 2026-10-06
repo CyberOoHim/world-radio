@@ -16,7 +16,7 @@ export interface ShareModalOptions {
   toast: (msg: string) => void;
 }
 
-export const BOTTOM_BRAND_TEXT = 'Sè-kài Lá-ji-o͘h';
+export const BOTTOM_BRAND_TEXT = 'Sè-kài La-jí-o͘h';
 
 /**
  * Creates a slug suitable for saving downloaded files.
@@ -99,7 +99,7 @@ function wrapText(
  * Features:
  *  - Station name on top
  *  - QR code in the middle
- *  - “Sè-kài Lá-ji-o͘h” in the bottom
+ *  - “Sè-kài La-jí-o͘h” in the bottom
  */
 export async function generateShareCard(
   options: ShareCardOptions
@@ -251,9 +251,9 @@ export async function generateShareCard(
   ctx.font = '11px sans-serif';
   ctx.fillText('•   •   •', width / 2, lineY - 8);
 
-  // ── 8. "Sè-kài Lá-ji-o͘h" IN THE BOTTOM ──
+  // ── 8. "Sè-kài La-jí-o͘h" IN THE BOTTOM ──
   ctx.fillStyle = '#f8fafc';
-  // Upright geometric font so the dot on 'i' is an exact circular round dot (not slanted/accented)
+  // Upright geometric font so characters render crisply with proper accents
   ctx.font = '700 29px "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
   ctx.letterSpacing = '1.5px';
   ctx.fillText(BOTTOM_BRAND_TEXT, width / 2, 630);
@@ -450,7 +450,7 @@ export async function openShareModal(options: ShareModalOptions): Promise<void> 
 
             await navigator.share({
               title: stationName,
-              text: `Listen to ${stationName} on World Radio (Sè-kài Lá-ji-o͘h)`,
+              text: `Listen to ${stationName} on World Radio (${BOTTOM_BRAND_TEXT})`,
               url,
               ...(files ? { files } : {}),
             });
