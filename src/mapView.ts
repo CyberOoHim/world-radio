@@ -58,6 +58,7 @@ export interface MapViewport {
 
 export interface MapViewHandlers {
   isFavorite: (uuid: string) => boolean;
+  isPlaying?: (uuid: string) => boolean;
   getFilters: () => SearchParams;
   onStations: (stations: Station[]) => void;
   onViewport: (viewport: MapViewport) => void;
@@ -263,16 +264,18 @@ function passportPanelEl(): HTMLElement | null {
 
 export function syncMapNowPlaying(station: Station | null): void {
   const btn = nowPlayingBtn();
-  if (!btn) return;
-  btn.disabled = !station;
-  if (!station) {
-    btn.title = 'Nothing is playing';
-    return;
+  if (btn) {
+    btn.disabled = !station;
+    if (!station) {
+      btn.title = 'Nothing is playing';
+    } else {
+      const target = resolveStationMapTarget(station);
+      btn.title = target
+        ? `Center the map on ${station.name}`
+        : `${station.name} has no map location`;
+    }
   }
-  const target = resolveStationMapTarget(station);
-  btn.title = target
-    ? `Center the map on ${station.name}`
-    : `${station.name} has no map location`;
+  syncMapStationPopups();
 }
 
 export function setMapWanderBusy(busy: boolean): void {
@@ -362,7 +365,7 @@ export function syncMapHud(station: Station | null): void {
       title: blind && blind.station.stationuuid === station.stationuuid ? 'Somewhere on the air' : station.name,
       keyboard: true,
     });
-    marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+    bindMarkerPopup(marker, station);
     marker.addTo(markersLayer);
     markerById.set(station.stationuuid, marker);
   }
@@ -503,9 +506,12 @@ function openPendingPopup(clear: boolean) {
   if (!pendingPopupId) return;
   const marker = markerById.get(pendingPopupId);
   if (!marker) return;
-  marker.openPopup();
   const found = lastStations.find((s) => s.stationuuid === pendingPopupId);
-  if (found) currentSelectedStation = found;
+  if (found) {
+    currentSelectedStation = found;
+    marker.setPopupContent(popupHtml(found));
+  }
+  marker.openPopup();
   if (clear) pendingPopupId = null;
 }
 
@@ -543,7 +549,38 @@ function pinHtml(station: Station, playing: boolean): string {
   return `<span class="map-pin period-${period}${playing ? ' is-playing' : ''}${stamped ? ' is-stamped' : ''}${mystery ? ' is-mystery' : ''}" title="${escapeHtml(title)}"><span class="map-pin-flag">${flag}</span></span>`;
 }
 
-function popupHtml(station: Station): string {
+function isUnderPlay(stationUuid: string): boolean {
+  if (handlers?.isPlaying) {
+    return handlers.isPlaying(stationUuid);
+  }
+  return Boolean(playingId && playingId === stationUuid);
+}
+
+export function syncMapStationPopups(): void {
+  for (const [id, marker] of markerById) {
+    if (marker.isPopupOpen()) {
+      const station =
+        lastStations.find((s) => s.stationuuid === id) ||
+        (hudStation?.stationuuid === id ? hudStation : null);
+      if (station) {
+        marker.setPopupContent(popupHtml(station));
+      }
+    }
+  }
+}
+
+function bindMarkerPopup(marker: L.Marker, station: Station): void {
+  marker.on('click', () => {
+    currentSelectedStation = station;
+    marker.setPopupContent(popupHtml(station));
+  });
+  marker.on('popupopen', () => {
+    marker.setPopupContent(popupHtml(station));
+  });
+  marker.bindPopup(() => popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+}
+
+export function popupHtml(station: Station): string {
   if (blind && blind.station.stationuuid === station.stationuuid) {
     return `
       <div class="map-popup">
@@ -566,12 +603,16 @@ function popupHtml(station: Station): string {
   ]
     .filter(Boolean)
     .join(' · ');
+  const underPlay = isUnderPlay(station.stationuuid);
+  const listenBtn = underPlay
+    ? `<button type="button" class="chip chip-muted is-muted is-underplay" data-action="play" data-id="${escapeHtml(station.stationuuid)}" disabled aria-disabled="true" title="Currently playing">Listen</button>`
+    : `<button type="button" class="chip" data-action="play" data-id="${escapeHtml(station.stationuuid)}">Listen</button>`;
   return `
     <div class="map-popup">
       <div class="map-popup-name">${escapeHtml(station.name)}</div>
       ${meta ? `<div class="map-popup-meta">${meta}</div>` : ''}
       <div class="map-popup-actions">
-        <button type="button" class="chip" data-action="play" data-id="${escapeHtml(station.stationuuid)}">Listen</button>
+        ${listenBtn}
         <button type="button" class="chip" data-action="fav" data-id="${escapeHtml(station.stationuuid)}">${fav ? '♥ Saved' : '♡ Save'}</button>
         <button type="button" class="chip" data-action="share" data-id="${escapeHtml(station.stationuuid)}">Share</button>
         <button type="button" class="chip" data-action="detail" data-id="${escapeHtml(station.stationuuid)}">Details</button>
@@ -601,10 +642,7 @@ function setMarkers(stations: Station[]) {
       title: blind && blind.station.stationuuid === station.stationuuid ? 'Somewhere on the air' : station.name,
       keyboard: true,
     });
-    marker.on('click', () => {
-      currentSelectedStation = station;
-    });
-    marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+    bindMarkerPopup(marker, station);
     marker.addTo(markersLayer);
     markerById.set(station.stationuuid, marker);
   }
@@ -635,12 +673,13 @@ export function highlightMapStation(uuid: string | null) {
           title: blind && blind.station.stationuuid === cur.stationuuid ? 'Somewhere on the air' : cur.name,
           keyboard: true,
         });
-        marker.bindPopup(popupHtml(cur), { maxWidth: 280, className: 'map-leaflet-popup' });
+        bindMarkerPopup(marker, cur);
         marker.addTo(markersLayer);
         markerById.set(cur.stationuuid, marker);
       }
     }
   }
+  syncMapStationPopups();
 }
 
 function persistViewport(lat: number, lon: number, zoom: number): void {
@@ -943,10 +982,7 @@ export function flyToNowPlaying(station: Station, animate = true): boolean {
           title: station.name,
           keyboard: true,
         });
-        marker.on('click', () => {
-          currentSelectedStation = station;
-        });
-        marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+        bindMarkerPopup(marker, station);
         marker.addTo(markersLayer);
         markerById.set(station.stationuuid, marker);
       } else {
@@ -993,10 +1029,7 @@ export function focusAndSelectMapStation(station: Station): void {
         title: station.name,
         keyboard: true,
       });
-      marker.on('click', () => {
-        currentSelectedStation = station;
-      });
-      marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+      bindMarkerPopup(marker, station);
       marker.addTo(markersLayer);
       markerById.set(station.stationuuid, marker);
     }

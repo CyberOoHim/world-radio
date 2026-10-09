@@ -3045,6 +3045,44 @@ body.fx-modal-open {
   gap: 6px;
 }
 
+.map-popup-actions button.chip:disabled,
+.map-popup-actions button.chip:disabled:hover,
+.map-popup-actions button.chip.is-muted,
+.map-popup-actions button.chip.is-muted:hover,
+.map-popup-actions button.chip.is-underplay,
+.map-popup-actions button.chip.is-underplay:hover,
+.map-popup-actions button.chip.chip-muted:disabled,
+.map-popup-actions button.chip.chip-muted:disabled:hover,
+button.chip:disabled,
+button.chip:disabled:hover,
+button.chip.is-muted,
+button.chip.is-muted:hover,
+button.chip.is-underplay,
+button.chip.is-underplay:hover {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+  box-shadow: none !important;
+  background: rgba(22, 33, 58, 0.4) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text-muted) !important;
+}
+
+.detail-actions .btn-play:disabled,
+.detail-actions .btn-play:disabled:hover,
+.detail-actions .btn-play.is-muted,
+.detail-actions .btn-play.is-muted:hover,
+.detail-actions .btn-play.is-underplay,
+.detail-actions .btn-play.is-underplay:hover {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+  box-shadow: none !important;
+  background: rgba(22, 33, 58, 0.4) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text-muted) !important;
+}
+
 @media (max-width: 900px) {
   .map-toolbar {
     padding: 10px 14px;

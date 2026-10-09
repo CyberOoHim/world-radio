@@ -113,4 +113,51 @@ describe('map viewport helpers', () => {
   it('knows enough country centroids for a passport', () => {
     expect(PASSPORT_COUNTRY_TOTAL).toBeGreaterThan(180);
   });
+
+  it('mutes listen key in station card popup when station is under play', async () => {
+    if (typeof (globalThis as any).window === 'undefined') {
+      Object.defineProperty(globalThis, 'window', {
+        value: globalThis,
+        writable: true,
+        configurable: true,
+      });
+      (globalThis as any).document = {
+        documentElement: { style: {} },
+        createElement: () => ({ style: {}, appendChild: () => {} }),
+      };
+      (globalThis as any).screen = { deviceXDPI: 96, logicalXDPI: 96 };
+    }
+    const { popupHtml, highlightMapStation } = await import('./mapView');
+    const mockStation = {
+      stationuuid: 'test-uuid-1',
+      name: 'WRNS Country',
+      country: 'United States',
+      countrycode: 'US',
+      geo_lat: 35.2,
+      geo_long: -77.5,
+      bitrate: 96,
+      codec: 'AAC',
+    } as any;
+
+    // When not playing
+    highlightMapStation(null);
+    let html = popupHtml(mockStation);
+    expect(html).toContain('data-action="play"');
+    expect(html).toContain('>Listen</button>');
+    expect(html).not.toContain('disabled');
+
+    // When under play
+    highlightMapStation(mockStation.stationuuid);
+    html = popupHtml(mockStation);
+    expect(html).toContain('disabled');
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain('is-muted');
+    expect(html).toContain('chip-muted');
+    expect(html).toContain('is-underplay');
+    expect(html).toContain('title="Currently playing"');
+    expect(html).toContain('>Listen</button>');
+
+    // Clean up
+    highlightMapStation(null);
+  });
 });

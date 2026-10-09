@@ -2861,9 +2861,16 @@ function renderDetailHtml(): string {
           : ''
       }
       <div class="detail-actions">
-        <button type="button" class="btn-play" data-action="play" data-id="${escapeHtml(s.stationuuid)}">
-          ${icons.play} <span>Listen</span>
-        </button>
+        ${
+          (state.current?.stationuuid === s.stationuuid || player.station?.stationuuid === s.stationuuid) &&
+          (player.playing || player.loading)
+            ? `<button type="button" class="btn-play is-muted chip-muted is-underplay" data-action="play" data-id="${escapeHtml(s.stationuuid)}" disabled aria-disabled="true" title="Currently playing">
+                ${icons.play} <span>Listen</span>
+              </button>`
+            : `<button type="button" class="btn-play" data-action="play" data-id="${escapeHtml(s.stationuuid)}">
+                ${icons.play} <span>Listen</span>
+              </button>`
+        }
         <button type="button" class="btn-icon ${fav ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(s.stationuuid)}" aria-pressed="${fav}">
           ${fav ? icons.heartFill : icons.heart}
         </button>
@@ -3043,6 +3050,10 @@ function ensureMapMounted() {
   if (!root) return;
   mountMapView(root, {
     isFavorite: (uuid) => isFav(uuid),
+    isPlaying: (uuid) => {
+      const active = state.current ?? player.station;
+      return Boolean(active && active.stationuuid === uuid && (player.playing || player.loading));
+    },
     getFilters: () => {
       const extra = listQueryExtras();
       const filters: SearchParams = { hidebroken: true };
@@ -3514,6 +3525,9 @@ function ensureAppEvents() {
         break;
       case 'play': {
         e.stopPropagation();
+        if (t.hasAttribute('disabled') || t.getAttribute('aria-disabled') === 'true') {
+          return;
+        }
         const id = t.dataset.id;
         if (!id) return;
         const station = findStation(id);
