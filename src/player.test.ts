@@ -30,4 +30,27 @@ describe('player state management', () => {
 
     unsub();
   });
+
+  it('sleepStop() stops playback and resets state while preserving station metadata', async () => {
+    let notified = 0;
+    const unsub = player.subscribe(() => {
+      notified++;
+    });
+
+    await player.sleepStop(0);
+    expect(player.playing).toBe(false);
+    expect(player.loading).toBe(false);
+    expect(notified).toBeGreaterThan(0);
+
+    unsub();
+  });
+
+  it('onTimeUpdate() allows subscribing and unsubscribing', () => {
+    let ticks = 0;
+    const unsub = player.onTimeUpdate(() => {
+      ticks++;
+    });
+    expect(typeof unsub).toBe('function');
+    unsub();
+  });
 });

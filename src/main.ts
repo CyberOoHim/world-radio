@@ -88,7 +88,7 @@ import {
 import { pickWanderOrder } from './mapWander';
 import { safeHttpUrl } from './safeUrl';
 import { updateMediaSession } from './mediaSession';
-import { player } from './player';
+import { isAppleTouchDevice, player } from './player';
 import { mapShareUrl, parseHash, setHash, stationShareUrl } from './router';
 import { formatSleepRemaining, sleepTimer } from './sleepTimer';
 import {
@@ -128,7 +128,7 @@ import type {
 } from './types';
 
 const PAGE = 48;
-const SLEEP_OPTIONS: SleepMinutes[] = [15, 30, 45, 60, 90];
+const SLEEP_OPTIONS: SleepMinutes[] = [15, 30, 45, 60, 90, 120];
 const SORT_OPTIONS: { id: SortId; label: string }[] = [
   { id: 'clickcount', label: 'Popular' },
   { id: 'clicktrend', label: 'Trending' },
@@ -193,7 +193,14 @@ let isDischarging: boolean | null = null;
 function isPowerSaverActive(): boolean {
   if (state.powerSaver === 'on') return true;
   if (state.powerSaver === 'off') return false;
-  // 'auto' mode
+  // 'auto' mode:
+  // When sleep timer is ticking, always power-save (reduce display animations & GPU work)
+  if (sleepTimer.active) return true;
+  // iPad / Apple touch devices don't have battery API or saveData, but benefit greatly
+  // from reduced power when tab is backgrounded
+  if (isAppleTouchDevice()) {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
+  }
   if (typeof navigator !== 'undefined') {
     const nav = navigator as unknown as { connection?: { saveData?: boolean } };
     if (nav.connection?.saveData) return true;
@@ -1176,6 +1183,12 @@ async function runSurpriseAttempts(
     }
     if (seq !== surpriseSeq) return 'cancelled';
 
+function formatSurpriseScopeToast(scopeLabel: string): string {
+  if (scopeLabel === 'anywhere') return 'Global Shuffle';
+  if (scopeLabel === 'near me') return 'Local';
+  return `Shuffle (${scopeLabel})`;
+}
+
     // If play already marked success, skip long wait.
     if (player.playing && player.station?.stationuuid === station.stationuuid) {
       pushRecent(station);
@@ -1188,7 +1201,7 @@ async function runSurpriseAttempts(
       announce(`Playing ${station.name}`);
       const short =
         station.name.slice(0, 40) + (station.name.length > 40 ? '…' : '');
-      showToast(`Surprise (${scopeLabel}): ${short}`, 3200);
+      showToast(`${formatSurpriseScopeToast(scopeLabel)}: ${short}`, 3200);
       if (state.view === 'map') {
         void flyToUnderplayedStation({ animate: true });
       }
@@ -1214,7 +1227,7 @@ async function runSurpriseAttempts(
       announce(`Playing ${station.name}`);
       const short =
         station.name.slice(0, 40) + (station.name.length > 40 ? '…' : '');
-      showToast(`Surprise (${scopeLabel}): ${short}`, 3200);
+      showToast(`${formatSurpriseScopeToast(scopeLabel)}: ${short}`, 3200);
       if (state.view === 'map') {
         void flyToUnderplayedStation({ animate: true });
       }
@@ -1562,9 +1575,8 @@ function replayPassportStamp(uuid: string): void {
 /** Dual surprise chips for hero / idle player */
 function surpriseActionsHtml(opts?: { compact?: boolean }): string {
   const ctx = getSurpriseContext();
-  const hereTitle = `Surprise within: ${ctx.summary}`;
+  const hereTitle = `Random within current selection: ${ctx.summary}`;
   const hereMuted = ctx.hasStrongCondition ? '' : ' chip-muted';
-  const icon = icons.surprise;
   const activeAnywhere = state.surpriseMode === 'anywhere' ? ' active' : '';
   const activeHere = state.surpriseMode === 'here' ? ' active' : '';
   const again = lastHereCtx
@@ -1572,14 +1584,14 @@ function surpriseActionsHtml(opts?: { compact?: boolean }): string {
     : '';
   if (opts?.compact) {
     return `
-      <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Random station from anywhere">${icon} Anywhere</button>
-      <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+      <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Worldwide random station (R)">🌐 Global Shuffle</button>
+      <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🔀 Shuffle Selection</button>
       ${again}
     `;
   }
   return `
-    <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Random station from all stations">${icon} Anywhere</button>
-    <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🎯 Here</button>
+    <button type="button" class="chip${activeAnywhere}" data-action="surprise" data-mode="anywhere" title="Worldwide random station (R)">🌐 Global Shuffle</button>
+    <button type="button" class="chip${hereMuted}${activeHere}" data-action="surprise" data-mode="here" title="${escapeHtml(hereTitle)}">🔀 Shuffle Selection</button>
     ${again}
   `;
 }
@@ -2552,7 +2564,7 @@ function renderDiscover(): string {
         <button type="button" class="chip chip-auth ${getAuthState().authenticated ? 'active' : ''}" data-action="open-auth-modal" title="Backend Access (Passcode / JWT)">
           ${getAuthState().authenticated ? '🔓 Backend Connected' : '🔑 Passcode / Auth'}
         </button>
-        <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me">${icons.pin} Near me</button>
+        <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me" title="Live stations near your physical location">${icons.pin} Local</button>
         <button type="button" class="chip" data-action="open-map">${icons.map} Map</button>
         ${
           last
@@ -2561,7 +2573,7 @@ function renderDiscover(): string {
         }
         ${installChipHtml()}
       </div>
-      <p class="hero-privacy">Near me sends your coordinates to Radio Browser to rank nearby stations. They are not stored.</p>
+      <p class="hero-privacy">Local radio uses your coordinates to find stations broadcasting nearby. They are not stored.</p>
     </section>
     <div class="section-head">
       <h3>Right now <span class="period-tag">(${escapeHtml(periodLabel)})</span></h3>
@@ -2644,7 +2656,7 @@ function renderCountries(): string {
         <h3>${countryFlag(state.selectedCountry)} ${escapeHtml(name)}</h3>
         <div class="chip-row compact" style="margin:0;">
           <button type="button" class="chip" data-action="back-countries">← Back</button>
-          <button type="button" class="chip random-chip" data-action="random-country" title="Pick another country at random">🎲 Random</button>
+          <button type="button" class="chip random-chip" data-action="random-country" title="Pick another random country on the map">🎲 Random Country</button>
           ${surpriseActionsHtml({ compact: true })}
         </div>
       </div>
@@ -2921,15 +2933,62 @@ function renderPlayerHtml(): string {
         <button type="button" class="btn-icon ${sleepActive ? 'is-active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer" aria-label="Sleep timer" aria-expanded="${sleepMenuOpen}">
           ${icons.moon}
         </button>
-        ${sleepActive && sleepLabel ? `<span class="sleep-badge">${sleepLabel}</span>` : ''}
+        ${sleepActive && sleepLabel ? `<span class="sleep-badge" title="Sleep timer countdown">${sleepLabel}</span>` : ''}
         ${
           sleepMenuOpen
-            ? `<div class="sleep-menu" role="menu">
-                ${SLEEP_OPTIONS.map(
-                  (m) =>
-                    `<button type="button" class="sleep-opt" data-action="sleep" data-min="${m}" role="menuitem">${m} min</button>`
-                ).join('')}
-                ${sleepActive ? `<button type="button" class="sleep-opt" data-action="sleep-cancel" role="menuitem">Cancel</button>` : ''}
+            ? `<div class="sleep-menu ${sleepActive ? 'sleep-menu-active' : ''}" role="dialog" aria-label="Sleep timer">
+                <div class="sleep-menu-header">
+                  <div class="sleep-menu-title">
+                    <span>🌙</span>
+                    <span>${sleepActive ? 'Sleep Timer Active' : 'Sleep Timer'}</span>
+                  </div>
+                  <button type="button" class="sleep-menu-close" data-action="close-sleep-menu" aria-label="Close sleep timer">✕</button>
+                </div>
+                ${
+                  sleepActive
+                    ? `
+                      <div class="sleep-active-box">
+                        <div class="sleep-active-time">${sleepLabel}</div>
+                        <div class="sleep-active-label">until radio stops</div>
+                        <div class="sleep-progress-track" aria-hidden="true">
+                          <div class="sleep-progress-bar" style="width: ${(sleepTimer.progress * 100).toFixed(1)}%"></div>
+                        </div>
+                      </div>
+                      <div class="sleep-subheading">Extend countdown</div>
+                      <div class="sleep-extend-row">
+                        <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="5">+5m</button>
+                        <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="15">+15m</button>
+                        <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="30">+30m</button>
+                      </div>
+                      <div class="sleep-actions-row">
+                        <button type="button" class="sleep-action-btn dim-btn" data-action="toggle-bedside-dim" title="OLED & iPad power saver clock">
+                          🌙 Bedside Dim
+                        </button>
+                        <button type="button" class="sleep-action-btn cancel-btn" data-action="sleep-cancel">
+                          Cancel Timer
+                        </button>
+                      </div>
+                      <div class="sleep-ipad-note">
+                        ⚡ Stream socket and iPad audio hardware power down when timer expires.
+                      </div>
+                    `
+                    : `
+                      <div class="sleep-menu-desc">Fades out and stops playback automatically to save battery while you sleep.</div>
+                      <div class="sleep-grid">
+                        ${SLEEP_OPTIONS.map(
+                          (m) =>
+                            `<button type="button" class="sleep-opt" data-action="sleep" data-min="${m}">${m} min</button>`
+                        ).join('')}
+                      </div>
+                      <form class="sleep-custom-row" data-action="sleep-custom-form">
+                        <input type="number" class="sleep-custom-input" min="1" max="480" placeholder="Custom mins" aria-label="Custom minutes" />
+                        <button type="submit" class="sleep-custom-btn" data-action="sleep-custom-submit">Start</button>
+                      </form>
+                      <div class="sleep-ipad-note">
+                        🔋 iPad Battery Saver: GPU animations pause & network stream closes on timer completion.
+                      </div>
+                    `
+                }
               </div>`
             : ''
         }
@@ -3080,7 +3139,7 @@ function renderNavHtml(): string {
       </div>
       Streams via <a href="https://www.radio-browser.info/" target="_blank" rel="noopener">Radio Browser</a>
       — community-powered, free radio directory.
-      <div class="kbd-hint">Shortcuts: Space play · / search · N/P next · ↑↓ vol · M mute · Esc close</div>
+      <div class="kbd-hint">Shortcuts: Space play · / search · R shuffle · W mystery · N/P next · ↑↓ vol · M mute · Esc close</div>
     </div>
   `;
 }
@@ -4078,17 +4137,52 @@ function ensureAppEvents() {
         sleepMenuOpen = !sleepMenuOpen;
         renderPlayer();
         break;
-      case 'sleep': {
-        const min = Number(t.dataset.min) as SleepMinutes;
-        if (!SLEEP_OPTIONS.includes(min)) return;
-        sleepTimer.start(min);
+      case 'close-sleep-menu':
         sleepMenuOpen = false;
-        showToast(`Sleep timer: ${min} minutes`);
         renderPlayer();
+        break;
+      case 'sleep': {
+        const min = Number(t.dataset.min);
+        if (!min || min <= 0) return;
+        sleepTimer.start(min);
+        syncPowerSaverClass();
+        sleepMenuOpen = false;
+        showToast(`Sleep timer set: ${min} minutes`);
+        renderPlayer();
+        break;
+      }
+      case 'sleep-extend': {
+        const min = Number(t.dataset.min);
+        if (!min || min <= 0) return;
+        sleepTimer.extend(min);
+        syncPowerSaverClass();
+        showToast(`Extended sleep timer by ${min} min`);
+        renderPlayer();
+        break;
+      }
+      case 'toggle-bedside-dim':
+        sleepTimer.toggleDim();
+        sleepMenuOpen = false;
+        renderPlayer();
+        break;
+      case 'sleep-custom-submit': {
+        const form = t.closest('form');
+        const input = form?.querySelector<HTMLInputElement>('.sleep-custom-input');
+        const mins = input ? parseInt(input.value, 10) : 0;
+        if (mins > 0 && mins <= 480) {
+          sleepTimer.start(mins);
+          syncPowerSaverClass();
+          sleepMenuOpen = false;
+          showToast(`Sleep timer set: ${mins} minutes`);
+          renderPlayer();
+        } else {
+          showToast('Please enter a valid duration (1 to 480 minutes)');
+        }
         break;
       }
       case 'sleep-cancel':
         sleepTimer.cancel();
+        syncPowerSaverClass();
         sleepMenuOpen = false;
         showToast('Sleep timer cancelled');
         renderPlayer();
@@ -4467,6 +4561,8 @@ function bindGlobalKeys() {
         } else if (state.detailStation) {
           state.detailStation = null;
           renderDetail();
+        } else if (sleepTimer.isDim) {
+          sleepTimer.toggleDim(false);
         } else if (sleepMenuOpen) {
           sleepMenuOpen = false;
           renderPlayer();
@@ -4535,21 +4631,93 @@ player.onNotice((msg) => {
   showToast(msg, 5500);
 });
 
+function renderBedsideDim(): void {
+  let overlay = document.getElementById('bedside-dim-overlay');
+  if (!sleepTimer.isDim) {
+    if (overlay) overlay.remove();
+    return;
+  }
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'bedside-dim-overlay';
+    overlay.className = 'bedside-dim-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-label', 'Bedside dim mode');
+    overlay.addEventListener('click', () => {
+      sleepTimer.toggleDim(false);
+    });
+    document.body.appendChild(overlay);
+  }
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const sleepLeft = formatSleepRemaining(sleepTimer.remainingMs);
+  const st = state.current;
+  const stName = st ? st.name : 'World Radio';
+
+  overlay.innerHTML = `
+    <div class="bedside-dim-clock">${timeStr}</div>
+    <div class="bedside-dim-timer">
+      <span>🌙</span>
+      <span>${sleepLeft ? `${sleepLeft} left` : 'Timer ended'}</span>
+    </div>
+    <div class="bedside-dim-station">${escapeHtml(stName)}</div>
+    <div class="bedside-dim-hint">Tap anywhere to wake display</div>
+  `;
+}
+
+// Background battery safeguard: check expiry on every decoded audio frame
+player.onTimeUpdate(() => {
+  sleepTimer.checkExpiry();
+});
+
 sleepTimer.setOnFire(() => {
-  const finish = () => {
-    player.pause();
+  void player.sleepStop(2500).then(() => {
     showToast('Sleep timer ended — sweet dreams');
+    syncPowerSaverClass();
     renderPlayer();
-  };
-  if (player.playing) player.fadeOutThen(2000, finish);
-  else finish();
+    renderBedsideDim();
+  });
 });
 
 sleepTimer.subscribe(() => {
+  syncPowerSaverClass();
   const badge = qs('.sleep-badge');
   const label = formatSleepRemaining(sleepTimer.remainingMs);
   if (badge && label) badge.textContent = label;
   else if (sleepTimer.active || badge) renderPlayer();
+  renderBedsideDim();
+});
+
+sleepTimer.subscribeDim(() => {
+  renderBedsideDim();
+});
+
+window.addEventListener('click', (e) => {
+  if (!sleepMenuOpen) return;
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+  if (!target.closest('.sleep-wrap')) {
+    sleepMenuOpen = false;
+    renderPlayer();
+  }
+});
+
+document.addEventListener('submit', (e: SubmitEvent) => {
+  const form = (e.target as HTMLElement | null)?.closest<HTMLFormElement>('form[data-action="sleep-custom-form"]');
+  if (!form) return;
+  e.preventDefault();
+  const input = form.querySelector<HTMLInputElement>('.sleep-custom-input');
+  const mins = input ? parseInt(input.value, 10) : 0;
+  if (mins > 0 && mins <= 480) {
+    sleepTimer.start(mins);
+    syncPowerSaverClass();
+    sleepMenuOpen = false;
+    showToast(`Sleep timer set: ${mins} minutes`);
+    renderPlayer();
+  } else {
+    showToast('Please enter a valid duration (1 to 480 minutes)');
+  }
 });
 
 bindGlobalKeys();

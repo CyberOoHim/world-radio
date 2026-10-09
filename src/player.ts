@@ -79,6 +79,7 @@ class AudioPlayer {
   private visibilityBound = false;
   private unlockBound = false;
   private noticeListeners = new Set<NoticeListener>();
+  private timeUpdateListeners = new Set<() => void>();
   private lastDryNoticeAt = 0;
   private verifyTimer: ReturnType<typeof setTimeout> | null = null;
   private pauseWatchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -258,6 +259,16 @@ class AudioPlayer {
   }
 
   private bindAudioElementEvents() {
+    this.audio.addEventListener('timeupdate', () => {
+      for (const fn of this.timeUpdateListeners) {
+        try {
+          fn();
+        } catch {
+          // ignore
+        }
+      }
+    });
+
     this.audio.addEventListener('playing', () => {
       if (!this.isActiveGeneration()) return;
       this._playing = true;
@@ -659,6 +670,11 @@ class AudioPlayer {
   onNotice(fn: NoticeListener): () => void {
     this.noticeListeners.add(fn);
     return () => this.noticeListeners.delete(fn);
+  }
+
+  onTimeUpdate(fn: () => void): () => void {
+    this.timeUpdateListeners.add(fn);
+    return () => this.timeUpdateListeners.delete(fn);
   }
 
   notifyCustomNotice(message: string) {
@@ -1589,6 +1605,69 @@ class AudioPlayer {
     this._error = null;
     void this.suspendAudioContext();
     this.emit();
+  }
+
+  /**
+   * Gently fade out and tear down all network & audio resources for sleep timer.
+   * On iPad / iOS, removing src and suspending the AudioContext ensures the
+   * system audio daemon and cellular/Wi-Fi radio power down completely while
+   * preserving station metadata in the UI.
+   */
+  sleepStop(fadeMs = 2500): Promise<void> {
+    return new Promise((resolve) => {
+      const teardown = () => {
+        this.userPaused = true;
+        this.playGeneration++;
+        this.mediaGeneration = 0;
+        this.cancelFade();
+        this.clearVerifyTimer();
+        this.clearPauseWatch();
+        this.clearDryReconnect();
+        this._reconnecting = false;
+        this.dryReconnectAttempts = 0;
+
+        try {
+          this.audio.pause();
+        } catch {
+          // ignore
+        }
+        try {
+          this.audio.removeAttribute('src');
+          this.audio.load();
+        } catch {
+          // ignore
+        }
+
+        this.activeStreamUrl = null;
+        this.streamCandidates = [];
+        this.playbackStarted = false;
+        this.triedOriginalFallback = false;
+        this.triedDryFallback = false;
+        this._dryBecauseFxBlocked = false;
+        this._playing = false;
+        this._loading = false;
+        this._error = null;
+
+        void this.suspendAudioContext();
+
+        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+          try {
+            navigator.mediaSession.playbackState = 'none';
+          } catch {
+            // ignore
+          }
+        }
+
+        this.emit();
+        resolve();
+      };
+
+      if (this._playing && fadeMs > 0) {
+        this.fadeOutThen(fadeMs, teardown);
+      } else {
+        teardown();
+      }
+    });
   }
 
   resetDefaults() {

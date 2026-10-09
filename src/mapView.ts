@@ -284,8 +284,8 @@ export function setMapWanderBusy(busy: boolean): void {
   const btn = wanderBtn();
   if (!btn) return;
   btn.disabled = busy;
-  btn.textContent = busy ? 'Tuning…' : '🧭 Wander';
-  btn.title = busy ? 'Finding a station somewhere else' : 'Hop to a live station somewhere else (W)';
+  btn.textContent = busy ? 'Tuning…' : '🧭 Mystery Station';
+  btn.title = busy ? 'Tuning into a mystery station…' : 'Blind listening — destination revealed after 20s (W)';
 }
 
 export function isMapBlind(): boolean {
@@ -837,9 +837,9 @@ function shellHtml(): string {
       <strong>Offline.</strong> ${escapeHtml(OFFLINE_MAP_ALERT)}
     </div>
     <div class="map-toolbar">
-      <button type="button" class="chip" data-action="map-random" title="Hop to a random live station anywhere on the map (R)">🎲 Random station</button>
-      <button type="button" class="chip" data-action="map-wander" title="Hop to a live station somewhere else (W)">🧭 Wander</button>
-      <button type="button" class="chip" data-action="map-locate" title="Center the map on your location">📍 Near me</button>
+      <button type="button" class="chip" data-action="map-random" title="Worldwide random station (R)">🌐 Global Shuffle</button>
+      <button type="button" class="chip" data-action="map-wander" title="Blind listening — destination revealed after 20s (W)">🧭 Mystery Station</button>
+      <button type="button" class="chip" data-action="map-locate" title="Center the map on live stations near you">📍 Local</button>
       <button type="button" class="chip map-auth-chip" data-action="open-auth-modal" title="Backend Access Passcode &amp; JWT">🔑 Passcode</button>
       <button type="button" class="chip" data-action="map-now-playing" title="Nothing is playing" disabled>▶ Now playing</button>
       <button type="button" class="chip" data-action="map-passport" title="Passport — listen to stamp countries">✦ 0</button>

@@ -54,7 +54,7 @@ export type ViewId =
 
 export type SortId = 'clickcount' | 'votes' | 'name' | 'bitrate' | 'clicktrend' | 'random';
 
-export type SleepMinutes = 15 | 30 | 45 | 60 | 90;
+export type SleepMinutes = 15 | 30 | 45 | 60 | 90 | 120 | number;
 
 /** Discover "Right now" period: follow clock, or a fixed bucket. */
 export type TimeOfDayPeriod = 'morning' | 'day' | 'evening' | 'night';
