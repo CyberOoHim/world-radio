@@ -92,6 +92,12 @@ import { isAppleTouchDevice, player } from './player';
 import { mapShareUrl, parseHash, setHash, stationShareUrl } from './router';
 import { formatSleepRemaining, sleepTimer } from './sleepTimer';
 import {
+  closeSleepModal,
+  isSleepModalOpen,
+  renderSleepModal,
+  toggleSleepModal,
+} from './sleepModal';
+import {
   clearAllStorage,
   exportFavoritesJson,
   importFavoritesJson,
@@ -118,7 +124,6 @@ import type {
   AppState,
   Country,
   PowerSaverMode,
-  SleepMinutes,
   SortId,
   Station,
   SurpriseMode,
@@ -128,7 +133,6 @@ import type {
 } from './types';
 
 const PAGE = 48;
-const SLEEP_OPTIONS: SleepMinutes[] = [15, 30, 45, 60, 90, 120];
 const SORT_OPTIONS: { id: SortId; label: string }[] = [
   { id: 'clickcount', label: 'Popular' },
   { id: 'clicktrend', label: 'Trending' },
@@ -2860,65 +2864,6 @@ function renderMainHtml(): string {
   }
 }
 
-function renderSleepMenuHtml(sleepActive: boolean, sleepLabel: string): string {
-  return `
-    <div class="sleep-menu ${sleepActive ? 'sleep-menu-active' : ''}" role="dialog" aria-label="Sleep timer">
-      <div class="sleep-menu-header">
-        <div class="sleep-menu-title">
-          <span>🌙</span>
-          <span>${sleepActive ? 'Sleep Timer Active' : 'Sleep Timer'}</span>
-        </div>
-        <button type="button" class="sleep-menu-close" data-action="close-sleep-menu" aria-label="Close sleep timer">✕</button>
-      </div>
-      ${
-        sleepActive
-          ? `
-            <div class="sleep-active-box">
-              <div class="sleep-active-time">${sleepLabel}</div>
-              <div class="sleep-active-label">until radio stops</div>
-              <div class="sleep-progress-track" aria-hidden="true">
-                <div class="sleep-progress-bar" style="width: ${(sleepTimer.progress * 100).toFixed(1)}%"></div>
-              </div>
-            </div>
-            <div class="sleep-subheading">Extend countdown</div>
-            <div class="sleep-extend-row">
-              <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="5">+5m</button>
-              <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="15">+15m</button>
-              <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="30">+30m</button>
-            </div>
-            <div class="sleep-actions-row">
-              <button type="button" class="sleep-action-btn dim-btn" data-action="toggle-bedside-dim" title="OLED & iPad power saver clock">
-                🌙 Bedside Dim
-              </button>
-              <button type="button" class="sleep-action-btn cancel-btn" data-action="sleep-cancel">
-                Cancel Timer
-              </button>
-            </div>
-            <div class="sleep-ipad-note">
-              ⚡ Stream socket and iPad audio hardware power down when timer expires.
-            </div>
-          `
-          : `
-            <div class="sleep-menu-desc">Fades out and stops playback automatically to save battery while you sleep.</div>
-            <div class="sleep-grid">
-              ${SLEEP_OPTIONS.map(
-                (m) =>
-                  `<button type="button" class="sleep-opt" data-action="sleep" data-min="${m}">${m} min</button>`
-              ).join('')}
-            </div>
-            <form class="sleep-custom-row" data-action="sleep-custom-form">
-              <input type="number" class="sleep-custom-input" min="1" max="480" placeholder="Custom mins" aria-label="Custom minutes" />
-              <button type="submit" class="sleep-custom-btn" data-action="sleep-custom-submit">Start</button>
-            </form>
-            <div class="sleep-ipad-note">
-              🔋 iPad Battery Saver: GPU animations pause & network stream closes on timer completion.
-            </div>
-          `
-      }
-    </div>
-  `;
-}
-
 function renderPlayerHtml(): string {
   const s = state.current;
   const sleepLabel = formatSleepRemaining(sleepTimer.remainingMs);
@@ -2933,10 +2878,9 @@ function renderPlayerHtml(): string {
           <button type="button" class="chip" data-action="tag" data-tag="ambient">🌙 Ambient</button>
           ${surpriseActionsHtml({ compact: true })}
           <div class="sleep-wrap">
-            <button type="button" class="chip ${sleepActive ? 'active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer" aria-expanded="${sleepMenuOpen}">
+            <button type="button" class="chip ${sleepActive ? 'active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer" aria-expanded="${isSleepModalOpen()}">
               🌙 ${sleepActive && sleepLabel ? `Timer: ${sleepLabel}` : 'Sleep timer'}
             </button>
-            ${sleepMenuOpen ? renderSleepMenuHtml(sleepActive, sleepLabel) : ''}
           </div>
           <button type="button" class="chip ${state.httpsOnly ? 'active' : ''}" data-action="toggle-https-chip" title="Prefer HTTPS streams">${state.httpsOnly ? '🔒 HTTPS on' : '🔓 HTTPS off'}</button>
           ${
@@ -3002,11 +2946,10 @@ function renderPlayerHtml(): string {
         ${icons.share}
       </button>
       <div class="sleep-wrap">
-        <button type="button" class="btn-icon ${sleepActive ? 'is-active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer" aria-label="Sleep timer" aria-expanded="${sleepMenuOpen}">
+        <button type="button" class="btn-icon ${sleepActive ? 'is-active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer" aria-label="Sleep timer" aria-expanded="${isSleepModalOpen()}">
           ${icons.moon}
         </button>
         ${sleepActive && sleepLabel ? `<span class="sleep-badge" title="Sleep timer countdown">${sleepLabel}</span>` : ''}
-        ${sleepMenuOpen ? renderSleepMenuHtml(sleepActive, sleepLabel) : ''}
       </div>
       <button type="button" class="btn-icon ${player.fxEnabled || player.eqEnabled ? 'is-active fx-active-btn' : ''}" data-action="toggle-fx-modal" title="Audio FX & Equalizer" aria-label="Audio FX & Equalizer">
         🎛️
@@ -3193,7 +3136,7 @@ function ensureShell() {
         </div>
         <div class="topbar-actions">
           <div class="stats-pill"><strong>—</strong> online</div>
-          <button type="button" class="btn-topbar-sleep" data-action="toggle-sleep-menu" title="Sleep timer" aria-label="Sleep timer">
+          <button type="button" class="btn-topbar-sleep" data-action="toggle-sleep-menu" title="Sleep timer" aria-label="Sleep timer" aria-haspopup="dialog" aria-expanded="false">
             <span>🌙</span>
             <span class="topbar-sleep-label">Sleep</span>
           </button>
@@ -3212,6 +3155,7 @@ function ensureShell() {
     <div class="fx-modal-root"></div>
     <div class="confirm-modal-root"></div>
     <div class="auth-modal-root"></div>
+    <div class="sleep-modal-root"></div>
     <div class="toast-root" aria-live="polite"></div>
   `;
   shellBuilt = true;
@@ -3248,6 +3192,7 @@ function renderTopbar() {
       <span class="topbar-sleep-label">${sleepActive && sleepLabel ? sleepLabel : 'Sleep'}</span>
     `;
     sleepBtn.title = sleepActive ? `Sleep timer: ${sleepLabel} remaining` : 'Sleep timer';
+    sleepBtn.setAttribute('aria-expanded', String(isSleepModalOpen()));
   }
   const auth = getAuthState();
   const authBtn = qs<HTMLButtonElement>('.auth-status-btn');
@@ -4164,11 +4109,17 @@ function ensureAppEvents() {
         renderNav();
         break;
       case 'toggle-sleep-menu':
-        sleepMenuOpen = !sleepMenuOpen;
+      case 'open-sleep-modal':
+        toggleSleepModal();
+        sleepMenuOpen = isSleepModalOpen();
+        renderTopbar();
         renderPlayer();
         break;
       case 'close-sleep-menu':
+      case 'close-sleep-modal':
+        closeSleepModal();
         sleepMenuOpen = false;
+        renderTopbar();
         renderPlayer();
         break;
       case 'sleep': {
@@ -4176,8 +4127,10 @@ function ensureAppEvents() {
         if (!min || min <= 0) return;
         sleepTimer.start(min);
         syncPowerSaverClass();
+        closeSleepModal();
         sleepMenuOpen = false;
         showToast(`Sleep timer set: ${min} minutes`);
+        renderTopbar();
         renderPlayer();
         break;
       }
@@ -4186,13 +4139,17 @@ function ensureAppEvents() {
         if (!min || min <= 0) return;
         sleepTimer.extend(min);
         syncPowerSaverClass();
-        showToast(`Extended sleep timer by ${min} min`);
+        renderSleepModal();
+        renderTopbar();
         renderPlayer();
+        showToast(`Extended sleep timer by ${min} min`);
         break;
       }
       case 'toggle-bedside-dim':
         sleepTimer.toggleDim();
+        closeSleepModal();
         sleepMenuOpen = false;
+        renderTopbar();
         renderPlayer();
         break;
       case 'sleep-custom-submit': {
@@ -4202,8 +4159,10 @@ function ensureAppEvents() {
         if (mins > 0 && mins <= 480) {
           sleepTimer.start(mins);
           syncPowerSaverClass();
+          closeSleepModal();
           sleepMenuOpen = false;
           showToast(`Sleep timer set: ${mins} minutes`);
+          renderTopbar();
           renderPlayer();
         } else {
           showToast('Please enter a valid duration (1 to 480 minutes)');
@@ -4213,9 +4172,10 @@ function ensureAppEvents() {
       case 'sleep-cancel':
         sleepTimer.cancel();
         syncPowerSaverClass();
-        sleepMenuOpen = false;
-        showToast('Sleep timer cancelled');
+        renderSleepModal();
+        renderTopbar();
         renderPlayer();
+        showToast('Sleep timer cancelled');
         break;
       case 'export-favs': {
         const blob = new Blob([exportFavoritesJson(state.favorites)], {
@@ -4593,8 +4553,10 @@ function bindGlobalKeys() {
           renderDetail();
         } else if (sleepTimer.isDim) {
           sleepTimer.toggleDim(false);
-        } else if (sleepMenuOpen) {
+        } else if (isSleepModalOpen() || sleepMenuOpen) {
+          closeSleepModal();
           sleepMenuOpen = false;
+          renderTopbar();
           renderPlayer();
         } else if (navOpen) {
           navOpen = false;
@@ -4718,21 +4680,14 @@ sleepTimer.subscribe(() => {
   const label = formatSleepRemaining(sleepTimer.remainingMs);
   if (badge && label) badge.textContent = label;
   else if (sleepTimer.active || badge) renderPlayer();
+  if (isSleepModalOpen()) {
+    renderSleepModal();
+  }
   renderBedsideDim();
 });
 
 sleepTimer.subscribeDim(() => {
   renderBedsideDim();
-});
-
-window.addEventListener('click', (e) => {
-  if (!sleepMenuOpen) return;
-  const target = e.target as HTMLElement | null;
-  if (!target) return;
-  if (!target.closest('.sleep-wrap')) {
-    sleepMenuOpen = false;
-    renderPlayer();
-  }
 });
 
 document.addEventListener('submit', (e: SubmitEvent) => {
@@ -4744,8 +4699,10 @@ document.addEventListener('submit', (e: SubmitEvent) => {
   if (mins > 0 && mins <= 480) {
     sleepTimer.start(mins);
     syncPowerSaverClass();
+    closeSleepModal();
     sleepMenuOpen = false;
     showToast(`Sleep timer set: ${mins} minutes`);
+    renderTopbar();
     renderPlayer();
   } else {
     showToast('Please enter a valid duration (1 to 480 minutes)');

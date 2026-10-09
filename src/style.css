@@ -1987,6 +1987,138 @@ html.sleep-timer-active .radar-ring {
   animation: none !important;
 }
 
+/* Sleep Timer Modal */
+.sleep-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 16, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 120;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.sleep-modal-container {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 121;
+  padding: 16px;
+  pointer-events: none;
+}
+
+.sleep-modal-card {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 440px;
+  background: linear-gradient(175deg, #131d33 0%, #0a0f1d 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 20px;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 35px rgba(45, 212, 191, 0.12);
+  overflow: hidden;
+  animation: modalPop 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sleep-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sleep-modal-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sleep-modal-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.sleep-modal-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.2;
+}
+
+.sleep-modal-subtitle {
+  font-size: 0.76rem;
+  color: var(--text-soft);
+  margin-top: 2px;
+}
+
+.sleep-modal-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(45, 212, 191, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  margin-left: 4px;
+}
+
+.sleep-modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.sleep-modal-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.sleep-modal-body {
+  padding: 20px 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sleep-modal-desc {
+  font-size: 0.85rem;
+  color: var(--text-soft);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.sleep-section-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.sleep-action-btn.dim-btn-full {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
 /* Bedside / Nightstand Dim Overlay */
 .bedside-dim-overlay {
   position: fixed;
@@ -2330,6 +2462,13 @@ body.fx-modal-open {
 
   .stats-pill {
     display: none;
+  }
+
+  .btn-topbar-sleep {
+    display: inline-flex !important;
+    padding: 5px 10px;
+    font-size: 0.75rem;
+    flex-shrink: 0;
   }
 
   .auth-status-btn {
