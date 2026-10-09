@@ -124,6 +124,8 @@ describe('map viewport helpers', () => {
       (globalThis as any).document = {
         documentElement: { style: {} },
         createElement: () => ({ style: {}, appendChild: () => {} }),
+        querySelector: () => null,
+        querySelectorAll: () => [],
       };
       (globalThis as any).screen = { deviceXDPI: 96, logicalXDPI: 96 };
     }
@@ -159,5 +161,25 @@ describe('map viewport helpers', () => {
 
     // Clean up
     highlightMapStation(null);
+  });
+
+  it('assigns coordinates and supports popup for country-fallback stations', async () => {
+    const { flyToNowPlaying, popupHtml } = await import('./mapView');
+    const stationWithoutGeo = {
+      stationuuid: 'test-uuid-no-geo',
+      name: 'Radio France Info',
+      country: 'France',
+      countrycode: 'FR',
+      geo_lat: null,
+      geo_long: null,
+    } as any;
+
+    const handled = flyToNowPlaying(stationWithoutGeo, false);
+    expect(handled).toBe(true);
+    expect(stationWithoutGeo.geo_lat).toBeCloseTo(46.23);
+    expect(stationWithoutGeo.geo_long).toBeCloseTo(2.21);
+    const html = popupHtml(stationWithoutGeo);
+    expect(html).toContain('Radio France Info');
+    expect(html).toContain('France');
   });
 });

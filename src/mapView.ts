@@ -503,10 +503,14 @@ export function gotoMapStamp(stamp: {
 }
 
 function openPendingPopup(clear: boolean) {
-  if (!pendingPopupId) return;
-  const marker = markerById.get(pendingPopupId);
+  const targetId = pendingPopupId || currentSelectedStation?.stationuuid;
+  if (!targetId) return;
+  const marker = markerById.get(targetId);
   if (!marker) return;
-  const found = lastStations.find((s) => s.stationuuid === pendingPopupId);
+  const found =
+    lastStations.find((s) => s.stationuuid === targetId) ||
+    (hudStation?.stationuuid === targetId ? hudStation : null) ||
+    (currentSelectedStation?.stationuuid === targetId ? currentSelectedStation : null);
   if (found) {
     currentSelectedStation = found;
     marker.setPopupContent(popupHtml(found));
@@ -736,6 +740,9 @@ async function loadViewportStations() {
     if (hudStation && stationHasGeo(hudStation) && !geo.some((s) => s.stationuuid === hudStation?.stationuuid)) {
       geo.push(hudStation);
     }
+    if (currentSelectedStation && stationHasGeo(currentSelectedStation) && !geo.some((s) => s.stationuuid === currentSelectedStation?.stationuuid)) {
+      geo.push(currentSelectedStation);
+    }
     lastStations = geo;
     setMarkers(geo);
     handlers.onStations(geo);
@@ -949,6 +956,7 @@ export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM, animate 
     pendingView = { center: [lat, lon], zoom };
     return;
   }
+  map.invalidateSize();
   const reduceMotion =
     typeof window !== 'undefined' &&
     window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
@@ -964,54 +972,55 @@ export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM, animate 
 export function flyToNowPlaying(station: Station, animate = true): boolean {
   const target = resolveStationMapTarget(station);
   if (!target) return false;
+  if (!stationHasGeo(station)) {
+    station.geo_lat = target.lat;
+    station.geo_long = target.lon;
+  }
   hudStation = station;
   syncMapNowPlaying(station);
   syncMapHud(station);
   highlightMapStation(station.stationuuid);
-  if (target.kind === 'station' && stationHasGeo(station)) {
-    pendingPopupId = station.stationuuid;
-    currentSelectedStation = station;
-    if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
-      lastStations = [...lastStations, station];
-    }
-    if (markersLayer) {
-      let marker = markerById.get(station.stationuuid);
-      if (!marker) {
-        marker = L.marker([station.geo_lat, station.geo_long], {
-          icon: pinIcon(station, true),
-          title: station.name,
-          keyboard: true,
-        });
-        bindMarkerPopup(marker, station);
-        marker.addTo(markersLayer);
-        markerById.set(station.stationuuid, marker);
-      } else {
-        marker.setPopupContent(popupHtml(station));
-        marker.setIcon(pinIcon(station, true));
-      }
-    }
-    const currentCenter = map?.getCenter();
-    const currentZoom = map?.getZoom();
-    const isSamePos = Boolean(
-      currentCenter &&
-      currentZoom != null &&
-      Math.abs(currentCenter.lat - target.lat) < 0.0001 &&
-      Math.abs(currentCenter.lng - target.lon) < 0.0001 &&
-      currentZoom === target.zoom
-    );
-
-    flyToMap(target.lat, target.lon, target.zoom, animate);
-    if (map && animate && !isSamePos) {
-      map.once('moveend', () => {
-        openPendingPopup(false);
-      });
-    } else {
-      openPendingPopup(false);
-    }
-    return true;
+  pendingPopupId = station.stationuuid;
+  currentSelectedStation = station;
+  if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
+    lastStations = [...lastStations, station];
   }
-  pendingPopupId = null;
+  const lat = station.geo_lat ?? target.lat;
+  const lon = station.geo_long ?? target.lon;
+  if (markersLayer) {
+    let marker = markerById.get(station.stationuuid);
+    if (!marker) {
+      marker = L.marker([lat, lon], {
+        icon: pinIcon(station, true),
+        title: station.name,
+        keyboard: true,
+      });
+      bindMarkerPopup(marker, station);
+      marker.addTo(markersLayer);
+      markerById.set(station.stationuuid, marker);
+    } else {
+      marker.setPopupContent(popupHtml(station));
+      marker.setIcon(pinIcon(station, true));
+    }
+  }
+  const currentCenter = map?.getCenter();
+  const currentZoom = map?.getZoom();
+  const isSamePos = Boolean(
+    currentCenter &&
+    currentZoom != null &&
+    Math.abs(currentCenter.lat - target.lat) < 0.0001 &&
+    Math.abs(currentCenter.lng - target.lon) < 0.0001 &&
+    currentZoom === target.zoom
+  );
+
   flyToMap(target.lat, target.lon, target.zoom, animate);
+  if (map && animate && !isSamePos) {
+    map.once('moveend', () => {
+      openPendingPopup(false);
+    });
+  } else {
+    openPendingPopup(false);
+  }
   return true;
 }
 

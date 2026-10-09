@@ -941,13 +941,46 @@ function getSurpriseContext(): SurpriseContext {
 async function fetchSurprisePoolAnywhere(excludeId: string | null): Promise<Station[]> {
   const soft = surpriseHttpsFilter();
 
-  // Fast path: single random batch (most common success case).
+  // Fast path: random batch with geo coordinates so the map can fly directly to the station pin
   try {
-    const list = await withTimeout(getRandomStations(SURPRISE_BATCH, soft), SURPRISE_POOL_TIMEOUT_MS);
+    const list = await withTimeout(
+      getRandomStations(SURPRISE_BATCH, { ...soft, has_geo_info: true }),
+      SURPRISE_POOL_TIMEOUT_MS
+    );
     const pool = collectSurprisePool([list], excludeId);
     if (pool.length >= 3) return pool;
     if (pool.length) {
-      // Keep partial; still try to top up once.
+      try {
+        const offset = Math.floor(Math.random() * 400);
+        const more = await withTimeout(
+          searchStations({
+            ...soft,
+            has_geo_info: true,
+            limit: SURPRISE_BATCH,
+            offset,
+            order: 'clickcount',
+            reverse: true,
+          }),
+          SURPRISE_POOL_TIMEOUT_MS
+        );
+        return collectSurprisePool([list, more], excludeId);
+      } catch {
+        return pool;
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // Fallback: general random stations (if geo filter returned fewer than 3)
+  try {
+    const fallbackList = await withTimeout(
+      getRandomStations(SURPRISE_BATCH, soft),
+      SURPRISE_POOL_TIMEOUT_MS
+    );
+    const pool = collectSurprisePool([fallbackList], excludeId);
+    if (pool.length >= 3) return pool;
+    if (pool.length) {
       try {
         const offset = Math.floor(Math.random() * 400);
         const more = await withTimeout(
@@ -960,7 +993,7 @@ async function fetchSurprisePoolAnywhere(excludeId: string | null): Promise<Stat
           }),
           SURPRISE_POOL_TIMEOUT_MS
         );
-        return collectSurprisePool([list, more], excludeId);
+        return collectSurprisePool([fallbackList, more], excludeId);
       } catch {
         return pool;
       }
@@ -1126,6 +1159,10 @@ async function runSurpriseAttempts(
     updatePlaybackUI();
     announce(`Trying ${station.name}`);
 
+    if (state.view === 'map') {
+      void flyToUnderplayedStation({ animate: true });
+    }
+
     // play() includes resolveStream + audio.play timeouts; leave a little headroom for waitForOutcome.
     const remaining = Math.max(2_000, deadlineMs - Date.now());
     const attemptBudget = Math.min(SURPRISE_PLAY_TIMEOUT_MS + 5_000, remaining);
@@ -1143,7 +1180,7 @@ async function runSurpriseAttempts(
     if (player.playing && player.station?.stationuuid === station.stationuuid) {
       pushRecent(station);
       saveLastStation(station);
-      if (!applyingRoute) {
+      if (!applyingRoute && state.view !== 'map') {
         setHash({ kind: 'station', uuid: station.stationuuid });
       }
       syncMediaSession();
@@ -1152,6 +1189,9 @@ async function runSurpriseAttempts(
       const short =
         station.name.slice(0, 40) + (station.name.length > 40 ? '…' : '');
       showToast(`Surprise (${scopeLabel}): ${short}`, 3200);
+      if (state.view === 'map') {
+        void flyToUnderplayedStation({ animate: true });
+      }
       return 'played';
     }
 
@@ -1166,7 +1206,7 @@ async function runSurpriseAttempts(
     if (outcome === 'playing') {
       pushRecent(station);
       saveLastStation(station);
-      if (!applyingRoute) {
+      if (!applyingRoute && state.view !== 'map') {
         setHash({ kind: 'station', uuid: station.stationuuid });
       }
       syncMediaSession();
@@ -1175,16 +1215,22 @@ async function runSurpriseAttempts(
       const short =
         station.name.slice(0, 40) + (station.name.length > 40 ? '…' : '');
       showToast(`Surprise (${scopeLabel}): ${short}`, 3200);
+      if (state.view === 'map') {
+        void flyToUnderplayedStation({ animate: true });
+      }
       return 'played';
     }
 
     if (player.error?.includes('Click play')) {
       pushRecent(station);
       saveLastStation(station);
-      if (!applyingRoute) {
+      if (!applyingRoute && state.view !== 'map') {
         setHash({ kind: 'station', uuid: station.stationuuid });
       }
       showToast('Tap play to start the surprise station');
+      if (state.view === 'map') {
+        void flyToUnderplayedStation({ animate: true });
+      }
       return 'blocked';
     }
   }
@@ -1226,8 +1272,12 @@ async function playSurprise(mode: SurpriseMode = 'anywhere', overrideCtx?: Surpr
 
   const seq = ++surpriseSeq;
   surpriseBusy = true;
-  state.surpriseMode = mode;
   if (!overrideCtx?.near) state.nearMe = false;
+
+  if (mode === 'anywhere' && state.view !== 'map') {
+    setView('map');
+  }
+  state.surpriseMode = mode;
   renderMain();
 
   const previous = state.current;
@@ -3096,13 +3146,15 @@ function renderMain() {
     document.body.classList.add('map-view');
     ensureMapMounted();
     const playingStation = state.current ?? player.station;
-    showMapView(enteredMap && playingStation && !isMapBlind() ? { station: playingStation } : undefined);
+    const shouldSnapStation =
+      enteredMap && playingStation && !isMapBlind() && state.surpriseMode !== 'anywhere';
+    showMapView(shouldSnapStation ? { station: playingStation } : undefined);
     highlightMapStation(playingStation?.stationuuid ?? null);
     syncMapNowPlaying(playingStation);
     syncMapHud(playingStation);
     syncMapPassport(passportStamps);
 
-    if (enteredMap && playingStation && !isMapBlind()) {
+    if (shouldSnapStation) {
       void flyToUnderplayedStation({ animate: false });
     }
     return;
@@ -3628,7 +3680,7 @@ function ensureAppEvents() {
         state.detailStation = null;
         renderDetail();
         setView('map');
-        flyToMap(station.geo_lat, station.geo_long, 10);
+        flyToNowPlaying(station, true);
         break;
       }
       case 'fav': {
