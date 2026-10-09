@@ -620,6 +620,79 @@ html.power-saver-active .ambient::after {
   font-variant-numeric: tabular-nums;
 }
 
+.btn-topbar-sleep {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(16, 25, 46, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  white-space: nowrap;
+  backdrop-filter: blur(12px);
+}
+
+.btn-topbar-sleep:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.btn-topbar-sleep.is-active {
+  background: rgba(45, 212, 191, 0.15);
+  border-color: rgba(45, 212, 191, 0.35);
+  color: var(--accent);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.2);
+}
+
+.topbar-sleep-label {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.sidebar-sleep-row {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-sleep-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.sidebar-sleep-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.sidebar-sleep-btn.is-active {
+  background: rgba(45, 212, 191, 0.12);
+  border-color: rgba(45, 212, 191, 0.3);
+  color: var(--accent);
+}
+
+.sidebar-sleep-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .content {
   flex: 1;
   overflow-y: auto;

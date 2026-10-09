@@ -2428,6 +2428,12 @@ function filterBar(): string {
             <option value="off" ${state.powerSaver === 'off' ? 'selected' : ''}>Off</option>
           </select>
         </label>
+        <div class="sidebar-sleep-row">
+          <button type="button" class="sidebar-sleep-btn ${sleepTimer.active ? 'is-active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer">
+            <span>🌙 Sleep timer</span>
+            <span class="sidebar-sleep-badge">${sleepTimer.active ? formatSleepRemaining(sleepTimer.remainingMs) : 'Set timer'}</span>
+          </button>
+        </div>
       </div>
     </div>
   `;
@@ -2854,8 +2860,70 @@ function renderMainHtml(): string {
   }
 }
 
+function renderSleepMenuHtml(sleepActive: boolean, sleepLabel: string): string {
+  return `
+    <div class="sleep-menu ${sleepActive ? 'sleep-menu-active' : ''}" role="dialog" aria-label="Sleep timer">
+      <div class="sleep-menu-header">
+        <div class="sleep-menu-title">
+          <span>🌙</span>
+          <span>${sleepActive ? 'Sleep Timer Active' : 'Sleep Timer'}</span>
+        </div>
+        <button type="button" class="sleep-menu-close" data-action="close-sleep-menu" aria-label="Close sleep timer">✕</button>
+      </div>
+      ${
+        sleepActive
+          ? `
+            <div class="sleep-active-box">
+              <div class="sleep-active-time">${sleepLabel}</div>
+              <div class="sleep-active-label">until radio stops</div>
+              <div class="sleep-progress-track" aria-hidden="true">
+                <div class="sleep-progress-bar" style="width: ${(sleepTimer.progress * 100).toFixed(1)}%"></div>
+              </div>
+            </div>
+            <div class="sleep-subheading">Extend countdown</div>
+            <div class="sleep-extend-row">
+              <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="5">+5m</button>
+              <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="15">+15m</button>
+              <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="30">+30m</button>
+            </div>
+            <div class="sleep-actions-row">
+              <button type="button" class="sleep-action-btn dim-btn" data-action="toggle-bedside-dim" title="OLED & iPad power saver clock">
+                🌙 Bedside Dim
+              </button>
+              <button type="button" class="sleep-action-btn cancel-btn" data-action="sleep-cancel">
+                Cancel Timer
+              </button>
+            </div>
+            <div class="sleep-ipad-note">
+              ⚡ Stream socket and iPad audio hardware power down when timer expires.
+            </div>
+          `
+          : `
+            <div class="sleep-menu-desc">Fades out and stops playback automatically to save battery while you sleep.</div>
+            <div class="sleep-grid">
+              ${SLEEP_OPTIONS.map(
+                (m) =>
+                  `<button type="button" class="sleep-opt" data-action="sleep" data-min="${m}">${m} min</button>`
+              ).join('')}
+            </div>
+            <form class="sleep-custom-row" data-action="sleep-custom-form">
+              <input type="number" class="sleep-custom-input" min="1" max="480" placeholder="Custom mins" aria-label="Custom minutes" />
+              <button type="submit" class="sleep-custom-btn" data-action="sleep-custom-submit">Start</button>
+            </form>
+            <div class="sleep-ipad-note">
+              🔋 iPad Battery Saver: GPU animations pause & network stream closes on timer completion.
+            </div>
+          `
+      }
+    </div>
+  `;
+}
+
 function renderPlayerHtml(): string {
   const s = state.current;
+  const sleepLabel = formatSleepRemaining(sleepTimer.remainingMs);
+  const sleepActive = sleepTimer.active;
+
   if (!s) {
     return `
       <div class="player-idle">
@@ -2864,6 +2932,12 @@ function renderPlayerHtml(): string {
           <button type="button" class="chip" data-action="tag" data-tag="jazz">🎷 Jazz</button>
           <button type="button" class="chip" data-action="tag" data-tag="ambient">🌙 Ambient</button>
           ${surpriseActionsHtml({ compact: true })}
+          <div class="sleep-wrap">
+            <button type="button" class="chip ${sleepActive ? 'active' : ''}" data-action="toggle-sleep-menu" title="Sleep timer" aria-expanded="${sleepMenuOpen}">
+              🌙 ${sleepActive && sleepLabel ? `Timer: ${sleepLabel}` : 'Sleep timer'}
+            </button>
+            ${sleepMenuOpen ? renderSleepMenuHtml(sleepActive, sleepLabel) : ''}
+          </div>
           <button type="button" class="chip ${state.httpsOnly ? 'active' : ''}" data-action="toggle-https-chip" title="Prefer HTTPS streams">${state.httpsOnly ? '🔒 HTTPS on' : '🔓 HTTPS off'}</button>
           ${
             state.languageFilter
@@ -2879,8 +2953,6 @@ function renderPlayerHtml(): string {
   const err = player.error;
   const hydrated = player.station?.stationuuid === s.stationuuid;
   const country = s.country || s.countrycode || '';
-  const sleepLabel = formatSleepRemaining(sleepTimer.remainingMs);
-  const sleepActive = sleepTimer.active;
   const nowLabel = player.reconnecting
     ? `Reconnecting to ${s.name.slice(0, 28)}${s.name.length > 28 ? '…' : ''}…`
     : loading
@@ -2934,64 +3006,7 @@ function renderPlayerHtml(): string {
           ${icons.moon}
         </button>
         ${sleepActive && sleepLabel ? `<span class="sleep-badge" title="Sleep timer countdown">${sleepLabel}</span>` : ''}
-        ${
-          sleepMenuOpen
-            ? `<div class="sleep-menu ${sleepActive ? 'sleep-menu-active' : ''}" role="dialog" aria-label="Sleep timer">
-                <div class="sleep-menu-header">
-                  <div class="sleep-menu-title">
-                    <span>🌙</span>
-                    <span>${sleepActive ? 'Sleep Timer Active' : 'Sleep Timer'}</span>
-                  </div>
-                  <button type="button" class="sleep-menu-close" data-action="close-sleep-menu" aria-label="Close sleep timer">✕</button>
-                </div>
-                ${
-                  sleepActive
-                    ? `
-                      <div class="sleep-active-box">
-                        <div class="sleep-active-time">${sleepLabel}</div>
-                        <div class="sleep-active-label">until radio stops</div>
-                        <div class="sleep-progress-track" aria-hidden="true">
-                          <div class="sleep-progress-bar" style="width: ${(sleepTimer.progress * 100).toFixed(1)}%"></div>
-                        </div>
-                      </div>
-                      <div class="sleep-subheading">Extend countdown</div>
-                      <div class="sleep-extend-row">
-                        <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="5">+5m</button>
-                        <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="15">+15m</button>
-                        <button type="button" class="sleep-extend-btn" data-action="sleep-extend" data-min="30">+30m</button>
-                      </div>
-                      <div class="sleep-actions-row">
-                        <button type="button" class="sleep-action-btn dim-btn" data-action="toggle-bedside-dim" title="OLED & iPad power saver clock">
-                          🌙 Bedside Dim
-                        </button>
-                        <button type="button" class="sleep-action-btn cancel-btn" data-action="sleep-cancel">
-                          Cancel Timer
-                        </button>
-                      </div>
-                      <div class="sleep-ipad-note">
-                        ⚡ Stream socket and iPad audio hardware power down when timer expires.
-                      </div>
-                    `
-                    : `
-                      <div class="sleep-menu-desc">Fades out and stops playback automatically to save battery while you sleep.</div>
-                      <div class="sleep-grid">
-                        ${SLEEP_OPTIONS.map(
-                          (m) =>
-                            `<button type="button" class="sleep-opt" data-action="sleep" data-min="${m}">${m} min</button>`
-                        ).join('')}
-                      </div>
-                      <form class="sleep-custom-row" data-action="sleep-custom-form">
-                        <input type="number" class="sleep-custom-input" min="1" max="480" placeholder="Custom mins" aria-label="Custom minutes" />
-                        <button type="submit" class="sleep-custom-btn" data-action="sleep-custom-submit">Start</button>
-                      </form>
-                      <div class="sleep-ipad-note">
-                        🔋 iPad Battery Saver: GPU animations pause & network stream closes on timer completion.
-                      </div>
-                    `
-                }
-              </div>`
-            : ''
-        }
+        ${sleepMenuOpen ? renderSleepMenuHtml(sleepActive, sleepLabel) : ''}
       </div>
       <button type="button" class="btn-icon ${player.fxEnabled || player.eqEnabled ? 'is-active fx-active-btn' : ''}" data-action="toggle-fx-modal" title="Audio FX & Equalizer" aria-label="Audio FX & Equalizer">
         🎛️
@@ -3178,6 +3193,10 @@ function ensureShell() {
         </div>
         <div class="topbar-actions">
           <div class="stats-pill"><strong>—</strong> online</div>
+          <button type="button" class="btn-topbar-sleep" data-action="toggle-sleep-menu" title="Sleep timer" aria-label="Sleep timer">
+            <span>🌙</span>
+            <span class="topbar-sleep-label">Sleep</span>
+          </button>
           <button type="button" class="auth-status-btn is-locked" data-action="open-auth-modal" title="Backend Access (Passcode / JWT)">
             <span class="auth-status-dot"></span>
             <span class="auth-status-text">Passcode</span>
@@ -3218,6 +3237,17 @@ function renderTopbar() {
         ? `${Math.floor(totalStationHint / 1000) >= 1 ? `${Math.floor(totalStationHint / 1000)}k+` : totalStationHint} stations`
         : 'World stations';
     pill.innerHTML = `<strong>${stationCountLabel}</strong> online`;
+  }
+  const sleepBtn = qs<HTMLButtonElement>('.btn-topbar-sleep');
+  if (sleepBtn) {
+    const sleepActive = sleepTimer.active;
+    const sleepLabel = formatSleepRemaining(sleepTimer.remainingMs);
+    sleepBtn.className = `btn-topbar-sleep ${sleepActive ? 'is-active' : ''}`;
+    sleepBtn.innerHTML = `
+      <span>🌙</span>
+      <span class="topbar-sleep-label">${sleepActive && sleepLabel ? sleepLabel : 'Sleep'}</span>
+    `;
+    sleepBtn.title = sleepActive ? `Sleep timer: ${sleepLabel} remaining` : 'Sleep timer';
   }
   const auth = getAuthState();
   const authBtn = qs<HTMLButtonElement>('.auth-status-btn');
@@ -4682,6 +4712,8 @@ sleepTimer.setOnFire(() => {
 
 sleepTimer.subscribe(() => {
   syncPowerSaverClass();
+  renderTopbar();
+  if (navOpen) renderNav();
   const badge = qs('.sleep-badge');
   const label = formatSleepRemaining(sleepTimer.remainingMs);
   if (badge && label) badge.textContent = label;
