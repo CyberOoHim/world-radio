@@ -41,6 +41,7 @@ import { escapeHtml } from './html';
 import {
   clearMapBlind,
   closePassportPanel,
+  countryCentroid,
   dismissMapAlert,
   flyToMap,
   flyToNowPlaying,
@@ -52,7 +53,6 @@ import {
   highlightMapStation,
   isBrowserOffline,
   isMapBlind,
-  locateOnMap,
   mountMapView,
   refreshMapStations,
   reloadMapTiles,
@@ -1978,7 +1978,7 @@ function handlePickRandomGenre() {
   }
 }
 
-function handlePickRandomCountry() {
+async function handlePickRandomCountry() {
   const list = filteredCountries();
   const pool = list.length ? list : state.countries;
   if (!pool.length) {
@@ -1990,8 +1990,67 @@ function handlePickRandomCountry() {
     : pool;
   const choice = candidates.length ? candidates : pool;
   const picked = choice[Math.floor(Math.random() * choice.length)];
-  openCountry(picked.iso_3166_1, { autoPlay: true });
-  showToast(`🎲 Random country: ${picked.name}`);
+  state.selectedCountry = picked.iso_3166_1;
+
+  cancelWanderHunt();
+  const seq = ++surpriseSeq;
+  surpriseBusy = true;
+  state.nearMe = false;
+
+  if (state.view !== 'map') {
+    setView('map');
+  }
+  state.surpriseMode = 'anywhere';
+  showToast(`🎲 Random country: ${picked.name}…`);
+
+  const centroid = countryCentroid(picked.iso_3166_1);
+  if (centroid) {
+    flyToMap(centroid.lat, centroid.lon, 4, true);
+  }
+
+  const deadlineMs = Date.now() + SURPRISE_TOTAL_MS;
+  const soft = surpriseHttpsFilter();
+
+  try {
+    let stations: Station[] = [];
+    try {
+      stations = await withTimeout(
+        getStationsByCountry(picked.iso_3166_1, 24, 0, { ...soft, has_geo_info: true }),
+        SURPRISE_POOL_TIMEOUT_MS
+      );
+    } catch {
+      stations = [];
+    }
+    if (seq !== surpriseSeq) return;
+
+    if (!stations.length) {
+      try {
+        stations = await withTimeout(
+          getStationsByCountry(picked.iso_3166_1, 24, 0, soft),
+          SURPRISE_POOL_TIMEOUT_MS
+        );
+      } catch {
+        stations = [];
+      }
+    }
+    if (seq !== surpriseSeq) return;
+
+    if (!stations.length) {
+      showToast(`No stations found for ${picked.name} — try another country`);
+      return;
+    }
+
+    const shuffled = [...stations].sort(() => Math.random() - 0.5);
+    const result = await runSurpriseAttempts(shuffled, seq, picked.name, deadlineMs);
+    if (result === 'failed') {
+      showToast(`Could not play stations from ${picked.name}`);
+    }
+  } catch {
+    if (seq !== surpriseSeq) return;
+    showToast(`Could not load stations from ${picked.name}`);
+  } finally {
+    if (seq === surpriseSeq) surpriseBusy = false;
+  }
 }
 
 function openNearMe() {
@@ -1999,35 +2058,57 @@ function openNearMe() {
     showToast('Geolocation not available on this device');
     return;
   }
+  cancelWanderHunt();
   const seq = ++nearMeSeq;
+
+  if (state.view !== 'map') {
+    setView('map');
+  }
+  state.surpriseMode = 'anywhere';
   showToast('Finding stations near you…');
+
   navigator.geolocation.getCurrentPosition(
-    (pos) => {
+    async (pos) => {
       if (seq !== nearMeSeq) return;
       state.userLat = pos.coords.latitude;
       state.userLon = pos.coords.longitude;
       state.nearMe = true;
-      state.surpriseMode = null;
+      state.surpriseMode = 'anywhere';
       state.selectedTag = null;
       state.selectedCountry = null;
-      state.view = 'discover';
-      if (!applyingRoute) setHash({ kind: 'near' });
       renderNav();
       renderMobileTabs();
-      void loadDiscover(true).then(() => {
-        if (seq !== nearMeSeq) return;
-        if (state.nearMe && !state.loading) {
-          if (state.stations.length) {
-            const n = state.stations.length;
-            showToast(
-              `Near you: ${n}${state.hasMore ? '+' : ''} station${n === 1 ? '' : 's'}`,
-              3200
-            );
-          } else if (!state.error) {
-            showToast('No geo-tagged stations found nearby — try a wider filter or Popular');
-          }
+
+      flyToMap(pos.coords.latitude, pos.coords.longitude, 9, true);
+
+      const soft = surpriseHttpsFilter();
+      let nearStations: Station[] = [];
+      try {
+        nearStations = await withTimeout(
+          getStationsNear(pos.coords.latitude, pos.coords.longitude, 24, 0, soft),
+          SURPRISE_POOL_TIMEOUT_MS
+        );
+      } catch {
+        nearStations = [];
+      }
+      if (seq !== nearMeSeq) return;
+
+      if (!nearStations.length) {
+        showToast('No stations found close by — explore nearby on the map');
+        return;
+      }
+
+      const deadlineMs = Date.now() + SURPRISE_TOTAL_MS;
+      const sSeq = ++surpriseSeq;
+      surpriseBusy = true;
+      try {
+        const result = await runSurpriseAttempts(nearStations, sSeq, 'near me', deadlineMs);
+        if (result === 'failed') {
+          showToast('Could not connect to nearby stations');
         }
-      });
+      } finally {
+        if (sSeq === surpriseSeq) surpriseBusy = false;
+      }
     },
     (err) => {
       if (seq !== nearMeSeq) return;
@@ -3561,7 +3642,7 @@ function ensureAppEvents() {
 
     switch (action) {
       case 'random-country':
-        handlePickRandomCountry();
+        void handlePickRandomCountry();
         break;
       case 'random-genre':
         handlePickRandomGenre();
@@ -3627,8 +3708,11 @@ function ensureAppEvents() {
       case 'open-map':
         setView('map');
         break;
+      case 'map-random':
+        void playSurprise('anywhere');
+        break;
       case 'map-locate':
-        locateOnMap();
+        openNearMe();
         break;
       case 'map-wander':
         void playWander();
@@ -4360,6 +4444,13 @@ function bindGlobalKeys() {
       case 'p':
       case 'P':
         void playRelative(-1);
+        break;
+      case 'r':
+      case 'R':
+        if (state.view !== 'map') {
+          setView('map');
+        }
+        void playSurprise('anywhere');
         break;
       case 'w':
       case 'W':
