@@ -7,6 +7,7 @@
   "homepage": "https://CyberOoHim.github.io/world_radio/",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
+    "lint": "tsc --noEmit",
     "build": "tsc && vite build",
     "start": "node server.ts",
     "auth:token": "node scripts/generate-jwt.js",

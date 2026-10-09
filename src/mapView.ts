@@ -36,6 +36,7 @@ export {
   isBrowserOffline,
   MIN_PIN_ZOOM,
   OFFLINE_MAP_ALERT,
+  resolveStationMapTarget,
   shouldLoadPins,
   viewportRadiusMeters,
 } from './mapGeo';
@@ -280,7 +281,7 @@ export function setMapWanderBusy(busy: boolean): void {
   if (!btn) return;
   btn.disabled = busy;
   btn.textContent = busy ? 'Tuning…' : '🧭 Wander';
-  btn.title = busy ? 'Finding a station somewhere else' : 'Hop to a live station somewhere else';
+  btn.title = busy ? 'Finding a station somewhere else' : 'Hop to a live station somewhere else (W)';
 }
 
 export function isMapBlind(): boolean {
@@ -863,17 +864,23 @@ export function mountMapView(root: HTMLElement, nextHandlers: MapViewHandlers): 
   setMapWanderBusy(wanderBusy);
 }
 
-export function showMapView(opts?: { center?: [number, number]; zoom?: number }): void {
+export function showMapView(opts?: { center?: [number, number]; zoom?: number; station?: Station | null }): void {
   const alreadyVisible = visible;
   visible = true;
   startHudClock();
-  if (!map) return;
-  if (opts?.center) {
+  if (opts?.station) {
+    flyToNowPlaying(opts.station, false);
+  } else if (map && opts?.center) {
     map.setView(opts.center, opts.zoom ?? Math.max(map.getZoom(), LOCATE_ZOOM));
   }
   requestAnimationFrame(() => {
     map?.invalidateSize();
-    window.setTimeout(() => map?.invalidateSize(), 80);
+    window.setTimeout(() => {
+      map?.invalidateSize();
+      if (pendingPopupId) {
+        openPendingPopup(false);
+      }
+    }, 80);
     if (isBrowserOffline()) {
       setStatus('Offline — waiting for a connection');
       fireOfflineAlert();
@@ -897,41 +904,78 @@ export function hideMapView(): void {
   closePassportPanel();
 }
 
-export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM): void {
+export function flyToMap(lat: number, lon: number, zoom = STATION_ZOOM, animate = true): void {
   persistViewport(lat, lon, zoom);
   if (!map) {
     pendingView = { center: [lat, lon], zoom };
     return;
   }
-  map.setView([lat, lon], zoom);
+  const reduceMotion =
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  const hasSize = map.getSize().x > 0 && map.getSize().y > 0;
+  if (animate && hasSize && !reduceMotion && typeof map.flyTo === 'function') {
+    map.flyTo([lat, lon], zoom, { duration: 1.25 });
+  } else {
+    map.setView([lat, lon], zoom);
+  }
 }
 
 /** Center the map on a playing station (exact pin, or country if it has no coordinates). */
-export function flyToNowPlaying(station: Station): boolean {
+export function flyToNowPlaying(station: Station, animate = true): boolean {
   const target = resolveStationMapTarget(station);
   if (!target) return false;
+  hudStation = station;
+  syncMapNowPlaying(station);
+  syncMapHud(station);
   highlightMapStation(station.stationuuid);
   if (target.kind === 'station' && stationHasGeo(station)) {
     pendingPopupId = station.stationuuid;
+    currentSelectedStation = station;
     if (!lastStations.some((s) => s.stationuuid === station.stationuuid)) {
       lastStations = [...lastStations, station];
     }
-    if (markersLayer && !markerById.has(station.stationuuid)) {
-      const marker = L.marker([station.geo_lat, station.geo_long], {
-        icon: pinIcon(station, true),
-        title: station.name,
-        keyboard: true,
-      });
-      marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
-      marker.addTo(markersLayer);
-      markerById.set(station.stationuuid, marker);
+    if (markersLayer) {
+      let marker = markerById.get(station.stationuuid);
+      if (!marker) {
+        marker = L.marker([station.geo_lat, station.geo_long], {
+          icon: pinIcon(station, true),
+          title: station.name,
+          keyboard: true,
+        });
+        marker.on('click', () => {
+          currentSelectedStation = station;
+        });
+        marker.bindPopup(popupHtml(station), { maxWidth: 280, className: 'map-leaflet-popup' });
+        marker.addTo(markersLayer);
+        markerById.set(station.stationuuid, marker);
+      } else {
+        marker.setPopupContent(popupHtml(station));
+        marker.setIcon(pinIcon(station, true));
+      }
     }
-    flyToMap(target.lat, target.lon, target.zoom);
-    openPendingPopup(false);
+    const currentCenter = map?.getCenter();
+    const currentZoom = map?.getZoom();
+    const isSamePos = Boolean(
+      currentCenter &&
+      currentZoom != null &&
+      Math.abs(currentCenter.lat - target.lat) < 0.0001 &&
+      Math.abs(currentCenter.lng - target.lon) < 0.0001 &&
+      currentZoom === target.zoom
+    );
+
+    flyToMap(target.lat, target.lon, target.zoom, animate);
+    if (map && animate && !isSamePos) {
+      map.once('moveend', () => {
+        openPendingPopup(false);
+      });
+    } else {
+      openPendingPopup(false);
+    }
     return true;
   }
   pendingPopupId = null;
-  flyToMap(target.lat, target.lon, target.zoom);
+  flyToMap(target.lat, target.lon, target.zoom, animate);
   return true;
 }
 

@@ -74,6 +74,14 @@ describe('map viewport helpers', () => {
     expect(target?.lon).toBe(us?.lon);
   });
 
+  it('falls back to country field when countrycode is empty', () => {
+    const target = resolveStationMapTarget({ geo_lat: null, geo_long: null, countrycode: '', country: 'JP' });
+    const jp = countryCentroid('JP');
+    expect(target?.kind).toBe('country');
+    expect(target?.lat).toBe(jp?.lat);
+    expect(target?.lon).toBe(jp?.lon);
+  });
+
   it('returns null when there is no geo and no country', () => {
     expect(resolveStationMapTarget({ geo_lat: null, geo_long: null, countrycode: '' })).toBeNull();
   });

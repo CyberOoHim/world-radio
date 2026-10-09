@@ -176,10 +176,15 @@ export function resolveStationMapTarget(station: {
   geo_lat?: unknown;
   geo_long?: unknown;
   countrycode?: string;
+  country?: string;
 }): { lat: number; lon: number; zoom: number; kind: 'station' | 'country' } | null {
   const exact = stationCoords(station);
   if (exact) return { ...exact, zoom: STATION_PIN_ZOOM, kind: 'station' };
-  const country = countryCentroid(station.countrycode ?? '');
-  if (country) return { ...country, zoom: COUNTRY_PIN_ZOOM, kind: 'country' };
+  const byCode = countryCentroid(station.countrycode ?? '');
+  if (byCode) return { ...byCode, zoom: COUNTRY_PIN_ZOOM, kind: 'country' };
+  if (station.country && typeof station.country === 'string') {
+    const byName = countryCentroid(station.country);
+    if (byName) return { ...byName, zoom: COUNTRY_PIN_ZOOM, kind: 'country' };
+  }
   return null;
 }

@@ -39,7 +39,6 @@ import {
 } from './fxModal';
 import { escapeHtml } from './html';
 import {
-  beginBlindWander,
   clearMapBlind,
   closePassportPanel,
   dismissMapAlert,
@@ -57,7 +56,7 @@ import {
   mountMapView,
   refreshMapStations,
   reloadMapTiles,
-  focusAndSelectMapStation,
+  resolveStationMapTarget,
   getSelectedMapStation,
   revealMapWander,
   setMapWanderBusy,
@@ -566,6 +565,33 @@ function syncMediaSession() {
   });
 }
 
+async function flyToUnderplayedStation(opts?: { animate?: boolean }): Promise<boolean> {
+  const current = state.current ?? player.station;
+  if (!current) return false;
+  if (isMapBlind()) return false;
+
+  const station = findStation(current.stationuuid) ?? current;
+  if (flyToNowPlaying(station, opts?.animate)) {
+    return true;
+  }
+
+  if (!resolveStationMapTarget(station)) {
+    try {
+      const res = await getStationsByUuid(station.stationuuid);
+      const full = res[0];
+      if (full) {
+        if (state.current?.stationuuid === full.stationuuid) {
+          state.current = { ...state.current, ...full };
+        }
+        return flyToNowPlaying(full, opts?.animate);
+      }
+    } catch {
+      // Ignore network errors
+    }
+  }
+  return false;
+}
+
 async function playStation(station: Station) {
   if (isMapBlind()) clearMapBlind();
   state.current = station;
@@ -577,8 +603,11 @@ async function playStation(station: Station) {
   renderDetail();
   updatePlaybackUI();
   announce(`Playing ${station.name}`);
-  if (!applyingRoute) {
+  if (!applyingRoute && state.view !== 'map') {
     setHash({ kind: 'station', uuid: station.stationuuid });
+  }
+  if (state.view === 'map') {
+    void flyToUnderplayedStation({ animate: true });
   }
   await player.play(station);
   syncMediaSession();
@@ -610,6 +639,9 @@ function togglePlayback() {
   player.toggle();
   syncMediaSession();
   updatePlaybackUI();
+  if (state.view === 'map' && (player.playing || player.hasSource) && !isMapBlind()) {
+    void flyToUnderplayedStation({ animate: true });
+  }
 }
 
 /**
@@ -1300,16 +1332,24 @@ function playPeriodMix() {
 }
 
 function finishWanderPlay(station: Station): void {
+  state.current = station;
+  state.detailStation = station;
   pushRecent(station);
   saveLastStation(station);
+  renderPlayer();
+  renderDetail();
   if (!applyingRoute && state.view !== 'map') {
     setHash({ kind: 'station', uuid: station.stationuuid });
   }
   syncMediaSession();
   updatePlaybackUI();
   announce(`Playing ${station.name}`);
-  beginBlindWander(station);
-  showToast('On the air — guess where', 2800);
+  clearMapBlind();
+  if (state.view === 'map') {
+    void flyToUnderplayedStation({ animate: true });
+  }
+  const place = (station.state || station.country || station.name).trim();
+  showToast(`Wandered to ${place ? place : station.name}`);
 }
 
 async function runWanderAttempts(
@@ -1741,8 +1781,14 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
 
   if (!opts?.skipHash && !applyingRoute) {
     if (view === 'map') {
-      const vp = getMapViewport() ?? loadMapViewport();
-      setHash(vp ? { kind: 'map', lat: vp.lat, lon: vp.lon, zoom: vp.zoom } : { kind: 'map' });
+      const underplayed = state.current ?? player.station;
+      const target = underplayed ? resolveStationMapTarget(underplayed) : null;
+      if (target) {
+        setHash({ kind: 'map', lat: target.lat, lon: target.lon, zoom: target.zoom, stationUuid: underplayed?.stationuuid });
+      } else {
+        const vp = getMapViewport() ?? loadMapViewport();
+        setHash(vp ? { kind: 'map', lat: vp.lat, lon: vp.lon, zoom: vp.zoom } : { kind: 'map' });
+      }
     } else {
       setHash({ kind: 'view', view });
     }
@@ -1800,6 +1846,10 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
     state.hasMore = false;
     state.error = null;
     renderAllChrome();
+    const underplayed = state.current ?? player.station;
+    if (underplayed && !isMapBlind()) {
+      void flyToUnderplayedStation({ animate: true });
+    }
   }
   renderNav();
   renderMobileTabs();
@@ -1972,12 +2022,17 @@ async function applyRouteFromHash() {
         break;
       case 'map':
         if (route.lat != null && route.lon != null) {
-          flyToMap(route.lat, route.lon, route.zoom ?? 9);
+          flyToMap(route.lat, route.lon, route.zoom ?? 9, false);
         } else {
-          const saved = loadMapViewport();
-          if (saved) {
-            flyToMap(saved.lat, saved.lon, saved.zoom);
-            setHash({ kind: 'map', lat: saved.lat, lon: saved.lon, zoom: saved.zoom });
+          const underplayed = state.current ?? player.station;
+          if (underplayed && resolveStationMapTarget(underplayed)) {
+            flyToNowPlaying(underplayed, false);
+          } else {
+            const saved = loadMapViewport();
+            if (saved) {
+              flyToMap(saved.lat, saved.lon, saved.zoom, false);
+              setHash({ kind: 'map', lat: saved.lat, lon: saved.lon, zoom: saved.zoom });
+            }
           }
         }
         setView('map', { skipHash: true });
@@ -1993,9 +2048,14 @@ async function applyRouteFromHash() {
           }
           if (st) {
             state.current = st;
-            focusAndSelectMapStation(st);
+            flyToNowPlaying(st, false);
             renderPlayer();
             updatePlaybackUI();
+          }
+        } else if (route.lat == null && route.lon == null) {
+          const underplayed = state.current ?? player.station;
+          if (underplayed) {
+            void flyToUnderplayedStation({ animate: false });
           }
         }
         break;
@@ -3008,22 +3068,32 @@ function ensureMapMounted() {
   syncMapHud(state.current ?? player.station);
 }
 
+let lastRenderedView: ViewId | null = null;
+
 function renderMain() {
   ensureShell();
   const content = qs<HTMLElement>('.content');
   const mapRoot = qs<HTMLElement>('.map-root');
   if (!content) return;
 
+  const enteredMap = state.view === 'map' && lastRenderedView !== 'map';
+  lastRenderedView = state.view;
+
   if (state.view === 'map') {
     content.hidden = true;
     if (mapRoot) mapRoot.hidden = false;
     document.body.classList.add('map-view');
     ensureMapMounted();
-    showMapView();
-    highlightMapStation(state.current?.stationuuid ?? player.station?.stationuuid ?? null);
-    syncMapNowPlaying(state.current ?? player.station);
-    syncMapHud(state.current ?? player.station);
+    const playingStation = state.current ?? player.station;
+    showMapView(enteredMap && playingStation && !isMapBlind() ? { station: playingStation } : undefined);
+    highlightMapStation(playingStation?.stationuuid ?? null);
+    syncMapNowPlaying(playingStation);
+    syncMapHud(playingStation);
     syncMapPassport(passportStamps);
+
+    if (enteredMap && playingStation && !isMapBlind()) {
+      void flyToUnderplayedStation({ animate: false });
+    }
     return;
   }
 
@@ -3401,6 +3471,8 @@ function ensureAppEvents() {
       if (view === 'search') {
         setView('search');
         qs<HTMLInputElement>('.search-input')?.focus();
+      } else if (view === 'map' && state.view === 'map') {
+        void flyToUnderplayedStation({ animate: true });
       } else {
         setView(view);
       }
@@ -4223,6 +4295,13 @@ function bindGlobalKeys() {
       case 'P':
         void playRelative(-1);
         break;
+      case 'w':
+      case 'W':
+        if (state.view !== 'map') {
+          setView('map');
+        }
+        void playWander();
+        break;
       case 'Escape':
         if (dismissMapAlert()) {
           break;
@@ -4278,8 +4357,19 @@ async function promptInstall() {
 player.setVolume(state.volume);
 player.setMuted(state.muted, { silent: true });
 
+let lastFlownStationUuid: string | null = null;
+
 player.subscribe(() => {
   updatePlaybackUI();
+  if (state.view === 'map' && player.playing && !isMapBlind()) {
+    const raw = state.current ?? player.station;
+    if (raw && lastFlownStationUuid !== raw.stationuuid) {
+      lastFlownStationUuid = raw.stationuuid;
+      void flyToUnderplayedStation({ animate: true });
+    }
+  } else if (!player.playing) {
+    lastFlownStationUuid = null;
+  }
 });
 
 // Popup when FX/EQ cannot process a stream (CORS, silent graph, etc.) and dry play is used.
