@@ -27,9 +27,11 @@ const now = Math.floor(Date.now() / 1000);
 const exp = now + 86400 * 30; // 30 days
 
 const header = { alg: 'HS256', typ: 'JWT' };
+const includeAiScope = process.argv.includes('--ai');
 const payload = {
   sub: 'authorized_user',
-  role: 'listener',
+  role: includeAiScope ? 'ai_listener' : 'listener',
+  ai: includeAiScope,
   iat: now,
   exp: exp,
 };

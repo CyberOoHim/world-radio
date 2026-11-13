@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import crypto from 'node:crypto';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import { validateRequestAuth } from './auth.ts';
+import { validateAiRequestAuth, validateRequestAuth } from './auth.ts';
 import {
   SEED_EMBEDDING_DIM,
   buildStationDescriptor,
@@ -773,11 +773,18 @@ export async function handleAiSearchRequest(
     return true;
   }
 
-  // Enforce existing Passcode / JWT protection
+  // Enforce Passcode / JWT protection and AI-specific authorization
   if (!validateRequestAuth(req)) {
     sendJson(res, 401, {
       error: 'Unauthorized: Passcode authentication required',
       code: 'AUTH_REQUIRED',
+    });
+    return true;
+  }
+  if (!validateAiRequestAuth(req)) {
+    sendJson(res, 403, {
+      error: 'Forbidden: The general passcode does not authorize AI search. An AI passcode is required.',
+      code: 'AI_AUTH_REQUIRED',
     });
     return true;
   }

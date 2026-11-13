@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { normalizeThinkingLevel, handleAiSearchRequest } from './aiSearch';
+import { getJwtSecret, signJwt } from './auth';
 import {
   SEED_EMBEDDING_DIM,
   SeedIndexStore,
@@ -191,6 +192,40 @@ describe('handleAiSearchRequest', () => {
     const handled = await handleAiSearchRequest(req, mock.res);
     expect(handled).toBe(true);
     expect(mock.res.statusCode).toBe(401);
+  });
+
+  it('rejects general-passcode JWTs (ai: false) with 403 AI_AUTH_REQUIRED', async () => {
+    const generalToken = signJwt(
+      {
+        sub: 'authorized_user',
+        role: 'listener',
+        ai: false,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      },
+      getJwtSecret()
+    );
+
+    for (const target of [
+      { url: '/api/ai/search', method: 'POST' },
+      { url: '/api/ai/similar', method: 'POST' },
+      { url: '/api/ai/seed-export', method: 'GET' },
+    ]) {
+      const req = {
+        url: target.url,
+        method: target.method,
+        headers: { authorization: `Bearer ${generalToken}` },
+      } as unknown as IncomingMessage;
+      const mock = createMockRes();
+      const handled = await handleAiSearchRequest(req, mock.res);
+      expect(handled).toBe(true);
+      expect(mock.res.statusCode).toBe(403);
+      expect(JSON.parse(mock.getBody())).toEqual({
+        error:
+          'Forbidden: The general passcode does not authorize AI search. An AI passcode is required.',
+        code: 'AI_AUTH_REQUIRED',
+      });
+    }
   });
 
   it('rejects non-POST methods with 405', async () => {

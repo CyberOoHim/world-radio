@@ -56,8 +56,10 @@ The authentication system employs a stateless, symmetric HMAC-SHA256 model:
   ```env
   # Server-Side Only - Never prefix with VITE_
   APP_PASSCODE=radio-2026
+  AI_PASSCODE=your-private-ai-passcode
   JWT_SECRET=world-radio-jwt-secret-key-32chars!!
   ```
+  *(Note: `'radio-2026'` is a general passcode for map tile proxying and general routes only—it issues `ai: false` in the JWT and never authorizes `/api/ai/*` endpoints.)*
 - **Fallback behavior:** If `JWT_SECRET` is not set in the environment, the server cleanly falls back to `'world-radio-jwt-secret-key-32chars!!'` in development mode to ensure zero downtime.
 - **Production recommendation:** Generate a high-entropy 256-bit random key:
   ```bash
@@ -75,7 +77,7 @@ When a user submits a passcode in the UI:
 
 1. **Endpoint:** `POST /api/auth/verify`
 2. **Payload:** `{"passcode": "radio-2026"}`
-3. **Verification:** The backend verifies that the submitted passcode matches `APP_PASSCODE` (or default `'radio-2026'`).
+3. **Verification:** The backend verifies that the submitted passcode matches `APP_PASSCODE`, `AI_PASSCODE`, or fallback general passcodes (`'radio-2026'`, `'world-radio-passcode'`). General passcodes never set `ai: true`.
 4. **Token Generation (`signJwt` in `src/server/auth.ts`):**
    - **Header:** `{"alg": "HS256", "typ": "JWT"}`
    - **Payload:**
@@ -83,10 +85,12 @@ When a user submits a passcode in the UI:
      {
        "sub": "authorized_user",
        "role": "listener",
+       "ai": false,
        "iat": 1791132966,
        "exp": 1793724966
      }
      ```
+     *(Tokens issued via `AI_PASSCODE` or a custom non-general `APP_PASSCODE` receive `"role": "ai_listener"` and `"ai": true`.)*
    - **Signature:**
      $$\text{Signature} = \text{HMAC-SHA256}(\text{base64url}(\text{Header}) + "." + \text{base64url}(\text{Payload}), \text{JWT\_SECRET})$$
    - **Complete Token:** `header.payload.signature`
@@ -94,8 +98,9 @@ When a user submits a passcode in the UI:
    - HTTP response body:
      ```json
      {
-       "ok": true,
+       "success": true,
        "authenticated": true,
+       "aiAuthorized": false,
        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI...",
        "expiresAt": 1793724966
      }

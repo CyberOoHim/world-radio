@@ -3,9 +3,11 @@ import { sanitizeStation } from '../storage';
 import type { AiSearchResponse, AiThinkingLevel, Station } from '../types';
 
 export class AiAuthError extends Error {
-  constructor(message = 'Backend passcode required for AI search') {
+  code: string;
+  constructor(message = 'Backend passcode required for AI search', code = 'AUTH_REQUIRED') {
     super(message);
     this.name = 'AiAuthError';
+    this.code = code;
   }
 }
 
@@ -133,8 +135,12 @@ export async function aiSearchStations(params: {
     }),
   });
 
-  if (res.status === 401) {
-    throw new AiAuthError('Passcode unlock is required for AI Station Search.');
+  if (res.status === 401 || res.status === 403) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+    throw new AiAuthError(
+      errBody.error || 'Passcode unlock is required for AI Station Search.',
+      errBody.code || (res.status === 403 ? 'AI_AUTH_REQUIRED' : 'AUTH_REQUIRED')
+    );
   }
 
   const data = (await res.json().catch(() => ({}))) as { error?: string };
@@ -163,8 +169,12 @@ export async function aiFindSimilarStations(params: {
     }),
   });
 
-  if (res.status === 401) {
-    throw new AiAuthError('Passcode unlock is required to find similar stations.');
+  if (res.status === 401 || res.status === 403) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+    throw new AiAuthError(
+      errBody.error || 'Passcode unlock is required to find similar stations.',
+      errBody.code || (res.status === 403 ? 'AI_AUTH_REQUIRED' : 'AUTH_REQUIRED')
+    );
   }
 
   const data = (await res.json().catch(() => ({}))) as { error?: string };

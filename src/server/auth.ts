@@ -4,14 +4,32 @@ import crypto from 'node:crypto';
 export interface JwtPayload {
   sub: string;
   role: string;
+  ai?: boolean;
   iat: number;
   exp: number;
   [key: string]: unknown;
 }
 
-/** Configured access passcode for frontend-backend authentication */
+const GENERAL_PASSCODES = new Set(['radio-2026', 'world-radio-passcode']);
+
+/** Configured access passcode for general frontend-backend authentication (map tiles, etc.) */
 export function getAppPasscode(): string {
   return (process.env.APP_PASSCODE || 'radio-2026').trim();
+}
+
+/** Optional dedicated passcode required for AI endpoints (/api/ai/*) */
+export function getAiPasscode(): string {
+  return (process.env.AI_PASSCODE || '').trim();
+}
+
+/** Whether a non-general passcode exists that can authorize AI endpoints */
+export function isAiPasscodeConfigured(): boolean {
+  const aiPasscode = getAiPasscode();
+  if (aiPasscode && !GENERAL_PASSCODES.has(aiPasscode)) {
+    return true;
+  }
+  const explicitAppPasscode = (process.env.APP_PASSCODE || '').trim();
+  return Boolean(explicitAppPasscode && !GENERAL_PASSCODES.has(explicitAppPasscode));
 }
 
 /** Secret key used to sign and verify HMAC-SHA256 JWT tokens */
@@ -103,17 +121,67 @@ export function extractAuthToken(req: IncomingMessage): string | null {
   return null;
 }
 
-/** Check if incoming request satisfies passcode/JWT authentication */
+/** Extract and verify JWT payload from incoming request */
+export function getVerifiedRequestPayload(req: IncomingMessage): JwtPayload | null {
+  const token = extractAuthToken(req);
+  if (!token) return null;
+  return verifyJwt(token, getJwtSecret());
+}
+
+/** Check if incoming request satisfies general passcode/JWT authentication (e.g. map tiles) */
 export function validateRequestAuth(req: IncomingMessage): boolean {
   const passcode = getAppPasscode();
   if (!passcode) return true; // If passcode explicitly empty, open access
+  return getVerifiedRequestPayload(req) !== null;
+}
 
-  const token = extractAuthToken(req);
-  if (!token) return false;
+/**
+ * Check if incoming request is authorized for AI endpoints (/api/ai/*).
+ * General passcodes (such as 'radio-2026') issue tokens with ai !== true
+ * and NEVER authorize AI usage.
+ */
+export function validateAiRequestAuth(req: IncomingMessage): boolean {
+  const payload = getVerifiedRequestPayload(req);
+  if (!payload) return false;
+  return payload.ai === true;
+}
 
-  const secret = getJwtSecret();
-  const payload = verifyJwt(token, secret);
-  return payload !== null;
+/**
+ * Evaluate a user-submitted passcode for general access and AI access.
+ * General passcodes ('radio-2026', 'world-radio-passcode') never grant AI authorization.
+ */
+export function evaluatePasscode(rawPasscode: string): {
+  valid: boolean;
+  aiAuthorized: boolean;
+} {
+  const providedPasscode = rawPasscode.trim();
+  if (!providedPasscode) {
+    return { valid: false, aiAuthorized: false };
+  }
+
+  const expectedAppPasscode = getAppPasscode();
+  const explicitAppPasscode = (process.env.APP_PASSCODE || '').trim();
+  const aiPasscode = getAiPasscode();
+
+  if (GENERAL_PASSCODES.has(providedPasscode)) {
+    return { valid: true, aiAuthorized: false };
+  }
+
+  if (aiPasscode) {
+    if (providedPasscode === aiPasscode) {
+      return { valid: true, aiAuthorized: true };
+    }
+    if (providedPasscode === expectedAppPasscode) {
+      return { valid: true, aiAuthorized: false };
+    }
+    return { valid: false, aiAuthorized: false };
+  }
+
+  if (explicitAppPasscode && providedPasscode === explicitAppPasscode) {
+    return { valid: true, aiAuthorized: true };
+  }
+
+  return { valid: false, aiAuthorized: false };
 }
 
 function parseJsonBody<T>(req: IncomingMessage): Promise<T | null> {
@@ -157,11 +225,20 @@ export async function handleAuthRequest(
   // GET /api/auth/status
   if (pathname === '/api/auth/status' && (req.method === 'GET' || req.method === 'HEAD')) {
     const authenticated = validateRequestAuth(req);
+    const aiAuthorized = validateAiRequestAuth(req);
     const required = Boolean(getAppPasscode());
+    const aiPasscodeConfigured = isAiPasscodeConfigured();
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Cache-Control', 'no-store');
-    res.end(JSON.stringify({ authenticated, required }));
+    res.end(
+      JSON.stringify({
+        authenticated,
+        aiAuthorized,
+        required,
+        aiPasscodeConfigured,
+      })
+    );
     return true;
   }
 
@@ -170,53 +247,72 @@ export async function handleAuthRequest(
     (pathname === '/api/auth/verify' || pathname === '/api/auth/login') &&
     req.method === 'POST'
   ) {
-    const body = await parseJsonBody<{ passcode?: string }>(req);
+    const body = await parseJsonBody<{ passcode?: string; scope?: string }>(req);
     const providedPasscode = (body?.passcode || '').trim();
-    const expectedPasscode = getAppPasscode();
-    const isValidPasscode =
-      !expectedPasscode ||
-      providedPasscode === expectedPasscode ||
-      providedPasscode === 'radio-2026' ||
-      providedPasscode === 'world-radio-passcode';
+    const requestedScope = body?.scope === 'ai' ? 'ai' : 'general';
+    const { valid, aiAuthorized } = evaluatePasscode(providedPasscode);
 
-    if (isValidPasscode) {
-      const now = Math.floor(Date.now() / 1000);
-      const expiresAt = now + 86400 * 30; // 30 days
-      const token = signJwt(
-        {
-          sub: 'authorized_user',
-          role: 'listener',
-          iat: now,
-          exp: expiresAt,
-        },
-        getJwtSecret()
-      );
-
-      // Set auth_token cookie so tile requests automatically have credentials
-      res.setHeader('Set-Cookie', [
-        `auth_token=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax; HttpOnly`,
-      ]);
-      res.statusCode = 200;
+    if (!valid) {
+      res.statusCode = 401;
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
       res.end(
         JSON.stringify({
-          success: true,
-          token,
-          expiresAt,
-          message: 'Passcode verified successfully',
+          success: false,
+          error: 'Incorrect passcode. Please check and try again.',
         })
       );
       return true;
     }
 
-    res.statusCode = 401;
+    if (requestedScope === 'ai' && !aiAuthorized) {
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(
+        JSON.stringify({
+          success: false,
+          aiAuthorized: false,
+          code: 'AI_AUTH_REQUIRED',
+          error: isAiPasscodeConfigured()
+            ? 'The general passcode does not authorize AI features. Please enter the AI passcode.'
+            : 'The general passcode does not authorize AI features. Configure AI_PASSCODE or a custom APP_PASSCODE on the server.',
+        })
+      );
+      return true;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + 86400 * 30; // 30 days
+    const token = signJwt(
+      {
+        sub: 'authorized_user',
+        role: aiAuthorized ? 'ai_listener' : 'listener',
+        ai: aiAuthorized,
+        iat: now,
+        exp: expiresAt,
+      },
+      getJwtSecret()
+    );
+
+    // Set auth_token cookie so tile and API requests automatically have credentials
+    res.setHeader('Set-Cookie', [
+      `auth_token=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax; HttpOnly`,
+    ]);
+    res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Cache-Control', 'no-store');
     res.end(
       JSON.stringify({
-        success: false,
-        error: 'Incorrect passcode. Please check and try again.',
+        success: true,
+        authenticated: true,
+        aiAuthorized,
+        aiPasscodeConfigured: isAiPasscodeConfigured(),
+        token,
+        expiresAt,
+        message: aiAuthorized
+          ? 'AI & backend passcode verified successfully'
+          : 'General backend passcode verified (AI features remain locked)',
       })
     );
     return true;

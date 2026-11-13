@@ -60,26 +60,32 @@ describe('client-side auth module', () => {
     );
   });
 
-  it('verifies passcode and stores token on success', async () => {
+  it('verifies general passcode without granting AI authorization', async () => {
     global.fetch = vi.fn(async () => {
       return new Response(
         JSON.stringify({
           success: true,
+          authenticated: true,
+          aiAuthorized: false,
           token: 'returned-jwt-456',
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
 
-    let receivedState: boolean | undefined;
+    let receivedAuth: boolean | undefined;
+    let receivedAiAuth: boolean | undefined;
     const unsub = subscribeAuth((s) => {
-      receivedState = s.authenticated;
+      receivedAuth = s.authenticated;
+      receivedAiAuth = s.aiAuthorized;
     });
 
     const result = await verifyPasscode('radio-2026');
     expect(result.success).toBe(true);
+    expect(result.aiAuthorized).toBe(false);
     expect(getStoredAuthToken()).toBe('returned-jwt-456');
-    expect(receivedState).toBe(true);
+    expect(receivedAuth).toBe(true);
+    expect(receivedAiAuth).toBe(false);
     unsub();
   });
 

@@ -46,6 +46,9 @@ export default defineConfig(({ mode }) => {
   if (env.APP_PASSCODE && !process.env.APP_PASSCODE) {
     process.env.APP_PASSCODE = env.APP_PASSCODE;
   }
+  if (env.AI_PASSCODE && !process.env.AI_PASSCODE) {
+    process.env.AI_PASSCODE = env.AI_PASSCODE;
+  }
   if (env.JWT_SECRET && !process.env.JWT_SECRET) {
     process.env.JWT_SECRET = env.JWT_SECRET;
   }

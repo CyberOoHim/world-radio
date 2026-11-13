@@ -7,6 +7,7 @@ let errorMessage = '';
 let showPasscode = false;
 let currentPasscode = '';
 let copiedToken = false;
+let requireAiAccess = false;
 let onAuthSuccessCallback: (() => void) | null = null;
 
 const ICON_EYE = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
@@ -29,13 +30,17 @@ export function setCurrentPasscodeValue(val: string): void {
   currentPasscode = val;
 }
 
-export function openPasscodeModal(onSuccess?: () => void): void {
+export function openPasscodeModal(
+  onSuccess?: () => void,
+  opts?: { requireAi?: boolean }
+): void {
   isOpen = true;
   errorMessage = '';
   isSubmitting = false;
   showPasscode = false; // Default invisible
   currentPasscode = '';
   copiedToken = false;
+  requireAiAccess = Boolean(opts?.requireAi);
   if (onSuccess) onAuthSuccessCallback = onSuccess;
   renderPasscodeModal();
 
@@ -52,6 +57,7 @@ export function closePasscodeModal(): void {
   showPasscode = false; // Reset to default invisible
   currentPasscode = '';
   copiedToken = false;
+  requireAiAccess = false;
   renderPasscodeModal();
 }
 
@@ -83,16 +89,94 @@ export async function copyJwtToken(): Promise<boolean> {
 export function renderPasscodeModalHtml(): string {
   if (!isOpen) return '';
 
-  const { authenticated, token } = getAuthState();
+  const { authenticated, aiAuthorized, token } = getAuthState();
+  const isPartialGeneralOnly = authenticated && !aiAuthorized;
+
+  const badgeClass = aiAuthorized
+    ? 'is-authenticated'
+    : isPartialGeneralOnly
+      ? 'is-partial'
+      : 'is-locked';
+  const badgeText = aiAuthorized
+    ? 'Authenticated (JWT + AI)'
+    : isPartialGeneralOnly
+      ? 'General Access (AI Locked)'
+      : 'Passcode Required';
+
+  const modalTitle = aiAuthorized
+    ? 'Full Backend & AI Access Granted'
+    : isPartialGeneralOnly
+      ? 'General Access Active · AI Locked'
+      : requireAiAccess
+        ? 'AI Passcode Required'
+        : 'Backend Passcode Access';
+
+  const modalDesc = aiAuthorized
+    ? 'Your session is securely authenticated with the backend via signed JWT. Map tile proxying and AI Station Search are both active.'
+    : isPartialGeneralOnly
+      ? 'Your session is connected for map tiles and general backend routes. The general passcode (radio-2026) does not authorize AI features — enter an AI passcode below to unlock AI search.'
+      : requireAiAccess
+        ? 'AI query planning and semantic reranking require an AI-authorized passcode. The general passcode (radio-2026) only unlocks map tiles.'
+        : 'Enter the access passcode to verify your session with the backend. The general passcode unlocks map tiles; AI search requires an AI-authorized passcode.';
+
+  const passcodeFormHtml = (scope: 'general' | 'ai', submitLabel: string) => `
+    <form class="auth-form" data-action="submit-passcode" data-scope="${scope}">
+      <div class="auth-input-group">
+        <label for="passcode-input" class="auth-input-label">
+          ${scope === 'ai' ? 'AI Access Passcode' : 'Access Passcode'}
+        </label>
+        <div class="auth-input-wrapper">
+          <input
+            id="passcode-input"
+            type="${showPasscode ? 'text' : 'password'}"
+            class="auth-input passcode-input"
+            value="${escapeHtml(currentPasscode)}"
+            placeholder="${scope === 'ai' ? 'Enter AI passcode' : 'Enter passcode (e.g. radio-2026)'}"
+            autocomplete="current-password"
+            required
+            ${isSubmitting ? 'disabled' : ''}
+          />
+          <button
+            type="button"
+            class="auth-toggle-visibility ${showPasscode ? 'is-active' : ''}"
+            data-action="toggle-passcode-visibility"
+            aria-label="${showPasscode ? 'Hide passcode' : 'Show passcode'}"
+            aria-pressed="${showPasscode ? 'true' : 'false'}"
+            title="${showPasscode ? 'Hide passcode' : 'Show passcode'}"
+          >
+            ${showPasscode ? ICON_EYE_OFF : ICON_EYE}
+          </button>
+        </div>
+        <div class="auth-hint">
+          ${
+            scope === 'ai'
+              ? 'General passcode <code>radio-2026</code> does not authorize AI usage. Set <code>AI_PASSCODE</code> or a custom <code>APP_PASSCODE</code> on the server.'
+              : 'General passcode for map tiles &amp; backend proxy: <code>radio-2026</code> (does not authorize AI features).'
+          }
+        </div>
+      </div>
+
+      <div class="auth-modal-actions">
+        ${
+          scope === 'ai'
+            ? `<button type="button" class="btn-secondary auth-logout-btn" data-action="auth-logout" ${isSubmitting ? 'disabled' : ''}>Log Out</button>`
+            : `<button type="button" class="btn-secondary" data-action="close-auth-modal" ${isSubmitting ? 'disabled' : ''}>Cancel</button>`
+        }
+        <button type="submit" class="btn-primary auth-submit-btn" ${isSubmitting ? 'disabled' : ''}>
+          ${isSubmitting ? '<span class="auth-spinner"></span> Verifying…' : submitLabel}
+        </button>
+      </div>
+    </form>
+  `;
 
   return `
     <div class="auth-modal-backdrop" data-action="close-auth-modal" aria-hidden="true"></div>
     <div class="auth-modal-container" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
       <div class="auth-modal-card">
         <div class="auth-modal-header">
-          <div class="auth-modal-badge ${authenticated ? 'is-authenticated' : 'is-locked'}">
+          <div class="auth-modal-badge ${badgeClass}">
             <span class="auth-badge-dot"></span>
-            <span>${authenticated ? 'Authenticated (JWT Active)' : 'Passcode Required'}</span>
+            <span>${badgeText}</span>
           </div>
           <button type="button" class="btn-icon auth-modal-close" data-action="close-auth-modal" aria-label="Close dialog">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square" width="18" height="18"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -101,19 +185,15 @@ export function renderPasscodeModalHtml(): string {
 
         <div class="auth-modal-body">
           <h2 id="auth-modal-title" class="auth-modal-title">
-            ${authenticated ? 'Backend Access Granted' : 'Backend Passcode Access'}
+            ${modalTitle}
           </h2>
           <p class="auth-modal-desc">
-            ${
-              authenticated
-                ? 'Your session is securely authenticated with the backend via signed JWT. All backend proxy routes and tile services are active.'
-                : 'Enter the access passcode to verify your session with the backend and unlock map tile proxying and backend services.'
-            }
+            ${modalDesc}
           </p>
 
           ${
             errorMessage
-              ? `<div class="auth-alert is-error" role="alert"><span class="auth-alert-icon">⚠️</span><span>${errorMessage}</span></div>`
+              ? `<div class="auth-alert is-error" role="alert"><span class="auth-alert-icon">⚠️</span><span>${escapeHtml(errorMessage)}</span></div>`
               : ''
           }
 
@@ -122,8 +202,14 @@ export function renderPasscodeModalHtml(): string {
               ? `
             <div class="auth-info-card">
               <div class="auth-info-row">
-                <span class="auth-info-label">Status:</span>
+                <span class="auth-info-label">Map &amp; Backend Proxy:</span>
                 <span class="auth-info-value is-green">● Connected &amp; Authorized</span>
+              </div>
+              <div class="auth-info-row">
+                <span class="auth-info-label">AI Station Search:</span>
+                <span class="auth-info-value ${aiAuthorized ? 'is-green' : 'is-amber'}">
+                  ${aiAuthorized ? '● Authorized' : '🔒 Locked (General Passcode Excluded)'}
+                </span>
               </div>
 
               <div class="auth-token-box">
@@ -135,13 +221,11 @@ export function renderPasscodeModalHtml(): string {
                 </div>
                 <textarea class="auth-token-textarea" readonly rows="3" aria-label="Full JWT token string" spellcheck="false">${escapeHtml(token || '')}</textarea>
               </div>
-
-              <div class="auth-info-row">
-                <span class="auth-info-label">Backend Proxy:</span>
-                <span class="auth-info-value">Protected (/api/*)</span>
-              </div>
             </div>
 
+            ${
+              aiAuthorized
+                ? `
             <div class="auth-modal-actions">
               <button type="button" class="btn-secondary auth-logout-btn" data-action="auth-logout">
                 Log Out
@@ -151,45 +235,10 @@ export function renderPasscodeModalHtml(): string {
               </button>
             </div>
             `
-              : `
-            <form class="auth-form" data-action="submit-passcode">
-              <div class="auth-input-group">
-                <label for="passcode-input" class="auth-input-label">Access Passcode</label>
-                <div class="auth-input-wrapper">
-                  <input
-                    id="passcode-input"
-                    type="${showPasscode ? 'text' : 'password'}"
-                    class="auth-input passcode-input"
-                    value="${escapeHtml(currentPasscode)}"
-                    placeholder="Enter passcode (e.g. radio-2026)"
-                    autocomplete="current-password"
-                    required
-                    ${isSubmitting ? 'disabled' : ''}
-                  />
-                  <button
-                    type="button"
-                    class="auth-toggle-visibility ${showPasscode ? 'is-active' : ''}"
-                    data-action="toggle-passcode-visibility"
-                    aria-label="${showPasscode ? 'Hide passcode' : 'Show passcode'}"
-                    aria-pressed="${showPasscode ? 'true' : 'false'}"
-                    title="${showPasscode ? 'Hide passcode' : 'Show passcode'}"
-                  >
-                    ${showPasscode ? ICON_EYE_OFF : ICON_EYE}
-                  </button>
-                </div>
-                <div class="auth-hint">Default development passcode: <code>radio-2026</code> (configured via <code>APP_PASSCODE</code>)</div>
-              </div>
-
-              <div class="auth-modal-actions">
-                <button type="button" class="btn-secondary" data-action="close-auth-modal" ${isSubmitting ? 'disabled' : ''}>
-                  Cancel
-                </button>
-                <button type="submit" class="btn-primary auth-submit-btn" ${isSubmitting ? 'disabled' : ''}>
-                  ${isSubmitting ? '<span class="auth-spinner"></span> Verifying…' : 'Verify &amp; Unlock'}
-                </button>
-              </div>
-            </form>
+                : passcodeFormHtml('ai', 'Unlock AI Access')
+            }
             `
+              : passcodeFormHtml(requireAiAccess ? 'ai' : 'general', 'Verify &amp; Unlock')
           }
         </div>
       </div>
@@ -225,6 +274,7 @@ export async function handlePasscodeSubmit(form: HTMLFormElement): Promise<void>
   if (!input) return;
 
   const code = input.value.trim();
+  const scope = form.dataset.scope === 'ai' ? 'ai' : 'general';
   currentPasscode = input.value;
   if (!code) {
     errorMessage = 'Please enter a passcode.';
@@ -236,13 +286,13 @@ export async function handlePasscodeSubmit(form: HTMLFormElement): Promise<void>
   errorMessage = '';
   renderPasscodeModal();
 
-  const res = await verifyPasscode(code);
+  const res = await verifyPasscode(code, scope);
   isSubmitting = false;
 
   if (res.success) {
     currentPasscode = '';
     showPasscode = false;
-    if (onAuthSuccessCallback) {
+    if (onAuthSuccessCallback && (!requireAiAccess || res.aiAuthorized)) {
       onAuthSuccessCallback();
       onAuthSuccessCallback = null;
     }

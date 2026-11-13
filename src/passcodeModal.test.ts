@@ -119,4 +119,11 @@ describe('passcode modal visibility toggle', () => {
     expect(html).toContain('value="secret-pass-2026"');
     expect(html).toContain('type="text"');
   });
+
+  it('clarifies that general passcode radio-2026 does not authorize AI features', () => {
+    openPasscodeModal();
+    const html = renderPasscodeModalHtml();
+    expect(html).toContain('radio-2026');
+    expect(html).toContain('does not authorize AI features');
+  });
 });

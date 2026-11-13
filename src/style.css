@@ -3974,7 +3974,8 @@ html.is-backgrounded .radar-ring {
   text-transform: uppercase;
 }
 
-.auth-modal-badge.is-locked {
+.auth-modal-badge.is-locked,
+.auth-modal-badge.is-partial {
   background: rgba(245, 158, 11, 0.15);
   color: #fbbf24;
   border: 1px solid rgba(245, 158, 11, 0.3);
@@ -4174,6 +4175,10 @@ html.is-backgrounded .radar-ring {
 
 .auth-info-value.is-green {
   color: #4ade80;
+}
+
+.auth-info-value.is-amber {
+  color: #fbbf24;
 }
 
 .auth-info-code {

@@ -1807,12 +1807,15 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
         void runAiSearch(q, { skipHash: true });
       };
       if (!isPasscodeModalOpen()) {
-        openPasscodeModal(() => {
-          reloadMapTiles();
-          showToast('Passcode verified! Tuning AI search…');
-          renderTopbar();
-          renderNav();
-        });
+        openPasscodeModal(
+          () => {
+            reloadMapTiles();
+            showToast('AI passcode verified! Tuning AI search…');
+            renderTopbar();
+            renderNav();
+          },
+          { requireAi: true }
+        );
       }
     } else {
       state.aiError = e instanceof Error ? e.message : 'AI station search failed';
@@ -1881,12 +1884,15 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
         void runAiSimilar(station, { skipHash: true });
       };
       if (!isPasscodeModalOpen()) {
-        openPasscodeModal(() => {
-          reloadMapTiles();
-          showToast('Passcode verified! Finding similar stations…');
-          renderTopbar();
-          renderNav();
-        });
+        openPasscodeModal(
+          () => {
+            reloadMapTiles();
+            showToast('AI passcode verified! Finding similar stations…');
+            renderTopbar();
+            renderNav();
+          },
+          { requireAi: true }
+        );
       }
     } else {
       state.aiError = e instanceof Error ? e.message : 'Similar station search failed';
@@ -3119,13 +3125,17 @@ function renderAiView(): string {
     bodyHtml = `
       <div class="ai-auth-card">
         <div class="ai-auth-copy">
-          <h3>Passcode required for AI search</h3>
-          <p>AI query planning and Gemini embedding reranking run securely on the server. Unlock backend access to tune this prompt.</p>
+          <h3>${auth.authenticated && !auth.aiAuthorized ? 'AI passcode required' : 'Passcode required for AI search'}</h3>
+          <p>${
+            auth.authenticated && !auth.aiAuthorized
+              ? 'The general passcode (<code>radio-2026</code>) unlocks map tiles only and does not authorize AI features. Unlock with an AI-authorized passcode to tune this prompt.'
+              : 'AI query planning and Gemini embedding reranking run securely on the server. Unlock with an AI-authorized passcode to tune this prompt.'
+          }</p>
         </div>
         <div class="ai-auth-actions">
           <button type="button" class="btn-ai-tune" data-action="open-auth-modal">
             ${icons.lock}
-            <span>Unlock with Passcode</span>
+            <span>${auth.authenticated && !auth.aiAuthorized ? 'Unlock AI Access' : 'Unlock with Passcode'}</span>
           </button>
           <button type="button" class="chip" data-action="switch-to-name-search">Use Name Search</button>
         </div>
@@ -3187,8 +3197,10 @@ function renderAiView(): string {
     bodyHtml = `
       <div class="ai-idle-note">
         ${
-          !auth.authenticated
-            ? `<p>Backend passcode is currently locked — <button type="button" class="link-btn" data-action="open-auth-modal">unlock passcode</button> when ready to run AI searches.</p>`
+          !auth.aiAuthorized
+            ? auth.authenticated
+              ? `<p>General passcode is active for map tiles, but does not authorize AI search — <button type="button" class="link-btn" data-action="open-auth-modal">enter AI passcode</button> to run AI searches.</p>`
+              : `<p>Backend passcode is currently locked — <button type="button" class="link-btn" data-action="open-auth-modal">unlock passcode</button> when ready to run AI searches.</p>`
             : `<p>Pick a curated scene above, describe any mood or city, or click the overlapping-circles icon on any station to find sonic siblings.</p>`
         }
       </div>
@@ -4472,12 +4484,19 @@ function ensureAppEvents() {
         toggleFxModal();
         break;
       case 'open-auth-modal':
-        openPasscodeModal(() => {
-          reloadMapTiles();
-          showToast('Passcode verified! Backend connected.');
-          renderTopbar();
-          renderNav();
-        });
+        openPasscodeModal(
+          () => {
+            reloadMapTiles();
+            showToast(
+              getAuthState().aiAuthorized
+                ? 'Passcode verified! Backend & AI connected.'
+                : 'General passcode verified! Map tiles connected (AI locked).'
+            );
+            renderTopbar();
+            renderNav();
+          },
+          { requireAi: state.view === 'ai' && state.aiAuthRequired }
+        );
         break;
       case 'close-auth-modal':
         closePasscodeModal();
@@ -5305,13 +5324,13 @@ void checkAuthStatus().then(() => {
 });
 subscribeAuth(() => {
   const auth = getAuthState();
-  if (auth.authenticated && (pendingAiRetry || state.aiAuthRequired)) {
+  if (auth.aiAuthorized && (pendingAiRetry || state.aiAuthRequired)) {
     state.aiAuthRequired = false;
     const retry = pendingAiRetry;
     pendingAiRetry = null;
     if (retry) retry();
     else if (state.view === 'ai') renderMain();
-  } else if (!auth.authenticated && state.view === 'ai') {
+  } else if (!auth.aiAuthorized && state.view === 'ai') {
     renderMain();
   }
   renderTopbar();
