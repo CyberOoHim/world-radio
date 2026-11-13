@@ -6,11 +6,13 @@ export type Route =
   | { kind: 'tag'; tag: string }
   | { kind: 'country'; code: string }
   | { kind: 'search'; q: string }
+  | { kind: 'ai'; q?: string; similar?: string }
   | { kind: 'near' }
   | { kind: 'map'; lat?: number; lon?: number; zoom?: number; stationUuid?: string };
 
 const VIEW_SET = new Set<ViewId>([
   'discover',
+  'ai',
   'countries',
   'genres',
   'favorites',
@@ -46,6 +48,11 @@ export function parseHash(hash = location.hash): Route | null {
   if (a === 'tag' && b) return { kind: 'tag', tag: b };
   if (a === 'country' && b) return { kind: 'country', code: b.toUpperCase() };
   if (a === 'search') return { kind: 'search', q: b || '' };
+  if (a === 'ai') {
+    if (b === 'q' && c) return { kind: 'ai', q: c };
+    if (b === 'similar' && c) return { kind: 'ai', similar: c };
+    return { kind: 'ai' };
+  }
   if (a === 'near') return { kind: 'near' };
   if (a === 'map') return parseMapRoute(b, c, d, queryStation);
   if (a && VIEW_SET.has(a as ViewId)) return { kind: 'view', view: a as ViewId };
@@ -84,6 +91,10 @@ function routeToHash(route: Route): string {
       return `#/country/${encodeURIComponent(route.code)}`;
     case 'search':
       return route.q ? `#/search/${encodeURIComponent(route.q)}` : '#/search';
+    case 'ai':
+      if (route.q) return `#/ai/q/${encodeURIComponent(route.q)}`;
+      if (route.similar) return `#/ai/similar/${encodeURIComponent(route.similar)}`;
+      return '#/ai';
     case 'near':
       return '#/near';
     case 'map': {

@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import { handleTileProxyRequest } from './src/server/tileProxy.ts';
 import { handleAuthRequest } from './src/server/auth.ts';
+import { handleAiSearchRequest } from './src/server/aiSearch.ts';
 
 function serverApiPlugin(): Plugin {
   return {
@@ -10,6 +11,7 @@ function serverApiPlugin(): Plugin {
         try {
           if (await handleAuthRequest(req, res)) return;
           if (await handleTileProxyRequest(req, res)) return;
+          if (await handleAiSearchRequest(req, res)) return;
           next();
         } catch (err) {
           next(err);
@@ -21,6 +23,7 @@ function serverApiPlugin(): Plugin {
         try {
           if (await handleAuthRequest(req, res)) return;
           if (await handleTileProxyRequest(req, res)) return;
+          if (await handleAiSearchRequest(req, res)) return;
           next();
         } catch (err) {
           next(err);
@@ -45,6 +48,9 @@ export default defineConfig(({ mode }) => {
   }
   if (env.JWT_SECRET && !process.env.JWT_SECRET) {
     process.env.JWT_SECRET = env.JWT_SECRET;
+  }
+  if (env.GEMINI_API_KEY && !process.env.GEMINI_API_KEY) {
+    process.env.GEMINI_API_KEY = env.GEMINI_API_KEY;
   }
 
   return {

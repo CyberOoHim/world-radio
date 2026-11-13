@@ -11,6 +11,7 @@
     "build": "tsc && vite build",
     "start": "node server.ts",
     "auth:token": "node scripts/generate-jwt.js",
+    "ai:seed": "node scripts/build-ai-seed.ts",
     "test": "vitest run",
     "preview": "vite preview",
     "deploy:check": "npm run build && node -e \"const fs=require('fs');const h=fs.readFileSync('dist/index.html','utf8');if(h.includes('/src/main.ts')||h.includes('src=\\\"/assets')){console.error('Bad asset paths in dist/index.html');process.exit(1)}console.log('dist OK');\""
@@ -27,6 +28,7 @@
   "dependencies": {
     "@fontsource/dm-sans": "^5.2.8",
     "@fontsource/instrument-serif": "^5.2.8",
+    "@google/genai": "^3.3.0",
     "leaflet": "^1.9.4",
     "qrcode": "^1.5.4"
   }

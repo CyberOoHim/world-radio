@@ -1,0 +1,54 @@
+name: Update AI Seed Embeddings
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_stations:
+        description: 'Re-fetch the 2,500-station catalog from Radio Browser before embedding'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Compute AI Seed Embeddings
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "Missing GEMINI_API_KEY repository secret."
+            exit 1
+          fi
+          if [ "${{ inputs.refresh_stations }}" = "true" ]; then
+            npm run ai:seed -- --refresh
+          else
+            npm run ai:seed
+          fi
+
+      - name: Commit updated seed index
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/station-seed-index.json
+          if git diff --cached --quiet; then
+            echo "No changes to data/station-seed-index.json"
+            exit 0
+          fi
+          git commit -m "chore: update pre-computed AI station embeddings"
+          git push

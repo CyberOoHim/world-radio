@@ -26,6 +26,13 @@ import {
   timeOfDayPeriodLabel,
   type SearchParams,
 } from './api/radioBrowser';
+import {
+  AI_THINKING_OPTIONS,
+  AI_VIBE_PRESETS,
+  AiAuthError,
+  aiFindSimilarStations,
+  aiSearchStations,
+} from './api/aiSearch';
 import { FX_PRESETS } from './audioFx';
 import { type EqBands } from './equalizer';
 import {
@@ -121,9 +128,11 @@ import {
   toSnapshot,
 } from './storage';
 import type {
+  AiThinkingLevel,
   AppState,
   Country,
   PowerSaverMode,
+  SearchMode,
   SortId,
   Station,
   SurpriseMode,
@@ -157,6 +166,20 @@ const state: AppState = {
   loadingMore: false,
   error: null,
   query: '',
+  searchMode: prefs.searchMode,
+  aiThinkingLevel: prefs.aiThinkingLevel,
+  aiQuery: '',
+  aiSeedStation: null,
+  aiLoading: false,
+  aiError: null,
+  aiAuthRequired: false,
+  aiHeadline: '',
+  aiIntro: '',
+  aiResults: [],
+  aiDjNotes: {},
+  aiPlanTags: [],
+  aiUsedSeedIndex: false,
+  aiSeedCount: 0,
   selectedCountry: prefs.selectedCountry,
   selectedTag: prefs.selectedTag,
   volume: loadVolume(),
@@ -268,6 +291,9 @@ let nearMeSeq = 0;
 /** Guards concurrent Wander hops. */
 let wanderSeq = 0;
 let wanderBusy = false;
+let aiSeq = 0;
+let aiAbort: AbortController | null = null;
+let pendingAiRetry: (() => void) | null = null;
 
 function loadOrSeedPassport(): PassportStamp[] {
   const stored = loadPassport();
@@ -342,6 +368,8 @@ const icons = {
   connection: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 14v8"/></svg>`,
   lock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
   unlock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`,
+  sparkles: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>`,
+  similar: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="17" height="17"><circle cx="8" cy="12" r="4.5"/><circle cx="16" cy="12" r="4.5"/></svg>`,
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -413,6 +441,8 @@ function persistPrefs() {
     view: state.view,
     favoriteGroupFilter: state.favoriteGroupFilter,
     powerSaver: state.powerSaver,
+    aiThinkingLevel: state.aiThinkingLevel,
+    searchMode: state.searchMode,
   });
 }
 
@@ -736,6 +766,7 @@ function getQueueContextName(): string {
     if (state.nearMe) return 'Near me';
     if (state.selectedTag) return state.selectedTag;
     if (state.selectedCountry) return state.selectedCountry;
+    if (state.view === 'ai') return state.aiSeedStation ? 'AI Similar' : 'AI Finder';
     if (state.view === 'search' && state.query.trim()) return `Search "${state.query.trim()}"`;
     if (state.view === 'favorites') return 'Favorites';
     if (state.view === 'recent') return 'Recent history';
@@ -1712,6 +1743,174 @@ async function loadSearch(q: string, reset = true) {
   }
 }
 
+async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
+  const q = rawQuery.trim();
+  if (!q) {
+    state.aiQuery = '';
+    setView('ai', { skipHash: opts?.skipHash });
+    return;
+  }
+
+  if (aiAbort) aiAbort.abort();
+  aiAbort = new AbortController();
+  const seq = ++aiSeq;
+
+  state.view = 'ai';
+  state.nearMe = false;
+  state.surpriseMode = null;
+  state.detailStation = null;
+  state.aiQuery = q;
+  state.query = q;
+  state.aiSeedStation = null;
+  state.aiLoading = true;
+  state.aiError = null;
+  state.aiAuthRequired = false;
+  persistPrefs();
+
+  if (!opts?.skipHash && !applyingRoute) {
+    setHash({ kind: 'ai', q });
+  }
+
+  renderNav();
+  renderTopbar();
+  renderMobileTabs();
+  renderDetail();
+  renderMain();
+
+  try {
+    const res = await aiSearchStations({
+      query: q,
+      thinkingLevel: state.aiThinkingLevel,
+      httpsOnly: state.httpsOnly,
+      signal: aiAbort.signal,
+    });
+    if (seq !== aiSeq) return;
+    state.aiResults = res.stations;
+    state.stations = res.stations;
+    state.hasMore = false;
+    state.aiDjNotes = res.djNotes;
+    state.aiHeadline = res.headline;
+    state.aiIntro = res.intro;
+    state.aiPlanTags = res.planTags;
+    state.aiUsedSeedIndex = res.usedSeedIndex;
+    state.aiSeedCount = res.seedCount;
+    state.aiError = null;
+    state.aiAuthRequired = false;
+    pendingAiRetry = null;
+  } catch (e) {
+    if (seq !== aiSeq) return;
+    if (e instanceof DOMException && e.name === 'AbortError') return;
+    if (e instanceof AiAuthError) {
+      state.aiAuthRequired = true;
+      state.aiError = null;
+      pendingAiRetry = () => {
+        void runAiSearch(q, { skipHash: true });
+      };
+      if (!isPasscodeModalOpen()) {
+        openPasscodeModal(() => {
+          reloadMapTiles();
+          showToast('Passcode verified! Tuning AI search…');
+          renderTopbar();
+          renderNav();
+        });
+      }
+    } else {
+      state.aiError = e instanceof Error ? e.message : 'AI station search failed';
+    }
+  } finally {
+    if (seq === aiSeq) {
+      state.aiLoading = false;
+      renderTopbar();
+      renderMain();
+    }
+  }
+}
+
+async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
+  if (aiAbort) aiAbort.abort();
+  aiAbort = new AbortController();
+  const seq = ++aiSeq;
+
+  state.view = 'ai';
+  state.nearMe = false;
+  state.surpriseMode = null;
+  state.detailStation = null;
+  state.aiSeedStation = station;
+  state.aiLoading = true;
+  state.aiError = null;
+  state.aiAuthRequired = false;
+  persistPrefs();
+
+  if (!opts?.skipHash && !applyingRoute) {
+    setHash({ kind: 'ai', similar: station.stationuuid });
+  }
+
+  renderNav();
+  renderTopbar();
+  renderMobileTabs();
+  renderDetail();
+  renderMain();
+
+  try {
+    const res = await aiFindSimilarStations({
+      station,
+      thinkingLevel: state.aiThinkingLevel,
+      httpsOnly: state.httpsOnly,
+      signal: aiAbort.signal,
+    });
+    if (seq !== aiSeq) return;
+    state.aiResults = res.stations;
+    state.stations = res.stations;
+    state.hasMore = false;
+    state.aiDjNotes = res.djNotes;
+    state.aiHeadline = res.headline;
+    state.aiIntro = res.intro;
+    state.aiPlanTags = res.planTags;
+    state.aiUsedSeedIndex = res.usedSeedIndex;
+    state.aiSeedCount = res.seedCount;
+    state.aiError = null;
+    state.aiAuthRequired = false;
+    pendingAiRetry = null;
+  } catch (e) {
+    if (seq !== aiSeq) return;
+    if (e instanceof DOMException && e.name === 'AbortError') return;
+    if (e instanceof AiAuthError) {
+      state.aiAuthRequired = true;
+      state.aiError = null;
+      pendingAiRetry = () => {
+        void runAiSimilar(station, { skipHash: true });
+      };
+      if (!isPasscodeModalOpen()) {
+        openPasscodeModal(() => {
+          reloadMapTiles();
+          showToast('Passcode verified! Finding similar stations…');
+          renderTopbar();
+          renderNav();
+        });
+      }
+    } else {
+      state.aiError = e instanceof Error ? e.message : 'Similar station search failed';
+    }
+  } finally {
+    if (seq === aiSeq) {
+      state.aiLoading = false;
+      renderTopbar();
+      renderMain();
+    }
+  }
+}
+
+function handleAiSurprisePrompt() {
+  const candidates = AI_VIBE_PRESETS.filter(
+    (p) => p.prompt.toLowerCase() !== state.aiQuery.trim().toLowerCase()
+  );
+  const pool = candidates.length > 0 ? candidates : AI_VIBE_PRESETS;
+  const picked = pool[Math.floor(Math.random() * pool.length)];
+  if (!picked) return;
+  showToast(`AI vibe: ${picked.label}`);
+  void runAiSearch(picked.prompt);
+}
+
 async function loadCountryStations(code: string, reset = true, opts?: { autoPlayTag?: boolean }) {
   const seq = ++loadSeq;
   const offsetAtStart = reset ? 0 : state.offset;
@@ -1855,6 +2054,14 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
         const vp = getMapViewport() ?? loadMapViewport();
         setHash(vp ? { kind: 'map', lat: vp.lat, lon: vp.lon, zoom: vp.zoom } : { kind: 'map' });
       }
+    } else if (view === 'ai') {
+      if (state.aiSeedStation) {
+        setHash({ kind: 'ai', similar: state.aiSeedStation.stationuuid });
+      } else if (state.aiQuery.trim()) {
+        setHash({ kind: 'ai', q: state.aiQuery.trim() });
+      } else {
+        setHash({ kind: 'view', view: 'ai' });
+      }
     } else {
       setHash({ kind: 'view', view });
     }
@@ -1862,6 +2069,14 @@ function setView(view: ViewId, opts?: { skipHash?: boolean }) {
 
   if (view === 'discover') {
     void loadDiscover(true);
+  } else if (view === 'ai') {
+    state.loading = false;
+    state.hasMore = false;
+    state.error = null;
+    if (state.aiResults.length > 0) {
+      state.stations = state.aiResults;
+    }
+    renderAllChrome();
   } else if (view === 'countries') {
     if (state.selectedCountry) {
       void loadCountryStations(state.selectedCountry, true);
@@ -2164,6 +2379,26 @@ async function applyRouteFromHash() {
         if (route.q.trim()) void loadSearch(route.q.trim(), true);
         else setView('search', { skipHash: true });
         break;
+      case 'ai': {
+        if (route.q) {
+          void runAiSearch(route.q, { skipHash: true });
+        } else if (route.similar) {
+          let seed = findStation(route.similar);
+          if (!seed) {
+            try {
+              const res = await getStationsByUuid(route.similar);
+              seed = res[0] ?? undefined;
+            } catch {
+              seed = undefined;
+            }
+          }
+          if (seed) void runAiSimilar(seed, { skipHash: true });
+          else setView('ai', { skipHash: true });
+        } else {
+          setView('ai', { skipHash: true });
+        }
+        break;
+      }
       case 'near':
         openNearMe();
         break;
@@ -2324,6 +2559,7 @@ function stationCard(station: Station): string {
     state.nearMe || typeof station.geo_distance === 'number'
       ? formatDistance(station.geo_distance)
       : null;
+  const djNote = state.view === 'ai' ? state.aiDjNotes[station.stationuuid] : undefined;
 
   return `
     <article class="station-card ${current ? 'is-current' : ''} ${playing ? 'is-playing' : ''}" data-id="${escapeHtml(station.stationuuid)}" data-action="card-play">
@@ -2350,10 +2586,14 @@ function stationCard(station: Station): string {
           }
         </div>
       </div>
+      ${djNote ? `<p class="station-dj-note">${escapeHtml(djNote)}</p>` : ''}
       <div class="station-actions">
         <button type="button" class="btn-play ${playing ? 'is-playing' : ''}" data-action="play" data-id="${escapeHtml(station.stationuuid)}">
           ${playing ? icons.pause : icons.play}
           <span>${playing ? 'Playing' : current && player.loading ? 'Loading…' : 'Listen'}</span>
+        </button>
+        <button type="button" class="btn-icon" data-action="find-similar" data-id="${escapeHtml(station.stationuuid)}" title="Find similar stations with AI" aria-label="Find similar stations">
+          ${icons.similar}
         </button>
         <button type="button" class="btn-icon ${fav ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(station.stationuuid)}" title="${fav ? 'Remove favorite' : 'Add favorite'}" aria-label="Favorite" aria-pressed="${fav}">
           ${fav ? icons.heartFill : icons.heart}
@@ -2802,10 +3042,168 @@ function renderGenres(): string {
   `;
 }
 
+function renderAiView(): string {
+  const auth = getAuthState();
+  const thinkingLabel =
+    AI_THINKING_OPTIONS.find((o) => o.id === state.aiThinkingLevel)?.label ?? 'High · Deep';
+
+  const composerHtml = `
+    <section class="ai-composer">
+      <div class="ai-composer-head">
+        <div>
+          <h2>AI Frequency Finder</h2>
+          <p class="ai-composer-sub">Describe a time, place, memory, or sonic texture. Hybrid AI plans live searches and ranks frequencies by vibe.</p>
+        </div>
+        <label class="ai-thinking-control">
+          <span>Thinking</span>
+          <select class="ai-thinking-select" data-action="ai-thinking-level" aria-label="AI thinking level">
+            ${AI_THINKING_OPTIONS.map(
+              (opt) =>
+                `<option value="${opt.id}" ${state.aiThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+            ).join('')}
+          </select>
+        </label>
+      </div>
+
+      <form class="ai-composer-form" data-action="ai-prompt-form">
+        <input
+          type="search"
+          class="ai-prompt-input"
+          data-action="ai-query-input"
+          placeholder="e.g. Rainy midnight vinyl jazz bar in Tokyo, or 1980s coastal highway synth…"
+          value="${escapeHtml(state.aiQuery)}"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button type="submit" class="btn-ai-tune" ${state.aiLoading ? 'disabled' : ''}>
+          ${icons.sparkles}
+          <span>${state.aiLoading ? 'Tuning…' : 'Tune AI'}</span>
+        </button>
+        <button type="button" class="chip" data-action="ai-surprise" ${state.aiLoading ? 'disabled' : ''}>
+          Surprise vibe
+        </button>
+      </form>
+
+      <div class="ai-presets-grid" role="group" aria-label="Curated vibe prompts">
+        ${AI_VIBE_PRESETS.map(
+          (preset) => `
+          <button
+            type="button"
+            class="ai-preset-btn ${state.aiQuery.trim().toLowerCase() === preset.prompt.toLowerCase() ? 'active' : ''}"
+            data-action="ai-preset"
+            data-prompt="${escapeHtml(preset.prompt)}"
+            ${state.aiLoading ? 'disabled' : ''}
+          >${escapeHtml(preset.label)}</button>`
+        ).join('')}
+      </div>
+    </section>
+  `;
+
+  const seedHtml = state.aiSeedStation
+    ? `<div class="ai-seed-banner">
+        <div>
+          <span class="ai-seed-label">Sonic match seed</span>
+          <strong>${escapeHtml(state.aiSeedStation.name)}</strong>
+          ${
+            state.aiSeedStation.country
+              ? `<span class="ai-seed-country">${countryFlag(state.aiSeedStation.countrycode)} ${escapeHtml(state.aiSeedStation.country)}</span>`
+              : ''
+          }
+        </div>
+        <button type="button" class="chip" data-action="ai-clear-seed">Clear seed</button>
+      </div>`
+    : '';
+
+  let bodyHtml = '';
+  if (state.aiAuthRequired) {
+    bodyHtml = `
+      <div class="ai-auth-card">
+        <div class="ai-auth-copy">
+          <h3>Passcode required for AI search</h3>
+          <p>AI query planning and Gemini embedding reranking run securely on the server. Unlock backend access to tune this prompt.</p>
+        </div>
+        <div class="ai-auth-actions">
+          <button type="button" class="btn-ai-tune" data-action="open-auth-modal">
+            ${icons.lock}
+            <span>Unlock with Passcode</span>
+          </button>
+          <button type="button" class="chip" data-action="switch-to-name-search">Use Name Search</button>
+        </div>
+      </div>
+    `;
+  } else if (state.aiLoading) {
+    bodyHtml = `
+      <div class="loading-box">
+        <div class="spinner"></div>
+        <p>Curating frequencies (${escapeHtml(thinkingLabel)})…</p>
+      </div>
+      ${skeletonGrid()}
+    `;
+  } else if (state.aiError) {
+    bodyHtml = `
+      <div class="error-box">
+        <p>${escapeHtml(state.aiError)}</p>
+        <button type="button" class="btn-more" data-action="ai-retry">Retry AI search</button>
+        <button type="button" class="btn-more" data-action="switch-to-name-search">Switch to Name Search</button>
+      </div>
+    `;
+  } else if (state.aiResults.length > 0) {
+    const sourceMeta = state.aiUsedSeedIndex
+      ? `${state.aiSeedCount.toLocaleString()}-station seed index + live`
+      : 'Live Radio Browser catalog';
+    const themesMeta = state.aiPlanTags.length
+      ? `Themes: ${state.aiPlanTags.slice(0, 4).join(', ')}`
+      : '';
+    bodyHtml = `
+      <div class="ai-results-head">
+        <div>
+          <h3>${escapeHtml(state.aiHeadline || 'Curated Frequencies')}</h3>
+          ${state.aiIntro ? `<p class="ai-results-intro">${escapeHtml(state.aiIntro)}</p>` : ''}
+        </div>
+        <div class="ai-results-meta">
+          <span>${state.aiResults.length} stations</span>
+          <span class="dot"></span>
+          <span>${escapeHtml(thinkingLabel)}</span>
+          <span class="dot"></span>
+          <span>${escapeHtml(sourceMeta)}</span>
+          ${themesMeta ? `<span class="dot"></span><span>${escapeHtml(themesMeta)}</span>` : ''}
+        </div>
+      </div>
+      <div class="station-grid">
+        ${state.aiResults.map(stationCard).join('')}
+      </div>
+    `;
+  } else if (state.aiQuery.trim() || state.aiSeedStation) {
+    bodyHtml = `
+      <div class="empty">
+        <p>No playable stations matched that scene right now. Try broadening the mood or switching to Name Search.</p>
+        <div class="ai-empty-actions">
+          <button type="button" class="btn-more" data-action="ai-surprise">Try another vibe</button>
+          <button type="button" class="btn-more" data-action="switch-to-name-search">Switch to Name Search</button>
+        </div>
+      </div>
+    `;
+  } else {
+    bodyHtml = `
+      <div class="ai-idle-note">
+        ${
+          !auth.authenticated
+            ? `<p>Backend passcode is currently locked — <button type="button" class="link-btn" data-action="open-auth-modal">unlock passcode</button> when ready to run AI searches.</p>`
+            : `<p>Pick a curated scene above, describe any mood or city, or click the overlapping-circles icon on any station to find sonic siblings.</p>`
+        }
+      </div>
+    `;
+  }
+
+  return `${composerHtml}${seedHtml}${bodyHtml}`;
+}
+
 function renderMainHtml(): string {
   switch (state.view) {
     case 'discover':
       return renderDiscover();
+    case 'ai':
+      return renderAiView();
     case 'countries':
       return renderCountries();
     case 'genres':
@@ -2942,6 +3340,9 @@ function renderPlayerHtml(): string {
       <button type="button" class="btn-icon ${isFav(s.stationuuid) ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(s.stationuuid)}" title="Favorite" aria-pressed="${isFav(s.stationuuid)}">
         ${isFav(s.stationuuid) ? icons.heartFill : icons.heart}
       </button>
+      <button type="button" class="btn-icon" data-action="find-similar" data-id="${escapeHtml(s.stationuuid)}" title="Find similar stations with AI" aria-label="Find similar stations">
+        ${icons.similar}
+      </button>
       <button type="button" class="btn-icon" data-action="share" title="Share station" aria-label="Share">
         ${icons.share}
       </button>
@@ -3022,6 +3423,9 @@ function renderDetailHtml(): string {
         <button type="button" class="btn-icon ${fav ? 'is-fav' : ''}" data-action="fav" data-id="${escapeHtml(s.stationuuid)}" aria-pressed="${fav}">
           ${fav ? icons.heartFill : icons.heart}
         </button>
+        <button type="button" class="btn-icon" data-action="find-similar" data-id="${escapeHtml(s.stationuuid)}" title="Find similar stations with AI" aria-label="Find similar stations">
+          ${icons.similar}
+        </button>
         <button type="button" class="btn-icon" data-action="share" data-id="${escapeHtml(s.stationuuid)}" title="Share">${icons.share}</button>
         ${
           safeHttpUrl(s.homepage)
@@ -3059,6 +3463,7 @@ function renderNavHtml(): string {
     </div>
     <div class="nav-section">Explore</div>
     ${navBtn('discover', icons.discover, 'Discover')}
+    ${navBtn('ai', icons.sparkles, 'AI Finder')}
     ${navBtn('map', icons.map, 'Map')}
     ${navBtn('countries', icons.globe, 'Countries')}
     ${navBtn('genres', icons.music, 'Genres')}
@@ -3122,17 +3527,24 @@ function ensureShell() {
         <button type="button" class="mobile-nav-toggle" data-action="toggle-nav" aria-label="Menu">
           ${icons.menu}
         </button>
-        <div class="search-wrap">
-          ${icons.search}
-          <input
-            type="search"
-            class="search-input"
-            placeholder="Search stations, cities, countries…"
-            value=""
-            data-action="search"
-            autocomplete="off"
-            spellcheck="false"
-          />
+        <div class="search-wrap ${state.searchMode === 'ai' ? 'is-ai-mode' : ''}">
+          <div class="search-input-box">
+            ${icons.search}
+            <input
+              type="search"
+              class="search-input"
+              placeholder="${state.searchMode === 'ai' ? 'Describe a vibe, era, or mood (Enter)…' : 'Search stations, cities, countries…'}"
+              value=""
+              data-action="search"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <div class="search-mode-toggle" role="group" aria-label="Search mode">
+            <button type="button" class="search-mode-btn ${state.searchMode === 'name' ? 'active' : ''}" data-action="search-mode" data-mode="name" aria-pressed="${state.searchMode === 'name'}">Name</button>
+            <button type="button" class="search-mode-btn ${state.searchMode === 'ai' ? 'active' : ''}" data-action="search-mode" data-mode="ai" aria-pressed="${state.searchMode === 'ai'}">${icons.sparkles}<span>AI Vibe</span></button>
+          </div>
+          <button type="button" class="search-ai-submit" data-action="submit-ai-topbar" ${state.searchMode === 'ai' ? '' : 'hidden'} title="Run AI station search">Tune AI</button>
         </div>
         <div class="topbar-actions">
           <div class="stats-pill"><strong>—</strong> online</div>
@@ -3204,9 +3616,30 @@ function renderTopbar() {
       <span class="auth-status-text">${auth.authenticated ? 'Connected' : 'Passcode'}</span>
     `;
   }
+  const searchWrap = qs<HTMLElement>('.search-wrap');
+  if (searchWrap) {
+    searchWrap.classList.toggle('is-ai-mode', state.searchMode === 'ai');
+  }
+  document.querySelectorAll<HTMLButtonElement>('[data-action="search-mode"]').forEach((btn) => {
+    const active = btn.dataset.mode === state.searchMode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+  const aiSubmitBtn = qs<HTMLButtonElement>('[data-action="submit-ai-topbar"]');
+  if (aiSubmitBtn) {
+    aiSubmitBtn.hidden = state.searchMode !== 'ai';
+    aiSubmitBtn.disabled = state.aiLoading;
+    aiSubmitBtn.textContent = state.aiLoading ? 'Tuning…' : 'Tune AI';
+  }
   const input = qs<HTMLInputElement>('.search-input');
-  if (input && document.activeElement !== input) {
-    input.value = state.query;
+  if (input) {
+    input.placeholder =
+      state.searchMode === 'ai'
+        ? 'Describe a vibe, era, or mood (Enter)…'
+        : 'Search stations, cities, countries…';
+    if (document.activeElement !== input) {
+      input.value = state.query;
+    }
   }
 }
 
@@ -3376,15 +3809,15 @@ function renderMobileTabs() {
   if (!tabs) return;
   const items: { view: ViewId; label: string; icon: string }[] = [
     { view: 'discover', label: 'Discover', icon: icons.discover },
+    { view: 'ai', label: 'AI Finder', icon: icons.sparkles },
     { view: 'map', label: 'Map', icon: icons.map },
     { view: 'countries', label: 'Places', icon: icons.globe },
     { view: 'favorites', label: 'Saved', icon: icons.heart },
-    { view: 'search', label: 'Search', icon: icons.search },
   ];
   tabs.innerHTML = items
     .map(
       (it) => `
-    <button type="button" class="tab-btn ${state.view === it.view || (it.view === 'search' && state.view === 'search') ? 'active' : ''}" data-view="${it.view}" data-action="${it.view === 'search' ? 'focus-search' : ''}">
+    <button type="button" class="tab-btn ${state.view === it.view ? 'active' : ''}" data-view="${it.view}">
       ${it.icon}
       <span>${it.label}</span>
     </button>`
@@ -3498,6 +3931,8 @@ function setupInfiniteScroll() {
 function findStation(id: string): Station | undefined {
   return (
     state.stations.find((s) => s.stationuuid === id) ||
+    state.aiResults.find((s) => s.stationuuid === id) ||
+    (state.aiSeedStation?.stationuuid === id ? state.aiSeedStation : undefined) ||
     state.recent.find((s) => s.stationuuid === id) ||
     state.favorites.find((s) => s.stationuuid === id) ||
     (state.current?.stationuuid === id ? state.current : undefined) ||
@@ -3532,6 +3967,11 @@ function openDetail(station: Station) {
 
 function reloadCurrentList() {
   if (state.view === 'discover') void loadDiscover(true);
+  else if (state.view === 'ai') {
+    if (state.aiSeedStation) void runAiSimilar(state.aiSeedStation, { skipHash: true });
+    else if (state.aiQuery.trim()) void runAiSearch(state.aiQuery.trim(), { skipHash: true });
+    else renderMain();
+  }
   else if (state.view === 'search' && state.query.trim()) void loadSearch(state.query.trim(), true);
   else if (state.view === 'countries' && state.selectedCountry)
     void loadCountryStations(state.selectedCountry, true);
@@ -3605,6 +4045,22 @@ function restoreAllDefaults(): void {
   state.favoriteGroupFilter = null;
   state.recentQuery = '';
   state.query = '';
+  state.searchMode = 'name';
+  state.aiThinkingLevel = 'high';
+  state.aiQuery = '';
+  state.aiSeedStation = null;
+  state.aiLoading = false;
+  state.aiError = null;
+  state.aiAuthRequired = false;
+  state.aiHeadline = '';
+  state.aiIntro = '';
+  state.aiResults = [];
+  state.aiDjNotes = {};
+  state.aiPlanTags = [];
+  state.aiUsedSeedIndex = false;
+  state.aiSeedCount = 0;
+  pendingAiRetry = null;
+  aiAbort?.abort();
   state.powerSaver = 'auto';
   syncPowerSaverClass();
   passportStamps = [];
@@ -3618,6 +4074,7 @@ function restoreAllDefaults(): void {
   closeFxModal();
 
   renderNav();
+  renderTopbar();
   renderMobileTabs();
   renderPlayer();
   renderDetail();
@@ -3662,6 +4119,8 @@ function ensureAppEvents() {
     if (
       !action ||
       action === 'search' ||
+      action === 'ai-query-input' ||
+      action === 'ai-thinking-level' ||
       action === 'volume' ||
       action === 'browse-filter' ||
       action === 'recent-filter' ||
@@ -3675,6 +4134,71 @@ function ensureAppEvents() {
     }
 
     switch (action) {
+      case 'search-mode': {
+        const mode: SearchMode = t.dataset.mode === 'ai' ? 'ai' : 'name';
+        if (state.searchMode !== mode) {
+          state.searchMode = mode;
+          persistPrefs();
+          renderTopbar();
+          if (mode === 'ai') {
+            qs<HTMLInputElement>('.search-input')?.focus();
+          }
+        }
+        break;
+      }
+      case 'submit-ai-topbar': {
+        const q = state.query.trim();
+        if (q) {
+          void runAiSearch(q);
+        } else {
+          setView('ai');
+          qs<HTMLInputElement>('[data-action="ai-query-input"]')?.focus();
+        }
+        break;
+      }
+      case 'ai-preset': {
+        const prompt = t.dataset.prompt || '';
+        if (prompt) void runAiSearch(prompt);
+        break;
+      }
+      case 'ai-surprise':
+        handleAiSurprisePrompt();
+        break;
+      case 'ai-retry':
+        if (state.aiSeedStation) {
+          void runAiSimilar(state.aiSeedStation);
+        } else if (state.aiQuery.trim()) {
+          void runAiSearch(state.aiQuery.trim());
+        }
+        break;
+      case 'ai-clear-seed':
+        state.aiSeedStation = null;
+        state.aiResults = [];
+        state.aiDjNotes = {};
+        state.aiHeadline = '';
+        state.aiIntro = '';
+        state.aiPlanTags = [];
+        if (!applyingRoute) setHash({ kind: 'view', view: 'ai' });
+        renderMain();
+        break;
+      case 'find-similar': {
+        e.stopPropagation();
+        const id = t.dataset.id;
+        const station = (id ? findStation(id) : null) ?? state.current;
+        if (station) void runAiSimilar(station);
+        break;
+      }
+      case 'switch-to-name-search': {
+        const q = (state.aiQuery || state.query).trim();
+        state.searchMode = 'name';
+        state.query = q;
+        persistPrefs();
+        state.view = 'search';
+        renderTopbar();
+        if (q) void loadSearch(q, true);
+        else setView('search');
+        break;
+      }
       case 'random-country':
         void handlePickRandomCountry();
         break;
@@ -4270,6 +4794,16 @@ function ensureAppEvents() {
       }
       return;
     }
+    if (t.dataset.action === 'ai-thinking-level' && t instanceof HTMLSelectElement) {
+      const val = t.value as AiThinkingLevel;
+      if (val === 'low' || val === 'medium' || val === 'high') {
+        state.aiThinkingLevel = val;
+        persistPrefs();
+        const label = AI_THINKING_OPTIONS.find((o) => o.id === val)?.label ?? val;
+        showToast(`AI thinking level: ${label}`);
+      }
+      return;
+    }
     if (t.dataset.action === 'import-favs' && t instanceof HTMLInputElement && t.files?.[0]) {
       const file = t.files[0];
       const reader = new FileReader();
@@ -4299,6 +4833,18 @@ function ensureAppEvents() {
 
     if (action === 'search' && t instanceof HTMLInputElement) {
       state.query = t.value;
+      if (state.searchMode === 'ai') {
+        state.aiQuery = t.value;
+        if (searchTimer) {
+          clearTimeout(searchTimer);
+          searchTimer = null;
+        }
+        const aiInput = qs<HTMLInputElement>('[data-action="ai-query-input"]');
+        if (aiInput && document.activeElement !== aiInput) {
+          aiInput.value = t.value;
+        }
+        return;
+      }
       if (searchTimer) clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         const q = state.query.trim();
@@ -4315,6 +4861,16 @@ function ensureAppEvents() {
           setView('discover');
         }
       }, 350);
+      return;
+    }
+
+    if (action === 'ai-query-input' && t instanceof HTMLInputElement) {
+      state.aiQuery = t.value;
+      state.query = t.value;
+      const topInput = qs<HTMLInputElement>('.search-input');
+      if (topInput && document.activeElement !== topInput) {
+        topInput.value = t.value;
+      }
       return;
     }
 
@@ -4396,6 +4952,12 @@ function ensureAppEvents() {
 
     if (t.dataset.action === 'search' && ke.key === 'Enter') {
       const q = state.query.trim();
+      if (state.searchMode === 'ai') {
+        ke.preventDefault();
+        if (q) void runAiSearch(q);
+        else setView('ai');
+        return;
+      }
       if (q) {
         state.view = 'search';
         void loadSearch(q, true);
@@ -4411,6 +4973,21 @@ function ensureAppEvents() {
       if (station) {
         if (state.current?.stationuuid === station.stationuuid) togglePlayback();
         else void playStation(station);
+      }
+    }
+  });
+
+  app.addEventListener('submit', (e) => {
+    const target = e.target as HTMLElement | null;
+    if (target instanceof HTMLFormElement && target.dataset.action === 'ai-prompt-form') {
+      e.preventDefault();
+      const input = target.querySelector<HTMLInputElement>('[data-action="ai-query-input"]');
+      const q = (input?.value ?? state.aiQuery).trim();
+      if (q) {
+        void runAiSearch(q);
+      } else {
+        showToast('Describe a mood, place, or genre first');
+        input?.focus();
       }
     }
   });
@@ -4727,6 +5304,16 @@ void checkAuthStatus().then(() => {
   renderNav();
 });
 subscribeAuth(() => {
+  const auth = getAuthState();
+  if (auth.authenticated && (pendingAiRetry || state.aiAuthRequired)) {
+    state.aiAuthRequired = false;
+    const retry = pendingAiRetry;
+    pendingAiRetry = null;
+    if (retry) retry();
+    else if (state.view === 'ai') renderMain();
+  } else if (!auth.authenticated && state.view === 'ai') {
+    renderMain();
+  }
   renderTopbar();
   renderNav();
   reloadMapTiles();

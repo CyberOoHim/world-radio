@@ -45,6 +45,18 @@ describe('parseHash', () => {
     expect(urlFallback).toContain('#/station/uuid-fallback');
   });
 
+  it('parses AI Finder, AI query, and AI similar routes', () => {
+    expect(parseHash('#/ai')).toEqual({ kind: 'ai' });
+    expect(parseHash('#/ai/q/rainy%20tokyo%20jazz')).toEqual({
+      kind: 'ai',
+      q: 'rainy tokyo jazz',
+    });
+    expect(parseHash('#/ai/similar/station-uuid-99')).toEqual({
+      kind: 'ai',
+      similar: 'station-uuid-99',
+    });
+  });
+
   it('returns null on malformed percent-encoding instead of throwing', () => {
     expect(parseHash('#/search/%')).toBeNull();
     expect(parseHash('#/tag/%E0')).toBeNull();

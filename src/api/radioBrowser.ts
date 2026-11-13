@@ -13,9 +13,8 @@ export type { TimeOfDayMode, TimeOfDayPeriod };
 
 const MIRRORS = [
   'https://de1.api.radio-browser.info',
-  'https://nl1.api.radio-browser.info',
-  'https://at1.api.radio-browser.info',
-  'https://fr1.api.radio-browser.info',
+  'https://de2.api.radio-browser.info',
+  'https://all.api.radio-browser.info',
 ];
 
 const FETCH_TIMEOUT_MS = 15_000;

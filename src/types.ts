@@ -45,12 +45,27 @@ export interface Language {
 
 export type ViewId =
   | 'discover'
+  | 'ai'
   | 'map'
   | 'countries'
   | 'genres'
   | 'favorites'
   | 'recent'
   | 'search';
+
+export type SearchMode = 'name' | 'ai';
+export type AiThinkingLevel = 'low' | 'medium' | 'high';
+
+export interface AiSearchResponse {
+  headline: string;
+  intro: string;
+  stations: Station[];
+  djNotes: Record<string, string>;
+  planTags: string[];
+  usedSeedIndex: boolean;
+  seedCount: number;
+  thinkingLevel: AiThinkingLevel;
+}
 
 export type SortId = 'clickcount' | 'votes' | 'name' | 'bitrate' | 'clicktrend' | 'random';
 
@@ -76,6 +91,20 @@ export interface AppState {
   loadingMore: boolean;
   error: string | null;
   query: string;
+  searchMode: SearchMode;
+  aiThinkingLevel: AiThinkingLevel;
+  aiQuery: string;
+  aiSeedStation: Station | null;
+  aiLoading: boolean;
+  aiError: string | null;
+  aiAuthRequired: boolean;
+  aiHeadline: string;
+  aiIntro: string;
+  aiResults: Station[];
+  aiDjNotes: Record<string, string>;
+  aiPlanTags: string[];
+  aiUsedSeedIndex: boolean;
+  aiSeedCount: number;
   selectedCountry: string | null;
   selectedTag: string | null;
   volume: number;
@@ -122,4 +151,6 @@ export interface AppPrefs {
   view: ViewId;
   favoriteGroupFilter: string | null;
   powerSaver: PowerSaverMode;
+  aiThinkingLevel: AiThinkingLevel;
+  searchMode: SearchMode;
 }

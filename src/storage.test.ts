@@ -258,4 +258,41 @@ describe('loadPrefs and savePrefs', () => {
       else delete (globalThis as { localStorage?: unknown }).localStorage;
     }
   });
+
+  it('sanitizes and roundtrips aiThinkingLevel (low/medium/high) and searchMode (name/ai)', () => {
+    const memory = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => memory.get(k) ?? null,
+      setItem: (k: string, v: string) => memory.set(k, String(v)),
+      removeItem: (k: string) => memory.delete(k),
+    };
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
+    try {
+      const defaults = loadPrefs();
+      expect(defaults.aiThinkingLevel).toBe('high');
+      expect(defaults.searchMode).toBe('name');
+
+      savePrefs({ ...defaults, aiThinkingLevel: 'low', searchMode: 'ai', view: 'ai' });
+      const loadedLow = loadPrefs();
+      expect(loadedLow.aiThinkingLevel).toBe('low');
+      expect(loadedLow.searchMode).toBe('ai');
+      expect(loadedLow.view).toBe('ai');
+
+      savePrefs({ ...defaults, aiThinkingLevel: 'medium' });
+      expect(loadPrefs().aiThinkingLevel).toBe('medium');
+
+      memory.set(
+        'world-radio:prefs',
+        JSON.stringify({ aiThinkingLevel: 'xhigh', searchMode: 'bogus', view: 'unknown' })
+      );
+      const sanitized = loadPrefs();
+      expect(sanitized.aiThinkingLevel).toBe('high');
+      expect(sanitized.searchMode).toBe('name');
+      expect(sanitized.view).toBe('discover');
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
 });

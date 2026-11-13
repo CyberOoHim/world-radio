@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { handleTileProxyRequest } from './src/server/tileProxy.ts';
 import { handleAuthRequest } from './src/server/auth.ts';
+import { handleAiSearchRequest } from './src/server/aiSearch.ts';
 
 // Load .env file for local production execution if present
 function loadEnv(): void {
@@ -77,6 +78,20 @@ const server = http.createServer(async (req, res) => {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'Internal server error in tile proxy' }));
+    }
+    return;
+  }
+
+  // Handle AI station search routes (/api/ai/*)
+  try {
+    const aiHandled = await handleAiSearchRequest(req, res);
+    if (aiHandled) return;
+  } catch (err) {
+    console.error('AI search error:', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Internal server error in AI search handler' }));
     }
     return;
   }

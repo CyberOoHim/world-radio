@@ -1,7 +1,17 @@
 import { DEFAULT_EQ_BANDS, type EqBands } from './equalizer';
 import { sanitizePassportStamp, type PassportStamp } from './mapPassport';
 import { DEFAULT_MAP_STYLE, sanitizeMapStyle, type MapStyleId } from './mapStyle';
-import type { AppPrefs, PowerSaverMode, SortId, Station, TagPlaybackBehavior, TimeOfDayMode, ViewId } from './types';
+import type {
+  AiThinkingLevel,
+  AppPrefs,
+  PowerSaverMode,
+  SearchMode,
+  SortId,
+  Station,
+  TagPlaybackBehavior,
+  TimeOfDayMode,
+  ViewId,
+} from './types';
 
 const FAV_KEY = 'world-radio:favorites';
 const RECENT_KEY = 'world-radio:recent';
@@ -306,6 +316,8 @@ export const DEFAULT_PREFS: AppPrefs = {
   view: 'discover',
   favoriteGroupFilter: null,
   powerSaver: 'auto',
+  aiThinkingLevel: 'high',
+  searchMode: 'name',
 };
 
 function sanitizeTimeOfDayMode(v: unknown): TimeOfDayMode {
@@ -326,6 +338,20 @@ function sanitizePowerSaverMode(v: unknown): PowerSaverMode {
     return v;
   }
   return DEFAULT_PREFS.powerSaver;
+}
+
+export function sanitizeAiThinkingLevel(v: unknown): AiThinkingLevel {
+  if (v === 'low' || v === 'medium' || v === 'high') {
+    return v;
+  }
+  return DEFAULT_PREFS.aiThinkingLevel;
+}
+
+export function sanitizeSearchMode(v: unknown): SearchMode {
+  if (v === 'name' || v === 'ai') {
+    return v;
+  }
+  return DEFAULT_PREFS.searchMode;
 }
 
 export function loadPrefs(): AppPrefs {
@@ -375,6 +401,7 @@ export function loadPrefs(): AppPrefs {
         typeof parsed.browseFilter === 'string' ? parsed.browseFilter : '',
       view:
         view === 'discover' ||
+        view === 'ai' ||
         view === 'map' ||
         view === 'countries' ||
         view === 'genres' ||
@@ -388,6 +415,8 @@ export function loadPrefs(): AppPrefs {
           ? parsed.favoriteGroupFilter.trim().slice(0, 40)
           : null,
       powerSaver: sanitizePowerSaverMode(parsed.powerSaver),
+      aiThinkingLevel: sanitizeAiThinkingLevel(parsed.aiThinkingLevel),
+      searchMode: sanitizeSearchMode(parsed.searchMode),
     };
   } catch {
     return { ...DEFAULT_PREFS };
