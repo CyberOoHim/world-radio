@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { normalizeThinkingLevel, handleAiSearchRequest } from './aiSearch';
+import { normalizeThinkingLevel, handleAiSearchRequest, resolveGeminiApiKey } from './aiSearch';
 import { getJwtSecret, signJwt } from './auth';
 import {
   SEED_EMBEDDING_DIM,
@@ -42,6 +42,41 @@ describe('normalizeThinkingLevel', () => {
     expect(normalizeThinkingLevel('xhigh')).toBe('high');
     expect(normalizeThinkingLevel('minimal')).toBe('high');
     expect(normalizeThinkingLevel(undefined)).toBe('high');
+  });
+});
+
+describe('resolveGeminiApiKey', () => {
+  it('prefers GEMINI_API_KEY and falls back to GOOGLE_API_KEY or API_KEY while stripping quotes', () => {
+    const prev = {
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+      GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
+      API_KEY: process.env.API_KEY,
+      GOOGLE_GEMINI_API_KEY: process.env.GOOGLE_GEMINI_API_KEY,
+      GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+    };
+
+    try {
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
+      delete process.env.API_KEY;
+      delete process.env.GOOGLE_GEMINI_API_KEY;
+      delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+      expect(resolveGeminiApiKey()).toBe('');
+
+      process.env.API_KEY = '  "key-from-api-key"  ';
+      expect(resolveGeminiApiKey()).toBe('key-from-api-key');
+
+      process.env.GOOGLE_API_KEY = 'key-from-google-api-key';
+      expect(resolveGeminiApiKey()).toBe('key-from-google-api-key');
+
+      process.env.GEMINI_API_KEY = "'key-from-gemini-api-key'";
+      expect(resolveGeminiApiKey()).toBe('key-from-gemini-api-key');
+    } finally {
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 });
 

@@ -5,10 +5,12 @@ import { handleTileProxyRequest } from './src/server/tileProxy.ts';
 import { handleAuthRequest } from './src/server/auth.ts';
 import { handleAiSearchRequest } from './src/server/aiSearch.ts';
 
-// Load .env file for local production execution if present
+// Load .env files for production execution if present (without overwriting non-empty env vars)
 function loadEnv(): void {
-  const envPath = path.resolve(process.cwd(), '.env');
-  if (fs.existsSync(envPath)) {
+  const envFiles = ['.env.production.local', '.env.local', '.env.production', '.env'];
+  for (const filename of envFiles) {
+    const envPath = path.resolve(process.cwd(), filename);
+    if (!fs.existsSync(envPath)) continue;
     const raw = fs.readFileSync(envPath, 'utf8');
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
@@ -20,7 +22,7 @@ function loadEnv(): void {
         if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
           v = v.slice(1, -1);
         }
-        if (!(k in process.env)) {
+        if (!(process.env[k] || '').trim()) {
           process.env[k] = v;
         }
       }

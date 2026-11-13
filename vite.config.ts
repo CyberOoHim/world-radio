@@ -40,20 +40,20 @@ function serverApiPlugin(): Plugin {
 export default defineConfig(({ mode }) => {
   // Load environment variables strictly for server-side proxy use
   const env = loadEnv(mode, process.cwd(), '');
-  if (env.CARTO_API_KEY && !process.env.CARTO_API_KEY) {
-    process.env.CARTO_API_KEY = env.CARTO_API_KEY;
-  }
-  if (env.APP_PASSCODE && !process.env.APP_PASSCODE) {
-    process.env.APP_PASSCODE = env.APP_PASSCODE;
-  }
-  if (env.AI_PASSCODE && !process.env.AI_PASSCODE) {
-    process.env.AI_PASSCODE = env.AI_PASSCODE;
-  }
-  if (env.JWT_SECRET && !process.env.JWT_SECRET) {
-    process.env.JWT_SECRET = env.JWT_SECRET;
-  }
-  if (env.GEMINI_API_KEY && !process.env.GEMINI_API_KEY) {
-    process.env.GEMINI_API_KEY = env.GEMINI_API_KEY;
+  for (const key of [
+    'CARTO_API_KEY',
+    'APP_PASSCODE',
+    'AI_PASSCODE',
+    'JWT_SECRET',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'API_KEY',
+    'GOOGLE_GEMINI_API_KEY',
+    'GOOGLE_GENERATIVE_AI_API_KEY',
+  ]) {
+    if (env[key] && !(process.env[key] || '').trim()) {
+      process.env[key] = env[key];
+    }
   }
 
   return {

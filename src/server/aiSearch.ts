@@ -136,8 +136,35 @@ function warmSeedIndexInBackground(ai: GoogleGenAI): void {
   });
 }
 
+function cleanEnvSecret(raw: string | undefined): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '';
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+export function resolveGeminiApiKey(): string {
+  const candidates = [
+    process.env.GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.API_KEY,
+    process.env.GOOGLE_GEMINI_API_KEY,
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+  ];
+  for (const candidate of candidates) {
+    const cleaned = cleanEnvSecret(candidate);
+    if (cleaned) return cleaned;
+  }
+  return '';
+}
+
 function getGeminiClient(): GoogleGenAI | null {
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const apiKey = resolveGeminiApiKey();
   if (!apiKey) return null;
   return new GoogleGenAI({
     apiKey,
