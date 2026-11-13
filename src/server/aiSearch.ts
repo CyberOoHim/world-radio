@@ -180,7 +180,7 @@ export function normalizeThinkingLevel(raw: unknown): AiThinkingLevel {
   if (raw === 'low' || raw === 'medium' || raw === 'high') {
     return raw;
   }
-  return 'high';
+  return 'low';
 }
 
 function toSdkThinkingLevel(level: AiThinkingLevel): ThinkingLevel {

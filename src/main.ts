@@ -3051,7 +3051,7 @@ function renderGenres(): string {
 function renderAiView(): string {
   const auth = getAuthState();
   const thinkingLabel =
-    AI_THINKING_OPTIONS.find((o) => o.id === state.aiThinkingLevel)?.label ?? 'High · Deep';
+    AI_THINKING_OPTIONS.find((o) => o.id === state.aiThinkingLevel)?.label ?? 'Low · Fast';
 
   const composerHtml = `
     <section class="ai-composer">
@@ -4058,7 +4058,7 @@ function restoreAllDefaults(): void {
   state.recentQuery = '';
   state.query = '';
   state.searchMode = 'name';
-  state.aiThinkingLevel = 'high';
+  state.aiThinkingLevel = 'low';
   state.aiQuery = '';
   state.aiSeedStation = null;
   state.aiLoading = false;

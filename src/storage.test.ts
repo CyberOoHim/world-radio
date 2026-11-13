@@ -270,14 +270,14 @@ describe('loadPrefs and savePrefs', () => {
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
     try {
       const defaults = loadPrefs();
-      expect(defaults.aiThinkingLevel).toBe('high');
+      expect(defaults.aiThinkingLevel).toBe('low');
       expect(defaults.searchMode).toBe('name');
 
-      savePrefs({ ...defaults, aiThinkingLevel: 'low', searchMode: 'ai', view: 'ai' });
-      const loadedLow = loadPrefs();
-      expect(loadedLow.aiThinkingLevel).toBe('low');
-      expect(loadedLow.searchMode).toBe('ai');
-      expect(loadedLow.view).toBe('ai');
+      savePrefs({ ...defaults, aiThinkingLevel: 'high', searchMode: 'ai', view: 'ai' });
+      const loadedHigh = loadPrefs();
+      expect(loadedHigh.aiThinkingLevel).toBe('high');
+      expect(loadedHigh.searchMode).toBe('ai');
+      expect(loadedHigh.view).toBe('ai');
 
       savePrefs({ ...defaults, aiThinkingLevel: 'medium' });
       expect(loadPrefs().aiThinkingLevel).toBe('medium');
@@ -287,7 +287,7 @@ describe('loadPrefs and savePrefs', () => {
         JSON.stringify({ aiThinkingLevel: 'xhigh', searchMode: 'bogus', view: 'unknown' })
       );
       const sanitized = loadPrefs();
-      expect(sanitized.aiThinkingLevel).toBe('high');
+      expect(sanitized.aiThinkingLevel).toBe('low');
       expect(sanitized.searchMode).toBe('name');
       expect(sanitized.view).toBe('discover');
     } finally {

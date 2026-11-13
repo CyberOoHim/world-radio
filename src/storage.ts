@@ -316,7 +316,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   view: 'discover',
   favoriteGroupFilter: null,
   powerSaver: 'auto',
-  aiThinkingLevel: 'high',
+  aiThinkingLevel: 'low',
   searchMode: 'name',
 };
 

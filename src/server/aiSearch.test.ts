@@ -35,13 +35,13 @@ function createMockRes() {
 }
 
 describe('normalizeThinkingLevel', () => {
-  it('accepts low, medium, high and falls back to high for unsupported levels', () => {
+  it('accepts low, medium, high and falls back to low for unsupported levels', () => {
     expect(normalizeThinkingLevel('low')).toBe('low');
     expect(normalizeThinkingLevel('medium')).toBe('medium');
     expect(normalizeThinkingLevel('high')).toBe('high');
-    expect(normalizeThinkingLevel('xhigh')).toBe('high');
-    expect(normalizeThinkingLevel('minimal')).toBe('high');
-    expect(normalizeThinkingLevel(undefined)).toBe('high');
+    expect(normalizeThinkingLevel('xhigh')).toBe('low');
+    expect(normalizeThinkingLevel('minimal')).toBe('low');
+    expect(normalizeThinkingLevel(undefined)).toBe('low');
   });
 });
 

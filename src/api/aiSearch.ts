@@ -103,7 +103,7 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
 
   const level = obj.thinkingLevel;
   const thinkingLevel: AiThinkingLevel =
-    level === 'low' || level === 'medium' || level === 'high' ? level : 'high';
+    level === 'low' || level === 'medium' || level === 'high' ? level : 'low';
 
   return {
     headline: typeof obj.headline === 'string' ? obj.headline : 'Curated Frequencies',
