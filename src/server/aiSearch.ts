@@ -1,6 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import crypto from 'node:crypto';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import {
+  GoogleGenAI,
+  ThinkingLevel,
+  Type,
+  type ContentListUnion,
+  type GenerateContentConfig,
+  type GenerateContentResponse,
+  type SchemaUnion,
+} from '@google/genai';
 import { validateAiRequestAuth, validateRequestAuth } from './auth.ts';
 import {
   SEED_EMBEDDING_DIM,
@@ -194,7 +202,7 @@ function getGeminiClient(): GoogleGenAI | null {
 }
 
 export function normalizeAiModel(raw: unknown): AiModelId {
-  if (raw === 'gemini-flash-lite-latest' || raw === 'gemini-4-hydrogen') {
+  if (raw === 'gemini-flash-lite-latest' || raw === 'gemini-flash-latest') {
     return raw;
   }
   return DEFAULT_AI_MODEL;
@@ -204,7 +212,7 @@ export function normalizeThinkingLevel(raw: unknown): AiThinkingLevel {
   if (raw === 'low' || raw === 'medium' || raw === 'high') {
     return raw;
   }
-  return 'medium';
+  return 'low';
 }
 
 function toGenAiThinkingLevel(level: AiThinkingLevel): ThinkingLevel {
@@ -237,6 +245,275 @@ export function getDjNotesConfig(model: unknown, level: unknown): {
     model: normalizeAiModel(model),
     thinkingLevel: toGenAiThinkingLevel(normalizeThinkingLevel(level)),
   };
+}
+
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function getErrorStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const obj = err as {
+      status?: unknown;
+      code?: unknown;
+      error?: { code?: unknown; status?: unknown };
+      response?: { status?: unknown };
+    };
+    for (const val of [obj.status, obj.code, obj.error?.code, obj.response?.status]) {
+      if (typeof val === 'number' && Number.isFinite(val)) return val;
+    }
+  }
+  const match = extractErrorMessage(err).match(/\b(400|401|403|404|429|500|502|503|504)\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
+function isFatalAuthOrQuotaError(err: unknown): boolean {
+  const status = getErrorStatus(err);
+  if (status === 401 || status === 403 || status === 429) return true;
+  return /PERMISSION_DENIED|API_KEY_INVALID|API key not valid|RESOURCE_EXHAUSTED|QUOTA_EXCEEDED|UNAUTHENTICATED|billing/i.test(
+    extractErrorMessage(err)
+  );
+}
+
+function isModelNotFoundError(err: unknown): boolean {
+  const status = getErrorStatus(err);
+  if (status === 404) return true;
+  return /NOT_FOUND|is not found|not supported for generateContent|unknown model|model not found/i.test(
+    extractErrorMessage(err)
+  );
+}
+
+function isTransientError(err: unknown): boolean {
+  const status = getErrorStatus(err);
+  if (status === 500 || status === 503 || status === 504) return true;
+  return /UNAVAILABLE|DEADLINE_EXCEEDED|fetch failed|ECONNRESET|ETIMEDOUT/i.test(
+    extractErrorMessage(err)
+  );
+}
+
+function isSchemaConfigError(err: unknown): boolean {
+  const status = getErrorStatus(err);
+  const msg = extractErrorMessage(err);
+  return (
+    (status === 400 || /INVALID_ARGUMENT/i.test(msg)) &&
+    /response_schema|responseSchema|response_mime_type|responseMimeType|json mode|controlled generation|schema/i.test(
+      msg
+    )
+  );
+}
+
+function isRecoverableBadRequestError(err: unknown): boolean {
+  const status = getErrorStatus(err);
+  const msg = extractErrorMessage(err);
+  return (
+    status === 400 ||
+    /INVALID_ARGUMENT|thinking|thinkingLevel|thinking_level|thinkingConfig|thinking_config/i.test(msg)
+  );
+}
+
+export interface GenerateContentFallbackInput {
+  model: AiModelId;
+  contents: ContentListUnion;
+  systemInstruction: string;
+  thinkingLevel: ThinkingLevel;
+  responseMimeType?: string;
+  responseSchema?: SchemaUnion;
+  jsonFallbackHint?: string;
+}
+
+function extractTextFromContents(contents: ContentListUnion): string {
+  if (typeof contents === 'string') return contents;
+  if (Array.isArray(contents)) {
+    return contents
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'text' in item && typeof item.text === 'string') {
+          return item.text;
+        }
+        if (item && typeof item === 'object' && 'parts' in item && Array.isArray(item.parts)) {
+          return item.parts
+            .map((p) => (p && typeof p === 'object' && 'text' in p && typeof p.text === 'string' ? p.text : ''))
+            .filter(Boolean)
+            .join('\n');
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (contents && typeof contents === 'object' && 'parts' in contents && Array.isArray(contents.parts)) {
+    return contents.parts
+      .map((p) => (p && typeof p === 'object' && 'text' in p && typeof p.text === 'string' ? p.text : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function toInteractionThinkingLevel(level: ThinkingLevel): 'low' | 'medium' | 'high' | 'minimal' {
+  switch (level) {
+    case ThinkingLevel.HIGH:
+    case ThinkingLevel.XHIGH:
+      return 'high';
+    case ThinkingLevel.MEDIUM:
+      return 'medium';
+    case ThinkingLevel.MINIMAL:
+      return 'minimal';
+    case ThinkingLevel.LOW:
+    default:
+      return 'low';
+  }
+}
+
+export async function generateContentWithFallback(
+  ai: GoogleGenAI,
+  input: GenerateContentFallbackInput
+): Promise<{ response: GenerateContentResponse; usedModel: string }> {
+  const modelCandidates: string[] =
+    input.model === 'gemini-flash-lite-latest'
+      ? ['gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-4-hydrogen']
+      : ['gemini-flash-latest', 'gemini-4-hydrogen'];
+
+  const schemaModes: Array<'schema' | 'mimeOnly' | 'plain'> = input.responseSchema
+    ? ['schema', 'mimeOnly', 'plain']
+    : input.responseMimeType
+      ? ['mimeOnly', 'plain']
+      : ['plain'];
+
+  let lastError: unknown = null;
+
+  for (const candidateModel of modelCandidates) {
+    const apiVersions: Array<'v1beta' | undefined> =
+      candidateModel.endsWith('-latest') ? ['v1beta', undefined] : [undefined, 'v1beta'];
+
+    const rawThinking: Array<ThinkingLevel | undefined> =
+      candidateModel === 'gemini-3.1-flash-lite'
+        ? [input.thinkingLevel, ThinkingLevel.LOW, ThinkingLevel.MINIMAL, undefined]
+        : [input.thinkingLevel, ThinkingLevel.LOW, undefined];
+    const thinkingCandidates = rawThinking.filter(
+      (val, idx) => rawThinking.indexOf(val) === idx
+    );
+
+    for (const apiVersion of apiVersions) {
+      let moveNextApiVersion = false;
+
+      for (const schemaMode of schemaModes) {
+        for (const level of thinkingCandidates) {
+          const config: GenerateContentConfig = {
+            systemInstruction:
+              schemaMode !== 'schema' && input.jsonFallbackHint
+                ? `${input.systemInstruction}\n\n${input.jsonFallbackHint}`
+                : input.systemInstruction,
+          };
+          if (level !== undefined) {
+            config.thinkingConfig = { thinkingLevel: level };
+          }
+          if (schemaMode === 'schema') {
+            if (input.responseMimeType) config.responseMimeType = input.responseMimeType;
+            if (input.responseSchema) config.responseSchema = input.responseSchema;
+          } else if (schemaMode === 'mimeOnly' && input.responseMimeType) {
+            config.responseMimeType = input.responseMimeType;
+          }
+          if (apiVersion) {
+            config.httpOptions = { apiVersion };
+          }
+
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              const response = await ai.models.generateContent({
+                model: candidateModel,
+                contents: input.contents,
+                config,
+              });
+              return { response, usedModel: candidateModel };
+            } catch (err) {
+              lastError = err;
+              if (isFatalAuthOrQuotaError(err)) {
+                throw err;
+              }
+              if (attempt === 0 && isTransientError(err)) {
+                await new Promise((r) => setTimeout(r, 200));
+                continue;
+              }
+              break;
+            }
+          }
+
+          if (isModelNotFoundError(lastError)) {
+            moveNextApiVersion = true;
+            break;
+          }
+          if (isSchemaConfigError(lastError)) {
+            break;
+          }
+          if (isRecoverableBadRequestError(lastError)) {
+            continue;
+          }
+          throw lastError;
+        }
+
+        if (moveNextApiVersion) {
+          break;
+        }
+      }
+    }
+
+    if (
+      candidateModel === 'gemini-flash-latest' &&
+      typeof ai.interactions?.create === 'function'
+    ) {
+      try {
+        const promptText = extractTextFromContents(input.contents);
+        const sysPrompt = input.jsonFallbackHint
+          ? `${input.systemInstruction}\n\n${input.jsonFallbackHint}`
+          : input.systemInstruction;
+        const interaction = await ai.interactions.create({
+          model: 'models/gemini-flash-latest',
+          input: promptText,
+          system_instruction: sysPrompt,
+          store: false,
+          generation_config: {
+            max_output_tokens: 65536,
+            thinking_level: toInteractionThinkingLevel(input.thinkingLevel),
+          },
+        });
+        let text = interaction.output_text ?? '';
+        if (!text && Array.isArray(interaction.steps)) {
+          const lastModelStep = [...interaction.steps]
+            .reverse()
+            .find((step) => step.type === 'model_output');
+          if (lastModelStep && 'content' in lastModelStep && Array.isArray(lastModelStep.content)) {
+            const textPart = lastModelStep.content.find(
+              (c): c is { type: 'text'; text: string } =>
+                Boolean(c && typeof c === 'object' && c.type === 'text' && 'text' in c)
+            );
+            if (textPart?.text) text = textPart.text;
+          }
+        }
+        if (text.trim()) {
+          return {
+            response: { text } as GenerateContentResponse,
+            usedModel: candidateModel,
+          };
+        }
+      } catch (err) {
+        lastError = err;
+        if (isFatalAuthOrQuotaError(err)) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(extractErrorMessage(lastError) || 'Gemini API request failed');
 }
 
 function parseJsonBody<T>(req: IncomingMessage): Promise<T | null> {
@@ -447,6 +724,44 @@ function stripJsonFence(raw: string): string {
     .trim();
 }
 
+function parseJsonObject(raw: string): Record<string, unknown> {
+  const cleaned = stripJsonFence(raw || '{}');
+  try {
+    const parsed = JSON.parse(cleaned) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through to substring extraction
+  }
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    const parsed = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  }
+  throw new Error('Model returned invalid JSON object for station search plan.');
+}
+
+function parseJsonArray(raw: string): unknown[] {
+  const cleaned = stripJsonFence(raw || '[]');
+  try {
+    const parsed = JSON.parse(cleaned) as unknown;
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // fall through to substring extraction
+  }
+  const start = cleaned.indexOf('[');
+  const end = cleaned.lastIndexOf(']');
+  if (start !== -1 && end > start) {
+    const parsed = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+    if (Array.isArray(parsed)) return parsed;
+  }
+  return [];
+}
+
 async function planSearchWithLlm(
   ai: GoogleGenAI,
   model: AiModelId,
@@ -463,43 +778,42 @@ async function planSearchWithLlm(
 
   const plannerCfg = getPlannerConfig(model, thinkingLevel);
 
-  const response = await ai.models.generateContent({
+  const { response } = await generateContentWithFallback(ai, {
     model: plannerCfg.model,
-    contents: userPrompt,
-    config: {
-      systemInstruction,
-      thinkingConfig: { thinkingLevel: plannerCfg.thinkingLevel },
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          headline: { type: Type.STRING },
-          intro: { type: Type.STRING },
-          semanticProfile: { type: Type.STRING },
-          planTags: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-          },
-          plans: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                tag: { type: Type.STRING },
-                countrycode: { type: Type.STRING },
-                language: { type: Type.STRING },
-                name: { type: Type.STRING },
-              },
+    contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+    systemInstruction,
+    thinkingLevel: plannerCfg.thinkingLevel,
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        headline: { type: Type.STRING },
+        intro: { type: Type.STRING },
+        semanticProfile: { type: Type.STRING },
+        planTags: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+        },
+        plans: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              tag: { type: Type.STRING },
+              countrycode: { type: Type.STRING },
+              language: { type: Type.STRING },
+              name: { type: Type.STRING },
             },
           },
         },
-        required: ['headline', 'intro', 'semanticProfile', 'planTags', 'plans'],
       },
+      required: ['headline', 'intro', 'semanticProfile', 'planTags', 'plans'],
     },
+    jsonFallbackHint:
+      'Return ONLY valid JSON matching { "headline": string, "intro": string, "semanticProfile": string, "planTags": string[], "plans": Array<{ tag?: string, countrycode?: string, language?: string, name?: string }> }.',
   });
 
-  const rawText = stripJsonFence(response.text || '{}');
-  const parsed = JSON.parse(rawText) as Partial<QueryPlanResult>;
+  const parsed = parseJsonObject(response.text || '{}') as Partial<QueryPlanResult>;
 
   const plans = Array.isArray(parsed.plans)
     ? parsed.plans
@@ -533,11 +847,29 @@ async function planSearchWithLlm(
 
 async function embedTexts(ai: GoogleGenAI, texts: string[]): Promise<Float32Array[]> {
   if (texts.length === 0) return [];
-  const res = await ai.models.embedContent({
-    model: EMBEDDING_MODEL,
-    contents: texts,
-    config: { outputDimensionality: SEED_EMBEDDING_DIM },
-  });
+  let res;
+  try {
+    res = await ai.models.embedContent({
+      model: EMBEDDING_MODEL,
+      contents: texts,
+      config: { outputDimensionality: SEED_EMBEDDING_DIM },
+    });
+  } catch (err) {
+    if (
+      isFatalAuthOrQuotaError(err) ||
+      (!isModelNotFoundError(err) && !isRecoverableBadRequestError(err))
+    ) {
+      throw err;
+    }
+    res = await ai.models.embedContent({
+      model: EMBEDDING_MODEL,
+      contents: texts,
+      config: {
+        outputDimensionality: SEED_EMBEDDING_DIM,
+        httpOptions: { apiVersion: 'v1beta' },
+      },
+    });
+  }
   const embeddings = res.embeddings ?? [];
   return texts.map((_, idx) => {
     const vals = embeddings[idx]?.values;
@@ -617,42 +949,46 @@ async function generateDjNotes(
 
   try {
     const notesCfg = getDjNotesConfig(notesModel, notesThinkingLevel);
-    const response = await ai.models.generateContent({
+    const { response } = await generateContentWithFallback(ai, {
       model: notesCfg.model,
-      contents: `Context: ${contextLabel}\nStations:\n${JSON.stringify(compactList)}`,
-      config: {
-        systemInstruction:
-          'You are a warm, knowledgeable late-night radio DJ for World Radio. For each station in the JSON list, write exactly ONE crisp, evocative sentence (max 18 words) explaining why this specific station fits the context. Ground every note strictly in the station\'s real name, country, language, and tags. Never invent percentages, scores, or fake live song titles.',
-        thinkingConfig: { thinkingLevel: notesCfg.thinkingLevel },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              stationuuid: { type: Type.STRING },
-              note: { type: Type.STRING },
-            },
-            required: ['stationuuid', 'note'],
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: `Context: ${contextLabel}\nStations:\n${JSON.stringify(compactList)}` }],
+        },
+      ],
+      systemInstruction:
+        'You are a warm, knowledgeable late-night radio DJ for World Radio. For each station in the JSON list, write exactly ONE crisp, evocative sentence (max 18 words) explaining why this specific station fits the context. Ground every note strictly in the station\'s real name, country, language, and tags. Never invent percentages, scores, or fake live song titles.',
+      thinkingLevel: notesCfg.thinkingLevel,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            stationuuid: { type: Type.STRING },
+            note: { type: Type.STRING },
           },
+          required: ['stationuuid', 'note'],
         },
       },
+      jsonFallbackHint:
+        'Return ONLY a valid JSON array of objects: [{ "stationuuid": string, "note": string }].',
     });
 
-    const parsed = JSON.parse(stripJsonFence(response.text || '[]')) as Array<{
+    const parsed = parseJsonArray(response.text || '[]') as Array<{
       stationuuid?: string;
       note?: string;
     }>;
     const notes: Record<string, string> = {};
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
-        if (item?.stationuuid && typeof item.note === 'string' && item.note.trim()) {
-          notes[item.stationuuid] = item.note.trim();
-        }
+    for (const item of parsed) {
+      if (item?.stationuuid && typeof item.note === 'string' && item.note.trim()) {
+        notes[item.stationuuid] = item.note.trim();
       }
     }
     return notes;
-  } catch {
+  } catch (err) {
+    console.warn('[aiSearch] DJ notes generation failed:', extractErrorMessage(err));
     return {};
   }
 }

@@ -71,9 +71,9 @@ export const AI_MODEL_OPTIONS: Array<{
     detail: 'Fast, lightweight curation',
   },
   {
-    id: 'gemini-4-hydrogen',
-    label: 'Gemini 4 Hydrogen',
-    detail: 'Deep reasoning & richer voice',
+    id: 'gemini-flash-latest',
+    label: 'Flash Latest',
+    detail: 'Richer reasoning & voice',
   },
 ];
 
@@ -119,11 +119,11 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
     : [];
 
   const model: AiModelId =
-    obj.model === 'gemini-4-hydrogen' ? 'gemini-4-hydrogen' : 'gemini-flash-lite-latest';
+    obj.model === 'gemini-flash-latest' ? 'gemini-flash-latest' : 'gemini-flash-lite-latest';
 
   const level = obj.thinkingLevel;
   const thinkingLevel: AiThinkingLevel =
-    level === 'low' || level === 'medium' || level === 'high' ? level : 'medium';
+    level === 'low' || level === 'medium' || level === 'high' ? level : 'low';
 
   return {
     headline: typeof obj.headline === 'string' ? obj.headline : 'Curated Frequencies',

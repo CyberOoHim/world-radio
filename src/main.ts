@@ -218,6 +218,7 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let navOpen = false;
 let sleepMenuOpen = false;
 let restoreConfirmOpen = false;
+let aiModelsExpanded = false;
 let fontScale = loadFontScale();
 document.documentElement.style.setProperty('--font-scale', String(fontScale));
 
@@ -377,6 +378,7 @@ const icons = {
   unlock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`,
   sparkles: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>`,
   similar: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="17" height="17"><circle cx="8" cy="12" r="4.5"/><circle cx="16" cy="12" r="4.5"/></svg>`,
+  chevronDown: `<svg class="ai-expander-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M6 9l6 6 6-6"/></svg>`,
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -3152,12 +3154,13 @@ function renderAiView(): string {
   const stationModelLabel =
     AI_MODEL_OPTIONS.find((o) => o.id === state.aiModel)?.label ?? 'Flash Lite Latest';
   const stationThinkingLabel =
-    AI_THINKING_OPTIONS.find((o) => o.id === state.aiThinkingLevel)?.label ?? 'Medium · Balanced';
+    AI_THINKING_OPTIONS.find((o) => o.id === state.aiThinkingLevel)?.label ?? 'Low · Fast';
   const notesModelLabel =
     AI_MODEL_OPTIONS.find((o) => o.id === state.aiNotesModel)?.label ?? 'Flash Lite Latest';
   const notesThinkingLabel =
-    AI_THINKING_OPTIONS.find((o) => o.id === state.aiNotesThinkingLevel)?.label ??
-    'Medium · Balanced';
+    AI_THINKING_OPTIONS.find((o) => o.id === state.aiNotesThinkingLevel)?.label ?? 'Low · Fast';
+  const stationThinkingShort = stationThinkingLabel.split(' · ')[0] || 'Low';
+  const notesThinkingShort = notesThinkingLabel.split(' · ')[0] || 'Low';
 
   const composerHtml = `
     <section class="ai-composer">
@@ -3165,38 +3168,6 @@ function renderAiView(): string {
         <div>
           <h2>AI Frequency Finder</h2>
           <p class="ai-composer-sub">Describe a time, place, memory, or sonic texture. Hybrid AI plans live searches and ranks frequencies by vibe.</p>
-        </div>
-        <div class="ai-controls-stack">
-          <div class="ai-control-group" role="group" aria-label="Station search LLM controls">
-            <span class="ai-control-group-label">Station</span>
-            <select class="ai-thinking-select" data-action="ai-model" aria-label="Station search model">
-              ${AI_MODEL_OPTIONS.map(
-                (opt) =>
-                  `<option value="${opt.id}" ${state.aiModel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
-              ).join('')}
-            </select>
-            <select class="ai-thinking-select" data-action="ai-thinking-level" aria-label="Station search thinking level">
-              ${AI_THINKING_OPTIONS.map(
-                (opt) =>
-                  `<option value="${opt.id}" ${state.aiThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
-              ).join('')}
-            </select>
-          </div>
-          <div class="ai-control-group" role="group" aria-label="DJ note LLM controls">
-            <span class="ai-control-group-label">DJ Note</span>
-            <select class="ai-thinking-select" data-action="ai-notes-model" aria-label="DJ note model">
-              ${AI_MODEL_OPTIONS.map(
-                (opt) =>
-                  `<option value="${opt.id}" ${state.aiNotesModel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
-              ).join('')}
-            </select>
-            <select class="ai-thinking-select" data-action="ai-notes-thinking-level" aria-label="DJ note thinking level">
-              ${AI_THINKING_OPTIONS.map(
-                (opt) =>
-                  `<option value="${opt.id}" ${state.aiNotesThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
-              ).join('')}
-            </select>
-          </div>
         </div>
       </div>
 
@@ -3218,6 +3189,58 @@ function renderAiView(): string {
           Surprise vibe
         </button>
       </form>
+
+      <div class="ai-models-expander ${aiModelsExpanded ? 'is-open' : ''}">
+        <button
+          type="button"
+          class="ai-expander-toggle"
+          data-action="toggle-ai-models"
+          aria-expanded="${aiModelsExpanded ? 'true' : 'false'}"
+          aria-controls="ai-models-panel"
+        >
+          <span class="ai-expander-lead">
+            ${icons.chevronDown}
+            <span class="ai-expander-title">Model settings</span>
+          </span>
+          <span class="ai-expander-summary">
+            Station: ${escapeHtml(stationModelLabel)} (${escapeHtml(stationThinkingShort)}) · DJ Note: ${escapeHtml(notesModelLabel)} (${escapeHtml(notesThinkingShort)})
+          </span>
+        </button>
+        <div id="ai-models-panel" class="ai-expander-body" ${aiModelsExpanded ? '' : 'hidden'}>
+          <div class="ai-controls-stack">
+            <div class="ai-control-group" role="group" aria-label="Station search LLM controls">
+              <span class="ai-control-group-label">Station</span>
+              <select class="ai-thinking-select" data-action="ai-model" aria-label="Station search model">
+                ${AI_MODEL_OPTIONS.map(
+                  (opt) =>
+                    `<option value="${opt.id}" ${state.aiModel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+                ).join('')}
+              </select>
+              <select class="ai-thinking-select" data-action="ai-thinking-level" aria-label="Station search thinking level">
+                ${AI_THINKING_OPTIONS.map(
+                  (opt) =>
+                    `<option value="${opt.id}" ${state.aiThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+                ).join('')}
+              </select>
+            </div>
+            <div class="ai-control-group" role="group" aria-label="DJ note LLM controls">
+              <span class="ai-control-group-label">DJ Note</span>
+              <select class="ai-thinking-select" data-action="ai-notes-model" aria-label="DJ note model">
+                ${AI_MODEL_OPTIONS.map(
+                  (opt) =>
+                    `<option value="${opt.id}" ${state.aiNotesModel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+                ).join('')}
+              </select>
+              <select class="ai-thinking-select" data-action="ai-notes-thinking-level" aria-label="DJ note thinking level">
+                ${AI_THINKING_OPTIONS.map(
+                  (opt) =>
+                    `<option value="${opt.id}" ${state.aiNotesThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+                ).join('')}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="ai-presets-grid" role="group" aria-label="Curated vibe prompts">
         ${AI_VIBE_PRESETS.map(
@@ -4190,9 +4213,10 @@ function restoreAllDefaults(): void {
   state.query = '';
   state.searchMode = 'name';
   state.aiModel = 'gemini-flash-lite-latest';
-  state.aiThinkingLevel = 'medium';
+  state.aiThinkingLevel = 'low';
   state.aiNotesModel = 'gemini-flash-lite-latest';
-  state.aiNotesThinkingLevel = 'medium';
+  state.aiNotesThinkingLevel = 'low';
+  aiModelsExpanded = false;
   state.aiQuery = '';
   state.aiSeedStation = null;
   state.aiLoading = false;
@@ -4306,6 +4330,10 @@ function ensureAppEvents() {
         }
         break;
       }
+      case 'toggle-ai-models':
+        aiModelsExpanded = !aiModelsExpanded;
+        renderMain();
+        break;
       case 'ai-preset': {
         const prompt = t.dataset.prompt || '';
         if (prompt) void runAiSearch(prompt);
@@ -4955,11 +4983,12 @@ function ensureAppEvents() {
     }
     if (t.dataset.action === 'ai-model' && t instanceof HTMLSelectElement) {
       const val = t.value as AiModelId;
-      if (val === 'gemini-flash-lite-latest' || val === 'gemini-4-hydrogen') {
+      if (val === 'gemini-flash-lite-latest' || val === 'gemini-flash-latest') {
         state.aiModel = val;
         persistPrefs();
         const label = AI_MODEL_OPTIONS.find((o) => o.id === val)?.label ?? val;
         showToast(`Station model: ${label}`);
+        renderMain();
       }
       return;
     }
@@ -4970,12 +4999,13 @@ function ensureAppEvents() {
         persistPrefs();
         const label = AI_THINKING_OPTIONS.find((o) => o.id === val)?.label ?? val;
         showToast(`Station thinking: ${label}`);
+        renderMain();
       }
       return;
     }
     if (t.dataset.action === 'ai-notes-model' && t instanceof HTMLSelectElement) {
       const val = t.value as AiModelId;
-      if (val === 'gemini-flash-lite-latest' || val === 'gemini-4-hydrogen') {
+      if (val === 'gemini-flash-lite-latest' || val === 'gemini-flash-latest') {
         state.aiNotesModel = val;
         persistPrefs();
         const label = AI_MODEL_OPTIONS.find((o) => o.id === val)?.label ?? val;
@@ -4999,6 +5029,8 @@ function ensureAppEvents() {
             seedStation: state.aiSeedStation,
             stations: state.aiResults,
           });
+        } else {
+          renderMain();
         }
       }
       return;
@@ -5029,6 +5061,8 @@ function ensureAppEvents() {
             seedStation: state.aiSeedStation,
             stations: state.aiResults,
           });
+        } else {
+          renderMain();
         }
       }
       return;

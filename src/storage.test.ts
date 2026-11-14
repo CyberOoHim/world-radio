@@ -271,39 +271,39 @@ describe('loadPrefs and savePrefs', () => {
     try {
       const defaults = loadPrefs();
       expect(defaults.aiModel).toBe('gemini-flash-lite-latest');
-      expect(defaults.aiThinkingLevel).toBe('medium');
+      expect(defaults.aiThinkingLevel).toBe('low');
       expect(defaults.aiNotesModel).toBe('gemini-flash-lite-latest');
-      expect(defaults.aiNotesThinkingLevel).toBe('medium');
+      expect(defaults.aiNotesThinkingLevel).toBe('low');
       expect(defaults.searchMode).toBe('name');
 
       savePrefs({
         ...defaults,
-        aiModel: 'gemini-4-hydrogen',
+        aiModel: 'gemini-flash-latest',
         aiThinkingLevel: 'high',
-        aiNotesModel: 'gemini-4-hydrogen',
-        aiNotesThinkingLevel: 'low',
+        aiNotesModel: 'gemini-flash-latest',
+        aiNotesThinkingLevel: 'medium',
         searchMode: 'ai',
         view: 'ai',
       });
       const loadedCustom = loadPrefs();
-      expect(loadedCustom.aiModel).toBe('gemini-4-hydrogen');
+      expect(loadedCustom.aiModel).toBe('gemini-flash-latest');
       expect(loadedCustom.aiThinkingLevel).toBe('high');
-      expect(loadedCustom.aiNotesModel).toBe('gemini-4-hydrogen');
-      expect(loadedCustom.aiNotesThinkingLevel).toBe('low');
+      expect(loadedCustom.aiNotesModel).toBe('gemini-flash-latest');
+      expect(loadedCustom.aiNotesThinkingLevel).toBe('medium');
       expect(loadedCustom.searchMode).toBe('ai');
       expect(loadedCustom.view).toBe('ai');
 
-      savePrefs({ ...defaults, aiThinkingLevel: 'low', aiNotesThinkingLevel: 'high' });
+      savePrefs({ ...defaults, aiThinkingLevel: 'medium', aiNotesThinkingLevel: 'high' });
       const loadedMixed = loadPrefs();
       expect(loadedMixed.aiModel).toBe('gemini-flash-lite-latest');
-      expect(loadedMixed.aiThinkingLevel).toBe('low');
+      expect(loadedMixed.aiThinkingLevel).toBe('medium');
       expect(loadedMixed.aiNotesModel).toBe('gemini-flash-lite-latest');
       expect(loadedMixed.aiNotesThinkingLevel).toBe('high');
 
       memory.set(
         'world-radio:prefs',
         JSON.stringify({
-          aiModel: 'gemini-2.0-flash',
+          aiModel: 'gemini-4-hydrogen',
           aiThinkingLevel: 'xhigh',
           aiNotesModel: 'unknown-model',
           aiNotesThinkingLevel: 'minimal',
@@ -313,9 +313,9 @@ describe('loadPrefs and savePrefs', () => {
       );
       const sanitized = loadPrefs();
       expect(sanitized.aiModel).toBe('gemini-flash-lite-latest');
-      expect(sanitized.aiThinkingLevel).toBe('medium');
+      expect(sanitized.aiThinkingLevel).toBe('low');
       expect(sanitized.aiNotesModel).toBe('gemini-flash-lite-latest');
-      expect(sanitized.aiNotesThinkingLevel).toBe('medium');
+      expect(sanitized.aiNotesThinkingLevel).toBe('low');
       expect(sanitized.searchMode).toBe('name');
       expect(sanitized.view).toBe('discover');
     } finally {

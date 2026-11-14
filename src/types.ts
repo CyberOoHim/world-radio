@@ -54,7 +54,7 @@ export type ViewId =
   | 'search';
 
 export type SearchMode = 'name' | 'ai';
-export type AiModelId = 'gemini-flash-lite-latest' | 'gemini-4-hydrogen';
+export type AiModelId = 'gemini-flash-lite-latest' | 'gemini-flash-latest';
 export type AiThinkingLevel = 'low' | 'medium' | 'high';
 
 export interface AiSearchResponse {

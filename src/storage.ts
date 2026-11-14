@@ -318,9 +318,9 @@ export const DEFAULT_PREFS: AppPrefs = {
   favoriteGroupFilter: null,
   powerSaver: 'auto',
   aiModel: 'gemini-flash-lite-latest',
-  aiThinkingLevel: 'medium',
+  aiThinkingLevel: 'low',
   aiNotesModel: 'gemini-flash-lite-latest',
-  aiNotesThinkingLevel: 'medium',
+  aiNotesThinkingLevel: 'low',
   searchMode: 'name',
 };
 
@@ -345,7 +345,7 @@ function sanitizePowerSaverMode(v: unknown): PowerSaverMode {
 }
 
 export function sanitizeAiModel(v: unknown): AiModelId {
-  if (v === 'gemini-flash-lite-latest' || v === 'gemini-4-hydrogen') {
+  if (v === 'gemini-flash-lite-latest' || v === 'gemini-flash-latest') {
     return v;
   }
   return DEFAULT_PREFS.aiModel;

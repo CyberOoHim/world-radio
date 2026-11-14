@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
+  generateContentWithFallback,
   getDjNotesConfig,
   getPlannerConfig,
   handleAiSearchRequest,
@@ -43,21 +44,22 @@ function createMockRes() {
 }
 
 describe('normalizeAiModel and normalizeThinkingLevel', () => {
-  it('accepts gemini-flash-lite-latest and gemini-4-hydrogen and falls back to flash-lite-latest', () => {
+  it('accepts gemini-flash-lite-latest and gemini-flash-latest and falls back to flash-lite-latest', () => {
     expect(normalizeAiModel('gemini-flash-lite-latest')).toBe('gemini-flash-lite-latest');
-    expect(normalizeAiModel('gemini-4-hydrogen')).toBe('gemini-4-hydrogen');
+    expect(normalizeAiModel('gemini-flash-latest')).toBe('gemini-flash-latest');
+    expect(normalizeAiModel('gemini-4-hydrogen')).toBe('gemini-flash-lite-latest');
     expect(normalizeAiModel('gemini-3.1-flash-lite')).toBe('gemini-flash-lite-latest');
     expect(normalizeAiModel('gemini-2.0-flash')).toBe('gemini-flash-lite-latest');
     expect(normalizeAiModel(undefined)).toBe('gemini-flash-lite-latest');
   });
 
-  it('accepts low, medium, high and falls back to medium for unsupported levels', () => {
+  it('accepts low, medium, high and falls back to low for unsupported levels', () => {
     expect(normalizeThinkingLevel('low')).toBe('low');
     expect(normalizeThinkingLevel('medium')).toBe('medium');
     expect(normalizeThinkingLevel('high')).toBe('high');
-    expect(normalizeThinkingLevel('xhigh')).toBe('medium');
-    expect(normalizeThinkingLevel('minimal')).toBe('medium');
-    expect(normalizeThinkingLevel(undefined)).toBe('medium');
+    expect(normalizeThinkingLevel('xhigh')).toBe('low');
+    expect(normalizeThinkingLevel('minimal')).toBe('low');
+    expect(normalizeThinkingLevel(undefined)).toBe('low');
   });
 
   it('maps independent Station and DJ Note models and thinking levels cleanly', () => {
@@ -69,20 +71,20 @@ describe('normalizeAiModel and normalizeThinkingLevel', () => {
       model: 'gemini-flash-lite-latest',
       thinkingLevel: ThinkingLevel.MEDIUM,
     });
-    expect(getPlannerConfig('gemini-4-hydrogen', 'high')).toEqual({
-      model: 'gemini-4-hydrogen',
+    expect(getPlannerConfig('gemini-flash-latest', 'high')).toEqual({
+      model: 'gemini-flash-latest',
       thinkingLevel: ThinkingLevel.HIGH,
     });
-    expect(getDjNotesConfig('gemini-flash-lite-latest', 'medium')).toEqual({
+    expect(getDjNotesConfig('gemini-flash-lite-latest', 'low')).toEqual({
       model: 'gemini-flash-lite-latest',
-      thinkingLevel: ThinkingLevel.MEDIUM,
-    });
-    expect(getDjNotesConfig('gemini-4-hydrogen', 'low')).toEqual({
-      model: 'gemini-4-hydrogen',
       thinkingLevel: ThinkingLevel.LOW,
     });
-    expect(getDjNotesConfig('gemini-4-hydrogen', 'high')).toEqual({
-      model: 'gemini-4-hydrogen',
+    expect(getDjNotesConfig('gemini-flash-latest', 'low')).toEqual({
+      model: 'gemini-flash-latest',
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    expect(getDjNotesConfig('gemini-flash-latest', 'high')).toEqual({
+      model: 'gemini-flash-latest',
       thinkingLevel: ThinkingLevel.HIGH,
     });
   });
@@ -321,3 +323,195 @@ describe('handleAiSearchRequest', () => {
     expect(mock.res.statusCode).toBe(405);
   });
 });
+
+describe('generateContentWithFallback', () => {
+  it('uses apiVersion v1beta first for gemini-flash-lite-latest', async () => {
+    const calls: Array<{ model: string; apiVersion?: string; thinkingLevel?: unknown }> = [];
+    const fakeAi = {
+      models: {
+        async generateContent(req: {
+          model: string;
+          config?: { httpOptions?: { apiVersion?: string }; thinkingConfig?: { thinkingLevel?: unknown } };
+        }) {
+          calls.push({
+            model: req.model,
+            apiVersion: req.config?.httpOptions?.apiVersion,
+            thinkingLevel: req.config?.thinkingConfig?.thinkingLevel,
+          });
+          return { text: '{"ok":true}' };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const result = await generateContentWithFallback(fakeAi, {
+      model: 'gemini-flash-lite-latest',
+      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+      systemInstruction: 'sys',
+      thinkingLevel: ThinkingLevel.MEDIUM,
+      responseMimeType: 'application/json',
+      responseSchema: { type: Type.OBJECT, properties: { ok: { type: Type.BOOLEAN } } },
+    });
+
+    expect(result.usedModel).toBe('gemini-flash-lite-latest');
+    expect(calls).toEqual([
+      {
+        model: 'gemini-flash-lite-latest',
+        apiVersion: 'v1beta',
+        thinkingLevel: ThinkingLevel.MEDIUM,
+      },
+    ]);
+  });
+
+  it('steps down thinkingLevel to LOW and then omits thinkingConfig on 400 INVALID_ARGUMENT', async () => {
+    const seenThinking: Array<unknown> = [];
+    const fakeAi = {
+      models: {
+        async generateContent(req: {
+          model: string;
+          config?: { thinkingConfig?: { thinkingLevel?: unknown } };
+        }) {
+          const level = req.config?.thinkingConfig?.thinkingLevel;
+          seenThinking.push(level);
+          if (level !== undefined) {
+            throw Object.assign(new Error('400 INVALID_ARGUMENT: thinkingLevel is not supported'), {
+              status: 400,
+            });
+          }
+          return { text: '{"ok":true}' };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const result = await generateContentWithFallback(fakeAi, {
+      model: 'gemini-flash-lite-latest',
+      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+      systemInstruction: 'sys',
+      thinkingLevel: ThinkingLevel.HIGH,
+      responseMimeType: 'application/json',
+    });
+
+    expect(result.usedModel).toBe('gemini-flash-lite-latest');
+    expect(seenThinking).toEqual([ThinkingLevel.HIGH, ThinkingLevel.LOW, undefined]);
+  });
+
+  it('falls back from gemini-flash-lite-latest to gemini-3.1-flash-lite on 404 NOT_FOUND', async () => {
+    const attempts: Array<{ model: string; apiVersion?: string }> = [];
+    const fakeAi = {
+      models: {
+        async generateContent(req: {
+          model: string;
+          config?: { httpOptions?: { apiVersion?: string } };
+        }) {
+          attempts.push({
+            model: req.model,
+            apiVersion: req.config?.httpOptions?.apiVersion,
+          });
+          if (req.model === 'gemini-flash-lite-latest') {
+            throw Object.assign(new Error('404 NOT_FOUND: model not found'), { status: 404 });
+          }
+          return { text: '{"ok":true}' };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const result = await generateContentWithFallback(fakeAi, {
+      model: 'gemini-flash-lite-latest',
+      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+      systemInstruction: 'sys',
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+
+    expect(result.usedModel).toBe('gemini-3.1-flash-lite');
+    expect(attempts).toEqual([
+      { model: 'gemini-flash-lite-latest', apiVersion: 'v1beta' },
+      { model: 'gemini-flash-lite-latest', apiVersion: undefined },
+      { model: 'gemini-3.1-flash-lite', apiVersion: undefined },
+    ]);
+  });
+
+  it('immediately rethrows 403 PERMISSION_DENIED, 400 API_KEY_INVALID, and 429 RESOURCE_EXHAUSTED without fallback', async () => {
+    for (const fatalErr of [
+      Object.assign(new Error('PERMISSION_DENIED'), { status: 403 }),
+      Object.assign(new Error('API_KEY_INVALID: API key not valid'), { status: 400 }),
+      Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 }),
+    ]) {
+      let count = 0;
+      const fakeAi = {
+        models: {
+          async generateContent() {
+            count++;
+            throw fatalErr;
+          },
+        },
+      } as unknown as GoogleGenAI;
+
+      await expect(
+        generateContentWithFallback(fakeAi, {
+          model: 'gemini-flash-lite-latest',
+          contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+          systemInstruction: 'sys',
+          thinkingLevel: ThinkingLevel.LOW,
+        })
+      ).rejects.toThrow(fatalErr.message);
+      expect(count).toBe(1);
+    }
+  });
+
+  it('routes gemini-flash-latest via v1beta and falls back to interactions or gemini-4-hydrogen on 404', async () => {
+    const interactionCalls: Array<{ model: string; thinking_level?: string }> = [];
+    const fakeAiWithInteractions = {
+      models: {
+        async generateContent() {
+          throw Object.assign(new Error('404 NOT_FOUND'), { status: 404 });
+        },
+      },
+      interactions: {
+        async create(req: {
+          model: string;
+          generation_config?: { thinking_level?: string };
+        }) {
+          interactionCalls.push({
+            model: req.model,
+            thinking_level: req.generation_config?.thinking_level,
+          });
+          return { output_text: '{"ok":true}' };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const res1 = await generateContentWithFallback(fakeAiWithInteractions, {
+      model: 'gemini-flash-latest',
+      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+      systemInstruction: 'sys',
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    expect(res1.usedModel).toBe('gemini-flash-latest');
+    expect(res1.response.text).toBe('{"ok":true}');
+    expect(interactionCalls).toEqual([
+      { model: 'models/gemini-flash-latest', thinking_level: 'low' },
+    ]);
+
+    const modelCalls: string[] = [];
+    const fakeAiModelFallback = {
+      models: {
+        async generateContent(req: { model: string }) {
+          modelCalls.push(req.model);
+          if (req.model === 'gemini-flash-latest') {
+            throw Object.assign(new Error('404 NOT_FOUND'), { status: 404 });
+          }
+          return { text: '{"ok":true}' };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const res2 = await generateContentWithFallback(fakeAiModelFallback, {
+      model: 'gemini-flash-latest',
+      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+      systemInstruction: 'sys',
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    expect(res2.usedModel).toBe('gemini-4-hydrogen');
+    expect(modelCalls).toEqual(['gemini-flash-latest', 'gemini-flash-latest', 'gemini-4-hydrogen']);
+  });
+});
+
