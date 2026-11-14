@@ -187,6 +187,9 @@ const state: AppState = {
   aiPlanTags: [],
   aiUsedSeedIndex: false,
   aiSeedCount: 0,
+  aiUseReranker: prefs.aiUseReranker,
+  aiUsedReranker: false,
+  aiTargetRegions: [],
   selectedCountry: prefs.selectedCountry,
   selectedTag: prefs.selectedTag,
   volume: loadVolume(),
@@ -454,6 +457,7 @@ function persistPrefs() {
     aiThinkingLevel: state.aiThinkingLevel,
     aiNotesModel: state.aiNotesModel,
     aiNotesThinkingLevel: state.aiNotesThinkingLevel,
+    aiUseReranker: state.aiUseReranker,
     searchMode: state.searchMode,
   });
 }
@@ -1850,6 +1854,7 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
       model: state.aiModel,
       thinkingLevel: state.aiThinkingLevel,
       httpsOnly: state.httpsOnly,
+      useReranker: state.aiUseReranker,
       signal: aiAbort.signal,
     });
     if (seq !== aiSeq) return;
@@ -1862,6 +1867,8 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
     state.aiPlanTags = res.planTags;
     state.aiUsedSeedIndex = res.usedSeedIndex;
     state.aiSeedCount = res.seedCount;
+    state.aiUsedReranker = res.usedReranker ?? false;
+    state.aiTargetRegions = res.targetRegions ?? [];
     state.aiError = null;
     state.aiAuthRequired = false;
     pendingAiRetry = null;
@@ -1942,6 +1949,7 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
       model: state.aiModel,
       thinkingLevel: state.aiThinkingLevel,
       httpsOnly: state.httpsOnly,
+      useReranker: state.aiUseReranker,
       signal: aiAbort.signal,
     });
     if (seq !== aiSeq) return;
@@ -1954,6 +1962,8 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
     state.aiPlanTags = res.planTags;
     state.aiUsedSeedIndex = res.usedSeedIndex;
     state.aiSeedCount = res.seedCount;
+    state.aiUsedReranker = res.usedReranker ?? false;
+    state.aiTargetRegions = res.targetRegions ?? [];
     state.aiError = null;
     state.aiAuthRequired = false;
     pendingAiRetry = null;
@@ -3203,7 +3213,7 @@ function renderAiView(): string {
             <span class="ai-expander-title">Model settings</span>
           </span>
           <span class="ai-expander-summary">
-            Station: ${escapeHtml(stationModelLabel)} (${escapeHtml(stationThinkingShort)}) · DJ Note: ${escapeHtml(notesModelLabel)} (${escapeHtml(notesThinkingShort)})
+            Station: ${escapeHtml(stationModelLabel)} (${escapeHtml(stationThinkingShort)}) · Rerank: ${state.aiUseReranker ? 'On' : 'Off'} · DJ Note: ${escapeHtml(notesModelLabel)} (${escapeHtml(notesThinkingShort)})
           </span>
         </button>
         <div id="ai-models-panel" class="ai-expander-body" ${aiModelsExpanded ? '' : 'hidden'}>
@@ -3237,6 +3247,19 @@ function renderAiView(): string {
                     `<option value="${opt.id}" ${state.aiNotesThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
                 ).join('')}
               </select>
+            </div>
+            <div class="ai-control-group" role="group" aria-label="Curatorial LLM reranker control">
+              <span class="ai-control-group-label">Rerank</span>
+              <button
+                type="button"
+                class="ai-rerank-toggle ${state.aiUseReranker ? 'is-on' : ''}"
+                data-action="ai-rerank-toggle"
+                aria-pressed="${state.aiUseReranker ? 'true' : 'false'}"
+                title="Verify and rerank retrieved stations with an LLM curator pass for maximum relevance"
+              >
+                <span class="ai-rerank-indicator" aria-hidden="true"></span>
+                <span>LLM Curatorial Rerank: ${state.aiUseReranker ? 'On' : 'Off'}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -3297,7 +3320,7 @@ function renderAiView(): string {
     bodyHtml = `
       <div class="loading-box">
         <div class="spinner"></div>
-        <p>Curating frequencies (${escapeHtml(stationModelLabel)} · ${escapeHtml(stationThinkingLabel)})…</p>
+        <p>${state.aiUseReranker ? 'Curating & verifying frequencies' : 'Curating frequencies'} (${escapeHtml(stationModelLabel)} · ${escapeHtml(stationThinkingLabel)})…</p>
       </div>
       ${skeletonGrid()}
     `;
@@ -3316,6 +3339,12 @@ function renderAiView(): string {
     const themesMeta = state.aiPlanTags.length
       ? `Themes: ${state.aiPlanTags.slice(0, 4).join(', ')}`
       : '';
+    const regionMeta = state.aiTargetRegions.length
+      ? `Region: ${state.aiTargetRegions.slice(0, 3).join(', ')}`
+      : '';
+    const rerankMeta = state.aiUsedReranker
+      ? 'Curatorial Rerank: On'
+      : 'Curatorial Rerank: Off';
     bodyHtml = `
       <div class="ai-results-head">
         <div>
@@ -3324,6 +3353,9 @@ function renderAiView(): string {
         </div>
         <div class="ai-results-meta">
           <span>${state.aiResults.length} stations</span>
+          ${regionMeta ? `<span class="dot"></span><span>${escapeHtml(regionMeta)}</span>` : ''}
+          <span class="dot"></span>
+          <span>${escapeHtml(rerankMeta)}</span>
           <span class="dot"></span>
           <span>Station: ${escapeHtml(stationModelLabel)} (${escapeHtml(stationThinkingLabel)})</span>
           <span class="dot"></span>
@@ -4334,6 +4366,26 @@ function ensureAppEvents() {
         aiModelsExpanded = !aiModelsExpanded;
         renderMain();
         break;
+      case 'ai-rerank-toggle':
+        state.aiUseReranker = !state.aiUseReranker;
+        persistPrefs();
+        showToast(
+          state.aiUseReranker
+            ? 'LLM Curatorial Rerank: Enabled'
+            : 'LLM Curatorial Rerank: Disabled'
+        );
+        if (state.view === 'ai' && !state.aiLoading) {
+          if (state.aiSeedStation) {
+            void runAiSimilar(state.aiSeedStation, { skipHash: true });
+          } else if (state.aiQuery.trim()) {
+            void runAiSearch(state.aiQuery.trim(), { skipHash: true });
+          } else {
+            renderMain();
+          }
+        } else {
+          renderMain();
+        }
+        break;
       case 'ai-preset': {
         const prompt = t.dataset.prompt || '';
         if (prompt) void runAiSearch(prompt);
@@ -4358,6 +4410,8 @@ function ensureAppEvents() {
         state.aiHeadline = '';
         state.aiIntro = '';
         state.aiPlanTags = [];
+        state.aiTargetRegions = [];
+        state.aiUsedReranker = false;
         if (!applyingRoute) setHash({ kind: 'view', view: 'ai' });
         renderMain();
         break;

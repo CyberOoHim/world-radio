@@ -125,6 +125,10 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
   const thinkingLevel: AiThinkingLevel =
     level === 'low' || level === 'medium' || level === 'high' ? level : 'low';
 
+  const targetRegions = Array.isArray(obj.targetRegions)
+    ? obj.targetRegions.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+    : [];
+
   return {
     headline: typeof obj.headline === 'string' ? obj.headline : 'Curated Frequencies',
     intro: typeof obj.intro === 'string' ? obj.intro : '',
@@ -135,6 +139,8 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
     seedCount: typeof obj.seedCount === 'number' ? obj.seedCount : 0,
     model,
     thinkingLevel,
+    usedReranker: typeof obj.usedReranker === 'boolean' ? obj.usedReranker : undefined,
+    targetRegions,
   };
 }
 
@@ -143,6 +149,7 @@ export async function aiSearchStations(params: {
   model: AiModelId;
   thinkingLevel: AiThinkingLevel;
   httpsOnly: boolean;
+  useReranker?: boolean;
   signal?: AbortSignal;
 }): Promise<AiSearchResponse> {
   const res = await fetch('/api/ai/search', {
@@ -155,6 +162,7 @@ export async function aiSearchStations(params: {
       model: params.model,
       thinkingLevel: params.thinkingLevel,
       httpsOnly: params.httpsOnly,
+      useReranker: params.useReranker ?? true,
     }),
   });
 
@@ -179,6 +187,7 @@ export async function aiFindSimilarStations(params: {
   model: AiModelId;
   thinkingLevel: AiThinkingLevel;
   httpsOnly: boolean;
+  useReranker?: boolean;
   signal?: AbortSignal;
 }): Promise<AiSearchResponse> {
   const res = await fetch('/api/ai/similar', {
@@ -191,6 +200,7 @@ export async function aiFindSimilarStations(params: {
       model: params.model,
       thinkingLevel: params.thinkingLevel,
       httpsOnly: params.httpsOnly,
+      useReranker: params.useReranker ?? true,
     }),
   });
 

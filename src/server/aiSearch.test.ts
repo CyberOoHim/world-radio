@@ -5,14 +5,18 @@ import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
+  computeGeoTieredRank,
   generateContentWithFallback,
   getDjNotesConfig,
   getPlannerConfig,
   handleAiSearchRequest,
+  mergeGeoIntent,
   normalizeAiModel,
   normalizeThinkingLevel,
+  rerankCandidatesWithLlm,
   resolveGeminiApiKey,
 } from './aiSearch';
+import { resolveGeoIntentFromText } from './geoTaxonomy';
 import { getJwtSecret, signJwt } from './auth';
 import {
   SEED_EMBEDDING_DIM,
@@ -514,4 +518,190 @@ describe('generateContentWithFallback', () => {
     expect(modelCalls).toEqual(['gemini-flash-latest', 'gemini-flash-latest', 'gemini-4-hydrogen']);
   });
 });
+
+describe('geoTaxonomy and geo-tiered ranking', () => {
+  it('resolves multi-country regions and biomes like Africa safari and Amazon rainy forest', () => {
+    const safari = resolveGeoIntentFromText('Africa safari');
+    expect(safari.hasGeoIntent).toBe(true);
+    expect(safari.countryCodes).toContain('KE');
+    expect(safari.countryCodes).toContain('TZ');
+    expect(safari.countryCodes).toContain('ZA');
+
+    const amazon = resolveGeoIntentFromText('Amazon rainy forest');
+    expect(amazon.hasGeoIntent).toBe(true);
+    expect(amazon.countryCodes).toContain('BR');
+    expect(amazon.countryCodes).toContain('PE');
+    expect(amazon.countryCodes).toContain('CO');
+
+    const pureMood = resolveGeoIntentFromText('Deep-focus analog ambient');
+    expect(pureMood.hasGeoIntent).toBe(false);
+    expect(pureMood.countryCodes).toEqual([]);
+  });
+
+  it('enriches buildStationDescriptor with sub-region and continent', () => {
+    const desc = buildStationDescriptor({
+      changeuuid: '',
+      stationuuid: 'ke-1',
+      name: 'Nairobi Dawn FM',
+      url: 'https://example.com/ke',
+      url_resolved: 'https://example.com/ke',
+      homepage: '',
+      favicon: '',
+      tags: 'african, afrobeat',
+      country: 'Kenya',
+      countrycode: 'KE',
+      state: 'Nairobi',
+      language: 'swahili',
+      languagecodes: 'sw',
+      votes: 20,
+      codec: 'AAC',
+      bitrate: 96,
+      lastcheckok: 1,
+      clickcount: 150,
+      clicktrend: 2,
+      geo_lat: null,
+      geo_long: null,
+    });
+    expect(desc).toContain('Location: Nairobi, Kenya (East Africa, Africa)');
+  });
+
+  it('prioritizes authentic regional stations over popular out-of-region keyword traps', () => {
+    const makeStation = (id: string, countrycode: string, clickcount: number, bitrate: number): Station => ({
+      changeuuid: '',
+      stationuuid: id,
+      name: id,
+      url: `https://example.com/${id}`,
+      url_resolved: `https://example.com/${id}`,
+      homepage: '',
+      favicon: '',
+      tags: 'music',
+      country: countrycode,
+      countrycode,
+      state: '',
+      language: '',
+      languagecodes: '',
+      votes: 10,
+      codec: 'MP3',
+      bitrate,
+      lastcheckok: 1,
+      clickcount,
+      clicktrend: 0,
+      geo_lat: null,
+      geo_long: null,
+    });
+
+    const kenyaLocal = makeStation('Kenya Local FM', 'KE', 80, 96);
+    const germanNatureSpa = makeStation('0R - NATURE RELAX Rainforest', 'DE', 500000, 320);
+
+    const targetCountrySet = new Set(['KE', 'TZ', 'ZA']);
+    const keRank = computeGeoTieredRank(kenyaLocal, 0.52, {
+      geoPriority: true,
+      targetCountrySet,
+      targetRegionTokens: ['africa'],
+    });
+    const deRank = computeGeoTieredRank(germanNatureSpa, 0.89, {
+      geoPriority: true,
+      targetCountrySet,
+      targetRegionTokens: ['africa'],
+    });
+
+    expect(keRank.isExactCountry).toBe(true);
+    expect(deRank.isExactCountry).toBe(false);
+    expect(keRank.score).toBeGreaterThan(deRank.score);
+  });
+
+  it('merges deterministic gazetteer countries with LLM country codes', () => {
+    const merged = mergeGeoIntent('Amazon rainy forest', ['BR'], ['Brazil'], false);
+    expect(merged.geoPriority).toBe(true);
+    expect(merged.targetCountryCodes).toEqual(expect.arrayContaining(['BR', 'PE', 'CO', 'EC', 'BO']));
+  });
+});
+
+describe('rerankCandidatesWithLlm', () => {
+  const makeStation = (uuid: string, name: string, countrycode: string, tags: string): Station => ({
+    changeuuid: '',
+    stationuuid: uuid,
+    name,
+    url: `https://example.com/${uuid}`,
+    url_resolved: `https://example.com/${uuid}`,
+    homepage: '',
+    favicon: '',
+    tags,
+    country: countrycode,
+    countrycode,
+    state: '',
+    language: '',
+    languagecodes: '',
+    votes: 10,
+    codec: 'MP3',
+    bitrate: 128,
+    lastcheckok: 1,
+    clickcount: 100,
+    clicktrend: 0,
+    geo_lat: null,
+    geo_long: null,
+  });
+
+  it('orders authentic regional stations and drops rejected keyword traps while ignoring hallucinated UUIDs', async () => {
+    const sBr = makeStation('br-1', 'Radio Amazonas', 'BR', 'mpb, folk');
+    const sPe = makeStation('pe-1', 'Radio Loreto Iquitos', 'PE', 'cumbia, news');
+    const sTrap = makeStation('gb-trap', 'UK Jungle DnB', 'GB', 'jungle, drum and bass');
+
+    const fakeAi = {
+      models: {
+        async generateContent() {
+          return {
+            text: JSON.stringify({
+              orderedUuids: ['pe-1', 'hallucinated-uuid', 'br-1'],
+              rejectedUuids: ['gb-trap'],
+            }),
+          };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const result = await rerankCandidatesWithLlm(fakeAi, 'gemini-flash-lite-latest', 'low', {
+      contextLabel: 'Amazon rainy forest',
+      targetRegions: ['Amazonia & South America'],
+      targetCountryCodes: ['BR', 'PE', 'CO'],
+      geoPriority: true,
+      candidates: [
+        { station: sTrap, isGeoMatch: false },
+        { station: sBr, isGeoMatch: true },
+        { station: sPe, isGeoMatch: true },
+      ],
+    });
+
+    expect(result.usedReranker).toBe(true);
+    expect(result.stations.map((s) => s.stationuuid)).toEqual(['pe-1', 'br-1']);
+  });
+
+  it('falls back gracefully to deterministic ranking when LLM reranker throws', async () => {
+    const s1 = makeStation('ke-1', 'Nairobi Jazz', 'KE', 'jazz');
+    const s2 = makeStation('tz-1', 'Dar FM', 'TZ', 'african');
+
+    const failingAi = {
+      models: {
+        async generateContent() {
+          throw new Error('503 UNAVAILABLE');
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const result = await rerankCandidatesWithLlm(failingAi, 'gemini-flash-lite-latest', 'low', {
+      contextLabel: 'Africa safari',
+      targetRegions: ['Africa'],
+      targetCountryCodes: ['KE', 'TZ'],
+      geoPriority: true,
+      candidates: [
+        { station: s1, isGeoMatch: true },
+        { station: s2, isGeoMatch: true },
+      ],
+    });
+
+    expect(result.usedReranker).toBe(false);
+    expect(result.stations.map((s) => s.stationuuid)).toEqual(['ke-1', 'tz-1']);
+  });
+});
+
 

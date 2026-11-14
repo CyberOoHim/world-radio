@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Station } from '../types.ts';
+import { getStationGeoLabels } from './geoTaxonomy.ts';
 
 export const SEED_EMBEDDING_DIM = 768;
-export const SEED_SWEET_SPOT_COUNT = 2500;
+export const SEED_SWEET_SPOT_COUNT = 4500;
 
 export interface SeedStationItem {
   station: Station;
@@ -28,8 +29,13 @@ export interface LoadedSeedEntry {
 export function buildStationDescriptor(station: Station): string {
   const parts: string[] = [];
   if (station.name) parts.push(`Station: ${station.name.trim()}`);
-  if (station.country || station.countrycode) {
-    const loc = [station.state, station.country || station.countrycode].filter(Boolean).join(', ');
+  const geo = getStationGeoLabels(station.countrycode);
+  if (station.country || station.countrycode || geo) {
+    const baseLoc = [station.state, station.country || geo?.countryName || station.countrycode]
+      .filter(Boolean)
+      .join(', ');
+    const macroLoc = geo ? `${geo.subRegion}, ${geo.continent}` : '';
+    const loc = baseLoc && macroLoc ? `${baseLoc} (${macroLoc})` : baseLoc || macroLoc;
     if (loc) parts.push(`Location: ${loc}`);
   }
   if (station.language) parts.push(`Language: ${station.language}`);
@@ -212,7 +218,7 @@ export class SeedIndexStore {
   /** Fast <3ms brute-force cosine search across all bundled seed stations with vectors. */
   searchTopMatches(
     queryVector: Float32Array,
-    opts: { limit?: number; httpsOnly?: boolean; excludeUuid?: string } = {}
+    opts: { limit?: number; httpsOnly?: boolean; excludeUuid?: string; countryCodes?: string[] } = {}
   ): Array<{ station: Station; similarity: number }> {
     this.load();
     if (this.vectorCount === 0) return [];
@@ -220,12 +226,17 @@ export class SeedIndexStore {
     const limit = opts.limit ?? 24;
     const httpsOnly = Boolean(opts.httpsOnly);
     const excludeUuid = opts.excludeUuid;
+    const countrySet =
+      opts.countryCodes && opts.countryCodes.length > 0
+        ? new Set(opts.countryCodes.map((c) => c.trim().toUpperCase()).filter((c) => c.length === 2))
+        : null;
 
     const scored: Array<{ station: Station; similarity: number }> = [];
     for (const entry of this.entries) {
       if (!entry.vector) continue;
       const st = entry.station;
       if (excludeUuid && st.stationuuid === excludeUuid) continue;
+      if (countrySet && !countrySet.has((st.countrycode || '').trim().toUpperCase())) continue;
       const streamUrl = (st.url_resolved || st.url || '').trim();
       if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) continue;
       if (httpsOnly && !/^https:\/\//i.test(streamUrl)) continue;
@@ -247,6 +258,7 @@ export class SeedIndexStore {
       httpsOnly?: boolean;
       excludeUuid?: string;
       countryCodes?: string[];
+      requireCountryMatch?: boolean;
     } = {}
   ): Station[] {
     this.load();
@@ -266,25 +278,31 @@ export class SeedIndexStore {
     const countrySet = new Set(
       (opts.countryCodes ?? []).map((c) => c.trim().toUpperCase()).filter((c) => c.length === 2)
     );
+    const requireCountry = Boolean(opts.requireCountryMatch && countrySet.size > 0);
 
     const scored: Array<{ station: Station; score: number }> = [];
     for (const entry of this.entries) {
       const st = entry.station;
       if (excludeUuid && st.stationuuid === excludeUuid) continue;
+      const code = (st.countrycode || '').trim().toUpperCase();
+      const inCountrySet = countrySet.size > 0 && countrySet.has(code);
+      if (requireCountry && !inCountrySet) continue;
+
       const streamUrl = (st.url_resolved || st.url || '').trim();
       if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) continue;
       if (httpsOnly && !/^https:\/\//i.test(streamUrl)) continue;
       if (st.lastcheckok === 0) continue;
 
-      const haystack = `${st.name} ${st.tags} ${st.country} ${st.state} ${st.language}`.toLowerCase();
+      const geo = getStationGeoLabels(code);
+      const haystack = `${st.name} ${st.tags} ${st.country} ${st.state} ${st.language} ${geo ? `${geo.subRegion} ${geo.continent}` : ''}`.toLowerCase();
       let matchScore = 0;
       for (const term of cleanTerms) {
         if (haystack.includes(term)) {
           matchScore += st.tags.toLowerCase().includes(term) ? 3 : 2;
         }
       }
-      if (countrySet.size > 0 && countrySet.has((st.countrycode || '').toUpperCase())) {
-        matchScore += 3;
+      if (inCountrySet) {
+        matchScore += 8;
       }
       const popBoost = Math.min(1.5, Math.log10(Math.max(10, st.clickcount || 10)) / 4);
       scored.push({ station: st, score: matchScore + popBoost * 0.25 });

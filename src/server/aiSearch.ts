@@ -17,6 +17,7 @@ import {
   normalizeVector,
   seedIndexStore,
 } from './seedIndex.ts';
+import { getStationGeoLabels, resolveGeoIntentFromText } from './geoTaxonomy.ts';
 import type { AiModelId, AiSearchResponse, AiThinkingLevel, Station } from '../types.ts';
 
 import dns from 'node:dns/promises';
@@ -610,6 +611,9 @@ interface QueryPlanResult {
   semanticProfile: string;
   planTags: string[];
   plans: FilterPlan[];
+  targetCountryCodes: string[];
+  targetRegions: string[];
+  geoPriority: boolean;
 }
 
 let popularFallbackCache: { expiresAt: number; stations: Station[] } | null = null;
@@ -762,6 +766,47 @@ function parseJsonArray(raw: string): unknown[] {
   return [];
 }
 
+export function mergeGeoIntent(
+  queryText: string,
+  llmCountryCodes: string[],
+  llmRegions: string[],
+  llmGeoPriority: boolean
+): {
+  targetCountryCodes: string[];
+  targetRegions: string[];
+  geoPriority: boolean;
+  regionalTags: string[];
+} {
+  const deterministic = resolveGeoIntentFromText(queryText);
+  const codeSet = new Set<string>();
+  for (const c of deterministic.countryCodes) {
+    const clean = c.trim().toUpperCase();
+    if (clean.length === 2) codeSet.add(clean);
+  }
+  for (const c of llmCountryCodes) {
+    const clean = c.trim().toUpperCase();
+    if (clean.length === 2) codeSet.add(clean);
+  }
+
+  const regionSet = new Set<string>();
+  for (const r of deterministic.regionLabels) {
+    if (r.trim()) regionSet.add(r.trim());
+  }
+  for (const r of llmRegions) {
+    if (r.trim()) regionSet.add(r.trim());
+  }
+
+  const targetCountryCodes = [...codeSet].slice(0, 20);
+  const targetRegions = [...regionSet].slice(0, 6);
+  const geoPriority = Boolean(llmGeoPriority || deterministic.hasGeoIntent || targetCountryCodes.length > 0);
+  return {
+    targetCountryCodes,
+    targetRegions,
+    geoPriority,
+    regionalTags: deterministic.regionalTags,
+  };
+}
+
 async function planSearchWithLlm(
   ai: GoogleGenAI,
   model: AiModelId,
@@ -769,12 +814,16 @@ async function planSearchWithLlm(
   opts: { mode: 'search'; query: string } | { mode: 'similar'; station: Station }
 ): Promise<QueryPlanResult> {
   const systemInstruction =
-    'You are an expert global radio curator for World Radio. Translate a listener prompt or seed radio station into structured Radio Browser directory search filters plus a rich semantic mood profile for vector matching. Keep tags lowercase single/two-word Radio Browser genres (e.g., jazz, ambient, lo-fi, classical, chillout, bossa nova, synthwave, acoustic, world music, news, talk, soul, indie, electronic, folk, tango, dub). Keep countrycode as 2-letter ISO-3166-1 uppercase codes when geography is implied or helpful.';
+    'You are an expert global radio curator for World Radio. Translate a listener prompt or seed radio station into structured Radio Browser directory search filters plus a rich semantic mood profile for vector matching.\n' +
+    'GEOGRAPHY RULES:\n' +
+    '- If the prompt mentions or evokes ANY country, city, continent, sub-region, culture, or regional biome (e.g. "Africa safari", "Amazon rainy forest", "Tokyo", "Nordic", "Caribbean"), set geoPriority=true, list the most relevant 2-letter ISO-3166-1 uppercase codes in targetCountryCodes (up to 12 countries, e.g. Africa safari -> ["KE","TZ","ZA","BW","NA","UG","NG","GH","ET","SN"]; Amazon rainforest -> ["BR","PE","CO","EC","BO","VE"]), and list human region names in targetRegions.\n' +
+    '- In plans, NEVER invent non-existent Radio Browser scene tags like "safari", "rainforest", "amazon", or "savanna" as tag filters. Use real Radio Browser music/broadcast tags (e.g. african, afrobeat, world music, mpb, bossa nova, cumbia, folk, jazz, ambient, news, talk, soul, indie, electronic, tango, dub, reggae).\n' +
+    '- When geoPriority=true, make plans target targetCountryCodes (including at least one country-only plan without a restrictive tag, e.g. { "countrycode": "KE" } or { "countrycode": "BR" }). Only omit countrycode when geoPriority=false (pure global mood/genre queries).';
 
   const userPrompt =
     opts.mode === 'search'
-      ? `Listener prompt: "${opts.query}"\nGenerate 2 to 4 diverse Radio Browser search plans (at least one broad tag plan without country restriction for fallback coverage), a short atmospheric editorial headline (3-6 words), a 1-sentence host intro, and a rich semanticProfile describing the sonic texture, tempo, mood, era, and geography.`
-      : `Seed radio station:\n${buildStationDescriptor(opts.station)}\nGenerate 2 to 4 Radio Browser search plans to discover spiritual and sonic cousins from around the world (include both same/adjacent genres and regional/cultural echoes), an editorial headline like "Echoes of ${opts.station.name.slice(0, 28)}", a 1-sentence host intro, and a rich semanticProfile capturing its sonic essence.`;
+      ? `Listener prompt: "${opts.query}"\nGenerate 3 to 4 Radio Browser search plans, targetCountryCodes, targetRegions, geoPriority, a short atmospheric editorial headline (3-6 words), a 1-sentence host intro, and a rich semanticProfile describing the sonic texture, tempo, mood, era, and geography.`
+      : `Seed radio station:\n${buildStationDescriptor(opts.station)}\nGenerate 2 to 4 Radio Browser search plans to discover spiritual and sonic cousins from around the world (include both same/adjacent genres and regional/cultural echoes), set geoPriority=false unless the station name strongly implies purely local discovery, an editorial headline like "Echoes of ${opts.station.name.slice(0, 28)}", a 1-sentence host intro, and a rich semanticProfile capturing its sonic essence.`;
 
   const plannerCfg = getPlannerConfig(model, thinkingLevel);
 
@@ -790,6 +839,15 @@ async function planSearchWithLlm(
         headline: { type: Type.STRING },
         intro: { type: Type.STRING },
         semanticProfile: { type: Type.STRING },
+        geoPriority: { type: Type.BOOLEAN },
+        targetCountryCodes: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+        },
+        targetRegions: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+        },
         planTags: {
           type: Type.ARRAY,
           items: { type: Type.STRING },
@@ -807,19 +865,49 @@ async function planSearchWithLlm(
           },
         },
       },
-      required: ['headline', 'intro', 'semanticProfile', 'planTags', 'plans'],
+      required: ['headline', 'intro', 'semanticProfile', 'geoPriority', 'targetCountryCodes', 'targetRegions', 'planTags', 'plans'],
     },
     jsonFallbackHint:
-      'Return ONLY valid JSON matching { "headline": string, "intro": string, "semanticProfile": string, "planTags": string[], "plans": Array<{ tag?: string, countrycode?: string, language?: string, name?: string }> }.',
+      'Return ONLY valid JSON matching { "headline": string, "intro": string, "semanticProfile": string, "geoPriority": boolean, "targetCountryCodes": string[], "targetRegions": string[], "planTags": string[], "plans": Array<{ tag?: string, countrycode?: string, language?: string, name?: string }> }.',
   });
 
   const parsed = parseJsonObject(response.text || '{}') as Partial<QueryPlanResult>;
+
+  const rawLlmCodes = Array.isArray(parsed.targetCountryCodes)
+    ? parsed.targetCountryCodes.filter((c): c is string => typeof c === 'string')
+    : [];
+  const rawLlmRegions = Array.isArray(parsed.targetRegions)
+    ? parsed.targetRegions.filter((r): r is string => typeof r === 'string')
+    : [];
+
+  const mergedGeo =
+    opts.mode === 'search'
+      ? mergeGeoIntent(opts.query, rawLlmCodes, rawLlmRegions, Boolean(parsed.geoPriority))
+      : {
+          targetCountryCodes: rawLlmCodes.map((c) => c.trim().toUpperCase()).filter((c) => c.length === 2),
+          targetRegions: rawLlmRegions.map((r) => r.trim()).filter(Boolean),
+          geoPriority: false,
+          regionalTags: [],
+        };
 
   const plans = Array.isArray(parsed.plans)
     ? parsed.plans
         .filter((p): p is FilterPlan => Boolean(p && typeof p === 'object'))
         .slice(0, 4)
     : [];
+
+  // If geographic intent is active, ensure plans prioritize target countries and don't starve them
+  const finalPlans: FilterPlan[] =
+    plans.length > 0
+      ? plans
+      : mergedGeo.targetCountryCodes.length > 0
+        ? mergedGeo.targetCountryCodes.slice(0, 3).map((countrycode) => ({ countrycode }))
+        : [{ tag: 'jazz' }, { tag: 'ambient' }];
+
+  const rawPlanTags = Array.isArray(parsed.planTags)
+    ? parsed.planTags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    : [];
+  const combinedTags = [...new Set([...rawPlanTags, ...mergedGeo.regionalTags])].slice(0, 6);
 
   return {
     headline:
@@ -838,10 +926,11 @@ async function planSearchWithLlm(
         : opts.mode === 'search'
           ? opts.query
           : buildStationDescriptor(opts.station),
-    planTags: Array.isArray(parsed.planTags)
-      ? parsed.planTags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).slice(0, 6)
-      : [],
-    plans: plans.length > 0 ? plans : [{ tag: 'jazz' }, { tag: 'ambient' }],
+    planTags: combinedTags,
+    plans: finalPlans,
+    targetCountryCodes: mergedGeo.targetCountryCodes,
+    targetRegions: mergedGeo.targetRegions,
+    geoPriority: mergedGeo.geoPriority,
   };
 }
 
@@ -993,6 +1082,197 @@ async function generateDjNotes(
   }
 }
 
+export function computeGeoTieredRank(
+  station: Station,
+  sim: number,
+  opts: {
+    geoPriority: boolean;
+    targetCountrySet: Set<string>;
+    targetRegionTokens: string[];
+  }
+): { score: number; isExactCountry: boolean; isRegionTextMatch: boolean } {
+  const pop = Math.log10(Math.max(10, (station.clickcount || 0) + (station.votes || 0) * 2)) / 6;
+  const clampedPop = Math.min(1, pop);
+
+  if (!opts.geoPriority || opts.targetCountrySet.size === 0) {
+    const bitrateBonus = station.bitrate >= 128 ? 0.03 : 0;
+    return {
+      score: sim * 0.84 + clampedPop * 0.13 + bitrateBonus,
+      isExactCountry: false,
+      isRegionTextMatch: false,
+    };
+  }
+
+  const code = (station.countrycode || '').trim().toUpperCase();
+  const isExactCountry = code.length === 2 && opts.targetCountrySet.has(code);
+  const geoLabels = getStationGeoLabels(code);
+  const stationText = `${station.name} ${station.tags} ${station.country} ${station.state} ${geoLabels?.continent || ''} ${geoLabels?.subRegion || ''}`.toLowerCase();
+  const isRegionTextMatch =
+    !isExactCountry &&
+    opts.targetRegionTokens.some((tok) => tok.length >= 4 && stationText.includes(tok));
+
+  const geoBonus = isExactCountry ? 0.55 : isRegionTextMatch ? 0.25 : 0;
+  const bitrateBonus = station.bitrate >= 128 ? 0.015 : 0;
+  return {
+    score: geoBonus + sim * 0.65 + clampedPop * 0.06 + bitrateBonus,
+    isExactCountry,
+    isRegionTextMatch,
+  };
+}
+
+export function applySoftPrefixDiversity(stations: Station[], limit = 12): Station[] {
+  const selected: Station[] = [];
+  const deferred: Station[] = [];
+  const prefixCounts = new Map<string, number>();
+
+  for (const st of stations) {
+    const prefix = st.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .split(' ')
+      .slice(0, 2)
+      .join(' ');
+    const count = prefixCounts.get(prefix) ?? 0;
+    if (prefix && count >= 2) {
+      deferred.push(st);
+      continue;
+    }
+    prefixCounts.set(prefix, count + 1);
+    selected.push(st);
+    if (selected.length >= limit) break;
+  }
+
+  if (selected.length < limit && deferred.length > 0) {
+    for (const st of deferred) {
+      selected.push(st);
+      if (selected.length >= limit) break;
+    }
+  }
+  return selected;
+}
+
+export async function rerankCandidatesWithLlm(
+  ai: GoogleGenAI,
+  model: AiModelId,
+  thinkingLevel: AiThinkingLevel,
+  opts: {
+    contextLabel: string;
+    targetRegions: string[];
+    targetCountryCodes: string[];
+    geoPriority: boolean;
+    candidates: Array<{ station: Station; isGeoMatch: boolean }>;
+  }
+): Promise<{ stations: Station[]; usedReranker: boolean }> {
+  if (opts.candidates.length <= 1) {
+    return { stations: opts.candidates.map((c) => c.station), usedReranker: false };
+  }
+
+  const pool = opts.candidates.slice(0, 30);
+  const byUuid = new Map<string, Station>();
+  const compactCandidates = pool.map(({ station, isGeoMatch }) => {
+    byUuid.set(station.stationuuid, station);
+    return {
+      stationuuid: station.stationuuid,
+      name: station.name,
+      country: station.country || station.countrycode,
+      countrycode: station.countrycode,
+      language: station.language,
+      tags: station.tags,
+      inTargetRegion: isGeoMatch,
+    };
+  });
+
+  const systemInstruction =
+    'You are the final curatorial reranker for World Radio. Select and order the best 12 stations from the provided candidates for the listener request.\n' +
+    'STRICT CURATION RULES:\n' +
+    '1. GEOGRAPHIC AUTHENTICITY FIRST: When targetRegions/targetCountryCodes are specified, authentic stations actually broadcasting from those countries/regions (inTargetRegion=true or clearly regional broadcasts) MUST come before out-of-region stations.\n' +
+    '2. REJECT KEYWORD TRAPS: Reject false-positive stations whose tags only superficially match English words (e.g., reject UK Drum & Bass/electronic "jungle" stations for rainforest prompts, reject German/Italian spa/sleep streams for Amazon or Africa prompts when authentic regional stations are available, and reject unrelated European pop/talk stations).\n' +
+    '3. MOOD & VARIETY SECOND: Within authentic regional stations, rank highest those whose genres, culture, or atmosphere best fit the prompt, while avoiding 3+ stations from the exact same broadcaster.\n' +
+    '4. NEVER invent UUIDs. Only return UUIDs present in the candidate list.';
+
+  const userPrompt =
+    `${opts.contextLabel}\n` +
+    (opts.geoPriority && opts.targetCountryCodes.length > 0
+      ? `Target Regions: ${opts.targetRegions.join(', ') || 'Specified countries'} | Target ISO codes: ${opts.targetCountryCodes.join(', ')}\n`
+      : 'No strict regional restriction; prioritize strongest sonic/mood match.\n') +
+    `Candidates:\n${JSON.stringify(compactCandidates)}`;
+
+  try {
+    const cfg = getPlannerConfig(model, thinkingLevel);
+    const { response } = await generateContentWithFallback(ai, {
+      model: cfg.model,
+      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+      systemInstruction,
+      thinkingLevel: cfg.thinkingLevel,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          orderedUuids: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          rejectedUuids: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+        },
+        required: ['orderedUuids'],
+      },
+      jsonFallbackHint:
+        'Return ONLY valid JSON: { "orderedUuids": string[], "rejectedUuids"?: string[] }.',
+    });
+
+    const parsed = parseJsonObject(response.text || '{}') as {
+      orderedUuids?: unknown;
+      rejectedUuids?: unknown;
+    };
+
+    const orderedRaw = Array.isArray(parsed.orderedUuids) ? parsed.orderedUuids : [];
+    const rejectedSet = new Set(
+      Array.isArray(parsed.rejectedUuids)
+        ? parsed.rejectedUuids.filter((id): id is string => typeof id === 'string')
+        : []
+    );
+
+    const chosen: Station[] = [];
+    const seen = new Set<string>();
+    for (const uuid of orderedRaw) {
+      if (typeof uuid !== 'string' || seen.has(uuid) || rejectedSet.has(uuid)) continue;
+      const st = byUuid.get(uuid);
+      if (st) {
+        seen.add(uuid);
+        chosen.push(st);
+      }
+    }
+
+    if (chosen.length === 0) {
+      return { stations: applySoftPrefixDiversity(pool.map((c) => c.station), 12), usedReranker: false };
+    }
+
+    // Backfill non-rejected candidates first if curator returned fewer than 12
+    for (const { station } of pool) {
+      if (chosen.length >= 16) break;
+      if (!seen.has(station.stationuuid) && !rejectedSet.has(station.stationuuid)) {
+        seen.add(station.stationuuid);
+        chosen.push(station);
+      }
+    }
+
+    return {
+      stations: applySoftPrefixDiversity(chosen, 12),
+      usedReranker: true,
+    };
+  } catch (err) {
+    console.warn('[aiSearch] Curatorial reranker failed, falling back to hybrid ranking:', extractErrorMessage(err));
+    return {
+      stations: applySoftPrefixDiversity(pool.map((c) => c.station), 12),
+      usedReranker: false,
+    };
+  }
+}
+
 async function runHybridPipeline(
   ai: GoogleGenAI,
   opts:
@@ -1005,6 +1285,7 @@ async function runHybridPipeline(
         notesThinkingLevel?: AiThinkingLevel;
         httpsOnly: boolean;
         includeDjNotes?: boolean;
+        useReranker?: boolean;
       }
     | {
         mode: 'similar';
@@ -1015,11 +1296,12 @@ async function runHybridPipeline(
         notesThinkingLevel?: AiThinkingLevel;
         httpsOnly: boolean;
         includeDjNotes?: boolean;
+        useReranker?: boolean;
       }
 ): Promise<AiSearchResponse> {
   const seedStats = seedIndexStore.getStats();
 
-  // Step 1: Plan structured queries & semantic profile with selected Station model & thinking level
+  // Step 1: Plan structured queries, geo intent & semantic profile
   const plan = await planSearchWithLlm(
     ai,
     opts.model,
@@ -1034,19 +1316,65 @@ async function runHybridPipeline(
       ? `${opts.query}. ${plan.semanticProfile}`
       : `${buildStationDescriptor(opts.station)}. ${plan.semanticProfile}`;
 
-  // Step 2: Embed semantic query + fan out live Radio Browser queries in parallel
-  const [queryVecArr, ...liveLists] = await Promise.all([
+  // Build dedicated bare-country live queries for top target countries when geo intent is active
+  const plannedBareCountries = new Set(
+    plan.plans
+      .filter((p) => p.countrycode && !p.tag && !p.language && !p.name)
+      .map((p) => p.countrycode!.trim().toUpperCase())
+  );
+  const extraCountryPlans: FilterPlan[] = plan.geoPriority
+    ? plan.targetCountryCodes
+        .filter((cc) => !plannedBareCountries.has(cc))
+        .slice(0, 6)
+        .map((countrycode) => ({ countrycode }))
+    : [];
+
+  // Step 2: Embed semantic query + fan out planned and country-level Radio Browser queries in parallel
+  const [queryVecArr, ...allLiveLists] = await Promise.all([
     embedTexts(ai, [semanticText]),
     ...plan.plans.map((p) => fetchRadioBrowserPlan(p, opts.httpsOnly, 16)),
+    ...extraCountryPlans.map((p) => fetchRadioBrowserPlan(p, opts.httpsOnly, 14)),
   ]);
+  const liveLists = allLiveLists.slice(0, plan.plans.length);
+  const geoLiveLists = allLiveLists.slice(plan.plans.length);
+
   const queryVector = queryVecArr[0];
   if (queryVector && seedStats.vectorCount < seedStats.totalStations) {
     warmSeedIndexInBackground(ai);
   }
 
-  // Step 3: Pull semantic matches from bundled seed index (<3ms)
+  // Step 3: Regional-first candidate assembly from seed index & live mirrors
   const excludeUuid = opts.mode === 'similar' ? opts.station.stationuuid : undefined;
-  const seedMatches =
+  const targetCountrySet = new Set(plan.targetCountryCodes.map((c) => c.toUpperCase()));
+  const searchTerms = [
+    ...plan.planTags,
+    ...plan.targetRegions,
+    ...(opts.mode === 'search' ? [opts.query] : [opts.station.tags, opts.station.country]),
+    ...plan.plans.flatMap((p) => [p.tag || '', p.name || '', p.language || '']),
+  ].filter(Boolean);
+
+  const seedGeoMatches =
+    plan.geoPriority && plan.targetCountryCodes.length > 0 && seedStats.vectorCount > 0 && queryVector
+      ? seedIndexStore.searchTopMatches(queryVector, {
+          limit: 32,
+          httpsOnly: opts.httpsOnly,
+          excludeUuid,
+          countryCodes: plan.targetCountryCodes,
+        })
+      : [];
+
+  const seedGeoMeta =
+    plan.geoPriority && plan.targetCountryCodes.length > 0 && seedStats.totalStations > 0
+      ? seedIndexStore.searchMetadataCandidates(searchTerms, {
+          limit: 32,
+          httpsOnly: opts.httpsOnly,
+          excludeUuid,
+          countryCodes: plan.targetCountryCodes,
+          requireCountryMatch: true,
+        })
+      : [];
+
+  const seedGlobalMatches =
     seedStats.vectorCount > 0 && queryVector
       ? seedIndexStore.searchTopMatches(queryVector, {
           limit: 24,
@@ -1055,89 +1383,80 @@ async function runHybridPipeline(
         })
       : [];
 
-  let candidateMap = new Map<string, Station>();
-  for (const hit of seedMatches) {
-    if (isPlayableStation(hit.station, opts.httpsOnly)) {
-      candidateMap.set(hit.station.stationuuid, hit.station);
+  const regionalPool = new Map<string, Station>();
+  const globalPool = new Map<string, Station>();
+
+  const addCandidate = (st: Station) => {
+    if (excludeUuid && st.stationuuid === excludeUuid) return;
+    if (!isPlayableStation(st, opts.httpsOnly)) return;
+    const cc = (st.countrycode || '').trim().toUpperCase();
+    if (plan.geoPriority && targetCountrySet.has(cc)) {
+      if (!regionalPool.has(st.stationuuid)) regionalPool.set(st.stationuuid, st);
+    } else if (!globalPool.has(st.stationuuid)) {
+      globalPool.set(st.stationuuid, st);
     }
+  };
+
+  for (const hit of seedGeoMatches) addCandidate(hit.station);
+  for (const st of seedGeoMeta) addCandidate(st);
+  for (const list of geoLiveLists) {
+    for (const st of list) addCandidate(st);
   }
   for (const list of liveLists) {
-    for (const st of list) {
-      if (excludeUuid && st.stationuuid === excludeUuid) continue;
-      if (!candidateMap.has(st.stationuuid)) {
-        candidateMap.set(st.stationuuid, st);
-      }
-    }
+    for (const st of list) addCandidate(st);
   }
 
-  // If seed vectors aren't pre-computed or live queries were sparse, pull lexical/tag matches from bundled seed index
-  if (candidateMap.size < 20 && seedStats.totalStations > 0) {
-    const searchTerms = [
-      ...plan.planTags,
-      ...(opts.mode === 'search' ? [opts.query] : [opts.station.tags, opts.station.country]),
-      ...plan.plans.flatMap((p) => [p.tag || '', p.name || '', p.language || '']),
-    ].filter(Boolean);
-    const countryCodes = plan.plans
-      .map((p) => p.countrycode || '')
-      .filter((c) => c.length === 2);
-    const metaCandidates = seedIndexStore.searchMetadataCandidates(searchTerms, {
-      limit: 32,
-      httpsOnly: opts.httpsOnly,
-      excludeUuid,
-      countryCodes,
-    });
-    for (const st of metaCandidates) {
-      if (!candidateMap.has(st.stationuuid)) {
-        candidateMap.set(st.stationuuid, st);
-      }
-    }
-  }
-
-  // Parallel wave of relaxed Radio Browser plans only when combined primary results are sparse
-  if (candidateMap.size < 12) {
+  // Run relaxed plans when live plans returned sparse results
+  const totalLiveHits = liveLists.reduce((acc, list) => acc + list.length, 0) +
+    geoLiveLists.reduce((acc, list) => acc + list.length, 0);
+  if (totalLiveHits < 12) {
     const relaxedPlans = buildRelaxedPlans(plan.plans);
     if (relaxedPlans.length > 0) {
       const relaxedLists = await Promise.all(
         relaxedPlans.map((p) => fetchRadioBrowserPlan(p, opts.httpsOnly, 16))
       );
       for (const list of relaxedLists) {
-        for (const st of list) {
-          if (excludeUuid && st.stationuuid === excludeUuid) continue;
-          if (!candidateMap.has(st.stationuuid)) {
-            candidateMap.set(st.stationuuid, st);
-          }
-        }
+        for (const st of list) addCandidate(st);
       }
     }
   }
 
-  // Last-resort live fallback so semantic reranking always has playable candidates
-  if (candidateMap.size < 8) {
+  for (const hit of seedGlobalMatches) addCandidate(hit.station);
+
+  // Pull general lexical seed matches when candidate pools are sparse or unvectorized
+  if (regionalPool.size + globalPool.size < 20 && seedStats.totalStations > 0) {
+    const metaCandidates = seedIndexStore.searchMetadataCandidates(searchTerms, {
+      limit: 32,
+      httpsOnly: opts.httpsOnly,
+      excludeUuid,
+      countryCodes: plan.targetCountryCodes,
+    });
+    for (const st of metaCandidates) addCandidate(st);
+  }
+
+  // Last-resort live fallback so reranking always has playable candidates
+  if (regionalPool.size + globalPool.size < 8) {
     const firstTagToken =
       (plan.planTags[0] || '')
         .split(/\s+/)
         .map((w) => w.trim().toLowerCase())
         .find((w) => w.length >= 3) || 'jazz';
     const fallbackLive = await fetchRadioBrowserPlan({ tag: firstTagToken }, opts.httpsOnly, 24);
-    for (const st of fallbackLive) {
-      if (excludeUuid && st.stationuuid === excludeUuid) continue;
-      if (!candidateMap.has(st.stationuuid)) {
-        candidateMap.set(st.stationuuid, st);
-      }
-    }
+    for (const st of fallbackLive) addCandidate(st);
   }
 
-  if (candidateMap.size < 6) {
+  if (regionalPool.size + globalPool.size < 6) {
     const popular = await fetchPopularFallbackStations(opts.httpsOnly);
-    for (const st of popular) {
-      if (excludeUuid && st.stationuuid === excludeUuid) continue;
-      if (!candidateMap.has(st.stationuuid)) {
-        candidateMap.set(st.stationuuid, st);
-      }
-    }
+    for (const st of popular) addCandidate(st);
   }
 
-  const candidates = [...candidateMap.values()].slice(0, 56);
+  // Reserve regional candidates first (up to 48), then backfill with global matches up to 64
+  const MAX_CANDIDATES = plan.geoPriority ? 64 : 56;
+  const candidates: Station[] = [
+    ...[...regionalPool.values()].slice(0, 48),
+    ...[...globalPool.values()],
+  ].slice(0, MAX_CANDIDATES);
+
   if (candidates.length === 0) {
     return {
       headline: plan.headline,
@@ -1149,49 +1468,59 @@ async function runHybridPipeline(
       seedCount: seedStats.totalStations,
       model: opts.model,
       thinkingLevel: opts.thinkingLevel,
+      usedReranker: false,
+      targetRegions: plan.targetRegions,
     };
   }
 
-  // Step 4: Embed uncached live candidates (using RAM LRU) & compute hybrid score
+  // Step 4: Embed uncached live candidates (using RAM LRU) & compute geo-tiered hybrid score
   const stationVectors = await getOrEmbedStations(ai, candidates);
+  const targetRegionTokens = [
+    ...plan.targetRegions.flatMap((r) => r.toLowerCase().split(/[\s,&/]+/)),
+    ...plan.targetCountryCodes.map((c) => c.toLowerCase()),
+  ].filter((t) => t.length >= 4);
 
   const ranked = candidates
     .map((station) => {
       const vec = stationVectors.get(station.stationuuid);
       const sim = vec && queryVector ? cosineUnitSimilarity(queryVector, vec) : 0;
-      const pop = Math.log10(Math.max(10, (station.clickcount || 0) + (station.votes || 0) * 2)) / 6;
-      const bitrateBonus = station.bitrate >= 128 ? 0.03 : 0;
-      const score = sim * 0.84 + Math.min(1, pop) * 0.13 + bitrateBonus;
-      return { station, score, sim };
+      const { score, isExactCountry, isRegionTextMatch } = computeGeoTieredRank(station, sim, {
+        geoPriority: plan.geoPriority,
+        targetCountrySet,
+        targetRegionTokens,
+      });
+      return { station, score, sim, isGeoMatch: isExactCountry || isRegionTextMatch };
     })
     .sort((a, b) => b.score - a.score);
 
-  // Soft diversity filter: avoid 3+ stations with the exact same normalized prefix
-  const selected: Station[] = [];
-  const deferred: Station[] = [];
-  const prefixCounts = new Map<string, number>();
-  for (const item of ranked) {
-    const prefix = item.station.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').slice(0, 2).join(' ');
-    const count = prefixCounts.get(prefix) ?? 0;
-    if (prefix && count >= 2) {
-      deferred.push(item.station);
-      continue;
-    }
-    prefixCounts.set(prefix, count + 1);
-    selected.push(item.station);
-    if (selected.length >= 12) break;
-  }
-  if (selected.length < 12 && deferred.length > 0) {
-    for (const st of deferred) {
-      selected.push(st);
-      if (selected.length >= 12) break;
-    }
+  // Step 5: Optional LLM Curatorial Reranking Pass (default ON)
+  const useReranker = opts.useReranker !== false;
+  const contextLabel =
+    opts.mode === 'search'
+      ? `Listener mood/scene prompt: "${opts.query}" (profile: ${plan.semanticProfile})`
+      : `Finding stations similar to "${opts.station.name}" (${opts.station.country}, tags: ${opts.station.tags})`;
+
+  let selected: Station[];
+  let usedReranker = false;
+
+  if (useReranker) {
+    const reranked = await rerankCandidatesWithLlm(ai, opts.model, opts.thinkingLevel, {
+      contextLabel,
+      targetRegions: plan.targetRegions,
+      targetCountryCodes: plan.targetCountryCodes,
+      geoPriority: plan.geoPriority,
+      candidates: ranked.map((r) => ({ station: r.station, isGeoMatch: r.isGeoMatch })),
+    });
+    selected = reranked.stations;
+    usedReranker = reranked.usedReranker;
+  } else {
+    selected = applySoftPrefixDiversity(ranked.map((r) => r.station), 12);
   }
 
-  // Step 5: Optionally generate crisp 1-sentence Radio Sommelier DJ notes (deferred to /api/ai/dj-notes by default)
+  // Step 6: Optionally generate crisp 1-sentence Radio Sommelier DJ notes
   let djNotes: Record<string, string> = {};
   if (opts.includeDjNotes) {
-    const contextLabel =
+    const notesContext =
       opts.mode === 'search'
         ? `Listener mood/scene prompt: "${opts.query}"`
         : `Finding stations similar to "${opts.station.name}" (${opts.station.country}, tags: ${opts.station.tags})`;
@@ -1199,7 +1528,7 @@ async function runHybridPipeline(
       ai,
       opts.notesModel ?? opts.model,
       opts.notesThinkingLevel ?? opts.thinkingLevel,
-      contextLabel,
+      notesContext,
       selected
     );
   }
@@ -1214,6 +1543,8 @@ async function runHybridPipeline(
     seedCount: seedStats.totalStations,
     model: opts.model,
     thinkingLevel: opts.thinkingLevel,
+    usedReranker,
+    targetRegions: plan.targetRegions,
   };
 }
 
@@ -1307,6 +1638,7 @@ export async function handleAiSearchRequest(
       notesThinkingLevel?: unknown;
       httpsOnly?: boolean;
       includeDjNotes?: boolean;
+      useReranker?: boolean;
     }>(req);
     const query = (body?.query || '').trim().slice(0, 240);
     if (!query) {
@@ -1323,7 +1655,8 @@ export async function handleAiSearchRequest(
         : thinkingLevel;
     const httpsOnly = body?.httpsOnly !== false;
     const includeDjNotes = body?.includeDjNotes === true;
-    const cacheKey = `search|${query.toLowerCase()}|${model}|${thinkingLevel}|${httpsOnly}`;
+    const useReranker = body?.useReranker !== false;
+    const cacheKey = `search|${query.toLowerCase()}|${model}|${thinkingLevel}|${httpsOnly}|${useReranker}`;
 
     const cached = responseCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now() && !includeDjNotes) {
@@ -1341,6 +1674,7 @@ export async function handleAiSearchRequest(
         notesThinkingLevel,
         httpsOnly,
         includeDjNotes,
+        useReranker,
       });
       if (result.stations.length > 0 && !includeDjNotes) {
         responseCache.set(cacheKey, {
@@ -1365,6 +1699,7 @@ export async function handleAiSearchRequest(
       notesThinkingLevel?: unknown;
       httpsOnly?: boolean;
       includeDjNotes?: boolean;
+      useReranker?: boolean;
     }>(req);
     const station = sanitizeServerStation(body?.station);
     if (!station) {
@@ -1381,7 +1716,8 @@ export async function handleAiSearchRequest(
         : thinkingLevel;
     const httpsOnly = body?.httpsOnly !== false;
     const includeDjNotes = body?.includeDjNotes === true;
-    const cacheKey = `similar|${station.stationuuid}|${model}|${thinkingLevel}|${httpsOnly}`;
+    const useReranker = body?.useReranker !== false;
+    const cacheKey = `similar|${station.stationuuid}|${model}|${thinkingLevel}|${httpsOnly}|${useReranker}`;
 
     const cached = responseCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now() && !includeDjNotes) {
@@ -1399,6 +1735,7 @@ export async function handleAiSearchRequest(
         notesThinkingLevel,
         httpsOnly,
         includeDjNotes,
+        useReranker,
       });
       if (result.stations.length > 0 && !includeDjNotes) {
         responseCache.set(cacheKey, {

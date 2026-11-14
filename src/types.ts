@@ -67,6 +67,8 @@ export interface AiSearchResponse {
   seedCount: number;
   model: AiModelId;
   thinkingLevel: AiThinkingLevel;
+  usedReranker?: boolean;
+  targetRegions?: string[];
 }
 
 export type SortId = 'clickcount' | 'votes' | 'name' | 'bitrate' | 'clicktrend' | 'random';
@@ -111,6 +113,9 @@ export interface AppState {
   aiPlanTags: string[];
   aiUsedSeedIndex: boolean;
   aiSeedCount: number;
+  aiUseReranker: boolean;
+  aiUsedReranker: boolean;
+  aiTargetRegions: string[];
   selectedCountry: string | null;
   selectedTag: string | null;
   volume: number;
@@ -161,5 +166,6 @@ export interface AppPrefs {
   aiThinkingLevel: AiThinkingLevel;
   aiNotesModel: AiModelId;
   aiNotesThinkingLevel: AiThinkingLevel;
+  aiUseReranker: boolean;
   searchMode: SearchMode;
 }

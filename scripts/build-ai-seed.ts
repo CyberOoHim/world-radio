@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { GoogleGenAI } from '@google/genai';
 import {
+  CULTURAL_SEED_TAGS,
+  REGIONAL_SEED_COUNTRY_GROUPS,
+} from '../src/server/geoTaxonomy.ts';
+import {
   SEED_EMBEDDING_DIM,
   SEED_SWEET_SPOT_COUNT,
   buildStationDescriptor,
@@ -16,12 +20,6 @@ const MIRRORS = [
   'https://de1.api.radio-browser.info',
   'https://de2.api.radio-browser.info',
   'https://all.api.radio-browser.info',
-];
-
-const SEED_TAGS = [
-  'jazz', 'ambient', 'classical', 'chillout', 'lofi', 'electronic',
-  'rock', 'indie', 'soul', 'blues', 'folk', 'world',
-  'latin', 'reggae', 'news', 'talk', 'soundtrack', 'piano',
 ];
 
 function loadEnvLocal(): void {
@@ -93,34 +91,62 @@ function cleanStation(raw: unknown): Station | null {
 async function gatherDiverseStations(targetCount: number): Promise<Station[]> {
   const pool = new Map<string, Station>();
 
-  // 1. Top global popular stations (1,200)
-  for (const offset of [0, 400, 800]) {
-    const rows = await fetchJson(
-      `/json/stations/search?hidebroken=true&order=clickcount&reverse=true&limit=400&offset=${offset}`
-    );
-    if (Array.isArray(rows)) {
-      for (const r of rows) {
-        const st = cleanStation(r);
-        if (st && !pool.has(st.stationuuid)) pool.set(st.stationuuid, st);
+  const addRows = (rows: unknown, maxAdd?: number): number => {
+    if (!Array.isArray(rows)) return 0;
+    let added = 0;
+    for (const r of rows) {
+      const st = cleanStation(r);
+      if (st && !pool.has(st.stationuuid)) {
+        pool.set(st.stationuuid, st);
+        added++;
+        if (maxAdd && added >= maxAdd) break;
+        if (pool.size >= targetCount) break;
       }
+    }
+    return added;
+  };
+
+  // 1. Stratified regional quotas across every continent (HTTPS-first, then general playable)
+  for (const group of REGIONAL_SEED_COUNTRY_GROUPS) {
+    if (pool.size >= targetCount) break;
+    console.log(`Sampling region: ${group.region} (${group.countries.length} countries)...`);
+    const CONCURRENCY = 6;
+    for (let i = 0; i < group.countries.length; i += CONCURRENCY) {
+      if (pool.size >= targetCount) break;
+      const slice = group.countries.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        slice.map(async (cc) => {
+          const httpsRows = await fetchJson(
+            `/json/stations/search?hidebroken=true&is_https=true&order=clickcount&reverse=true&limit=${group.perCountryLimit}&countrycode=${cc}`
+          );
+          const addedHttps = addRows(httpsRows, group.perCountryLimit);
+          if (addedHttps < Math.min(8, group.perCountryLimit)) {
+            const anyRows = await fetchJson(
+              `/json/stations/search?hidebroken=true&order=clickcount&reverse=true&limit=${group.perCountryLimit}&countrycode=${cc}`
+            );
+            addRows(anyRows, group.perCountryLimit - addedHttps);
+          }
+        })
+      );
     }
   }
 
-  // 2. Stratified mood/genre sampling for cultural & sonic breadth
-  for (const tag of SEED_TAGS) {
+  // 2. Stratified cultural & genre sampling for sonic & regional music breadth
+  for (const tag of CULTURAL_SEED_TAGS) {
     if (pool.size >= targetCount) break;
     const rows = await fetchJson(
-      `/json/stations/search?hidebroken=true&order=votes&reverse=true&limit=100&tag=${encodeURIComponent(tag)}`
+      `/json/stations/search?hidebroken=true&is_https=true&order=votes&reverse=true&limit=60&tag=${encodeURIComponent(tag)}`
     );
-    if (Array.isArray(rows)) {
-      for (const r of rows) {
-        const st = cleanStation(r);
-        if (st && !pool.has(st.stationuuid)) {
-          pool.set(st.stationuuid, st);
-          if (pool.size >= targetCount) break;
-        }
-      }
-    }
+    addRows(rows, 60);
+  }
+
+  // 3. Top global popular stations to fill remaining capacity up to targetCount
+  for (const offset of [0, 400, 800, 1200, 1600]) {
+    if (pool.size >= targetCount) break;
+    const rows = await fetchJson(
+      `/json/stations/search?hidebroken=true&is_https=true&order=clickcount&reverse=true&limit=400&offset=${offset}`
+    );
+    addRows(rows);
   }
 
   return [...pool.values()].slice(0, targetCount);
@@ -132,25 +158,46 @@ async function main(): Promise<void> {
   const outDir = path.resolve(process.cwd(), 'data');
   const outPath = path.join(outDir, 'station-seed-index.json');
   const forceRefresh = process.argv.includes('--refresh');
+  const forceReembed = process.argv.includes('--reembed');
 
-  let items: SeedStationItem[] = [];
-  if (!forceRefresh && fs.existsSync(outPath)) {
+  const previousVectors = new Map<string, string>();
+  let existingItems: SeedStationItem[] = [];
+  if (fs.existsSync(outPath)) {
     try {
       const existing = JSON.parse(fs.readFileSync(outPath, 'utf8')) as Partial<SeedIndexFile>;
       if (Array.isArray(existing.items) && existing.items.length > 0) {
-        items = existing.items.filter((i): i is SeedStationItem => Boolean(i?.station?.stationuuid));
-        console.log(`Loaded ${items.length} existing stations from ${outPath}`);
+        existingItems = existing.items.filter((i): i is SeedStationItem => Boolean(i?.station?.stationuuid));
+        for (const it of existingItems) {
+          if (typeof it.vec === 'string' && decodeBase64ToUnitVector(it.vec, SEED_EMBEDDING_DIM)) {
+            previousVectors.set(it.station.stationuuid, it.vec);
+          }
+        }
+        if (!forceRefresh) {
+          console.log(`Loaded ${existingItems.length} existing stations from ${outPath}`);
+        }
       }
     } catch {
-      items = [];
+      existingItems = [];
     }
   }
 
+  let items: SeedStationItem[] = forceRefresh ? [] : existingItems;
+
   if (items.length === 0) {
-    console.log(`Gathering up to ${SEED_SWEET_SPOT_COUNT} diverse stations from Radio Browser...`);
+    console.log(`Gathering up to ${SEED_SWEET_SPOT_COUNT} geographically balanced stations from Radio Browser...`);
     const stations = await gatherDiverseStations(SEED_SWEET_SPOT_COUNT);
-    console.log(`Collected ${stations.length} playable stations.`);
-    items = stations.map((station) => ({ station }));
+    if (stations.length === 0 && existingItems.length > 0) {
+      console.warn('Radio Browser returned 0 stations; keeping existing seed catalog.');
+      items = existingItems;
+    } else {
+      console.log(`Collected ${stations.length} playable stations.`);
+      items = stations.map((station) => {
+        const prevVec = !forceReembed ? previousVectors.get(station.stationuuid) : undefined;
+        return prevVec ? { station, vec: prevVec } : { station };
+      });
+    }
+  } else if (forceReembed) {
+    items = items.map((item) => ({ station: item.station }));
   }
 
   const missing = items.filter(
@@ -193,7 +240,7 @@ async function main(): Promise<void> {
       console.log(`Embedded ${Math.min(completed, missing.length)} / ${missing.length}`);
     }
   } else {
-    console.warn('GEMINI_API_KEY not set — writing station metadata without pre-computed vectors.');
+    console.warn('GEMINI_API_KEY not set — writing station metadata (preserving existing vectors, missing new vectors will warm on server).');
   }
 
   fs.mkdirSync(outDir, { recursive: true });

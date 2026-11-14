@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       refresh_stations:
-        description: 'Re-fetch the 2,500-station catalog from Radio Browser before embedding'
+        description: 'Re-fetch the 4,500-station catalog from Radio Browser before embedding'
         type: boolean
         default: false
 

@@ -321,6 +321,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   aiThinkingLevel: 'low',
   aiNotesModel: 'gemini-flash-lite-latest',
   aiNotesThinkingLevel: 'low',
+  aiUseReranker: true,
   searchMode: 'name',
 };
 
@@ -430,6 +431,10 @@ export function loadPrefs(): AppPrefs {
       aiThinkingLevel: sanitizeAiThinkingLevel(parsed.aiThinkingLevel),
       aiNotesModel: sanitizeAiModel(parsed.aiNotesModel),
       aiNotesThinkingLevel: sanitizeAiThinkingLevel(parsed.aiNotesThinkingLevel),
+      aiUseReranker:
+        typeof parsed.aiUseReranker === 'boolean'
+          ? parsed.aiUseReranker
+          : DEFAULT_PREFS.aiUseReranker,
       searchMode: sanitizeSearchMode(parsed.searchMode),
     };
   } catch {

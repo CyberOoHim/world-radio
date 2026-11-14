@@ -274,6 +274,7 @@ describe('loadPrefs and savePrefs', () => {
       expect(defaults.aiThinkingLevel).toBe('low');
       expect(defaults.aiNotesModel).toBe('gemini-flash-lite-latest');
       expect(defaults.aiNotesThinkingLevel).toBe('low');
+      expect(defaults.aiUseReranker).toBe(true);
       expect(defaults.searchMode).toBe('name');
 
       savePrefs({
@@ -282,6 +283,7 @@ describe('loadPrefs and savePrefs', () => {
         aiThinkingLevel: 'high',
         aiNotesModel: 'gemini-flash-latest',
         aiNotesThinkingLevel: 'medium',
+        aiUseReranker: false,
         searchMode: 'ai',
         view: 'ai',
       });
@@ -290,6 +292,7 @@ describe('loadPrefs and savePrefs', () => {
       expect(loadedCustom.aiThinkingLevel).toBe('high');
       expect(loadedCustom.aiNotesModel).toBe('gemini-flash-latest');
       expect(loadedCustom.aiNotesThinkingLevel).toBe('medium');
+      expect(loadedCustom.aiUseReranker).toBe(false);
       expect(loadedCustom.searchMode).toBe('ai');
       expect(loadedCustom.view).toBe('ai');
 
@@ -299,6 +302,7 @@ describe('loadPrefs and savePrefs', () => {
       expect(loadedMixed.aiThinkingLevel).toBe('medium');
       expect(loadedMixed.aiNotesModel).toBe('gemini-flash-lite-latest');
       expect(loadedMixed.aiNotesThinkingLevel).toBe('high');
+      expect(loadedMixed.aiUseReranker).toBe(true);
 
       memory.set(
         'world-radio:prefs',
@@ -307,6 +311,7 @@ describe('loadPrefs and savePrefs', () => {
           aiThinkingLevel: 'xhigh',
           aiNotesModel: 'unknown-model',
           aiNotesThinkingLevel: 'minimal',
+          aiUseReranker: 'nope',
           searchMode: 'bogus',
           view: 'unknown',
         })
@@ -316,6 +321,7 @@ describe('loadPrefs and savePrefs', () => {
       expect(sanitized.aiThinkingLevel).toBe('low');
       expect(sanitized.aiNotesModel).toBe('gemini-flash-lite-latest');
       expect(sanitized.aiNotesThinkingLevel).toBe('low');
+      expect(sanitized.aiUseReranker).toBe(true);
       expect(sanitized.searchMode).toBe('name');
       expect(sanitized.view).toBe('discover');
     } finally {
