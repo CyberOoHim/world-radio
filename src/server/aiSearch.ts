@@ -9,11 +9,11 @@ import {
   normalizeVector,
   seedIndexStore,
 } from './seedIndex.ts';
-import type { AiSearchResponse, AiThinkingLevel, Station } from '../types.ts';
+import type { AiModelId, AiSearchResponse, AiThinkingLevel, Station } from '../types.ts';
 
 import dns from 'node:dns/promises';
 
-const LLM_MODEL = 'gemini-4-hydrogen';
+export const DEFAULT_AI_MODEL: AiModelId = 'gemini-flash-lite-latest';
 const EMBEDDING_MODEL = 'gemini-embedding-2';
 
 const DEFAULT_RADIO_MIRRORS = [
@@ -59,6 +59,11 @@ interface CachedResponseEntry {
   data: AiSearchResponse;
 }
 
+interface CachedDjNotesEntry {
+  expiresAt: number;
+  djNotes: Record<string, string>;
+}
+
 class LruCache<K, V> {
   private map = new Map<K, V>();
   private maxSize: number;
@@ -91,6 +96,7 @@ class LruCache<K, V> {
 
 const liveVectorCache = new LruCache<string, CachedVectorEntry>(LIVE_LRU_MAX);
 const responseCache = new LruCache<string, CachedResponseEntry>(RESPONSE_CACHE_MAX);
+const djNotesCache = new LruCache<string, CachedDjNotesEntry>(RESPONSE_CACHE_MAX);
 let seedWarmStarted = false;
 let seedHydratePromise: Promise<void> | null = null;
 
@@ -101,19 +107,30 @@ async function hydrateMissingSeedVectors(ai: GoogleGenAI): Promise<void> {
 
   seedHydratePromise = (async () => {
     const BATCH = 64;
+    const CONCURRENCY = 3;
+    const batches: Station[][] = [];
     for (let i = 0; i < missing.length; i += BATCH) {
-      const slice = missing.slice(i, i + BATCH);
-      const vecs = await embedTexts(
-        ai,
-        slice.map((st) => buildStationDescriptor(st))
+      batches.push(missing.slice(i, i + BATCH));
+    }
+    for (let i = 0; i < batches.length; i += CONCURRENCY) {
+      const wave = batches.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        wave.map(async (slice) => {
+          const vecs = await embedTexts(
+            ai,
+            slice.map((st) => buildStationDescriptor(st))
+          );
+          slice.forEach((st, idx) => {
+            const vec = vecs[idx];
+            if (vec && vec.length > 0) {
+              seedIndexStore.setVector(st.stationuuid, vec);
+            }
+          });
+        })
       );
-      slice.forEach((st, idx) => {
-        const vec = vecs[idx];
-        if (vec && vec.length > 0) {
-          seedIndexStore.setVector(st.stationuuid, vec);
-        }
-      });
-      await new Promise((r) => setTimeout(r, 120));
+      if (i + CONCURRENCY < batches.length) {
+        await new Promise((r) => setTimeout(r, 60));
+      }
     }
   })().finally(() => {
     seedHydratePromise = null;
@@ -176,23 +193,50 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+export function normalizeAiModel(raw: unknown): AiModelId {
+  if (raw === 'gemini-flash-lite-latest' || raw === 'gemini-4-hydrogen') {
+    return raw;
+  }
+  return DEFAULT_AI_MODEL;
+}
+
 export function normalizeThinkingLevel(raw: unknown): AiThinkingLevel {
   if (raw === 'low' || raw === 'medium' || raw === 'high') {
     return raw;
   }
-  return 'low';
+  return 'medium';
 }
 
-function toSdkThinkingLevel(level: AiThinkingLevel): ThinkingLevel {
+function toGenAiThinkingLevel(level: AiThinkingLevel): ThinkingLevel {
   switch (level) {
     case 'low':
       return ThinkingLevel.LOW;
-    case 'medium':
-      return ThinkingLevel.MEDIUM;
     case 'high':
-    default:
       return ThinkingLevel.HIGH;
+    case 'medium':
+    default:
+      return ThinkingLevel.MEDIUM;
   }
+}
+
+export function getPlannerConfig(model: unknown, level: unknown): {
+  model: AiModelId;
+  thinkingLevel: ThinkingLevel;
+} {
+  return {
+    model: normalizeAiModel(model),
+    thinkingLevel: toGenAiThinkingLevel(normalizeThinkingLevel(level)),
+  };
+}
+
+export function getDjNotesConfig(model: unknown, level: unknown): {
+  model: AiModelId;
+  thinkingLevel: ThinkingLevel;
+} {
+  return {
+    model: normalizeAiModel(model),
+    thinkingLevel: toGenAiThinkingLevel(normalizeThinkingLevel(level)),
+  };
 }
 
 function parseJsonBody<T>(req: IncomingMessage): Promise<T | null> {
@@ -296,7 +340,7 @@ let popularFallbackCache: { expiresAt: number; stations: Station[] } | null = nu
 async function fetchRadioBrowserPath(
   pathUrl: string,
   httpsOnly: boolean,
-  timeoutMs = 12000
+  timeoutMs = 3500
 ): Promise<Station[]> {
   const mirrors = await getActiveMirrors();
   for (const mirror of mirrors.slice(0, 3)) {
@@ -315,9 +359,10 @@ async function fetchRadioBrowserPath(
           out.push(st);
         }
       }
-      if (out.length > 0) return out;
+      // Valid HTTP 200 JSON array from Radio Browser mirror is authoritative; do not retry mirrors on []
+      return out;
     } catch {
-      // try next mirror
+      // try next mirror on network/timeout/non-200 failure
     }
   }
   return [];
@@ -339,37 +384,41 @@ function buildPlanQueryPath(plan: FilterPlan, httpsOnly: boolean, limit: number)
   return `/json/stations/search?${q.toString()}`;
 }
 
+function buildRelaxedPlans(plans: FilterPlan[]): FilterPlan[] {
+  const seen = new Set<string>();
+  const out: FilterPlan[] = [];
+  const pushPlan = (p: FilterPlan) => {
+    const key = `${p.tag || ''}|${p.countrycode || ''}|${p.language || ''}|${p.name || ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(p);
+  };
+
+  for (const plan of plans) {
+    if (plan.tag && (plan.countrycode || plan.language || plan.name)) {
+      if (plan.countrycode) pushPlan({ tag: plan.tag, countrycode: plan.countrycode });
+      pushPlan({ tag: plan.tag });
+    }
+    if (plan.tag && plan.tag.includes(' ')) {
+      const firstToken = plan.tag
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .find((t) => t.length >= 3);
+      if (firstToken) pushPlan({ tag: firstToken });
+    }
+    if (!plan.tag && plan.countrycode && (plan.language || plan.name)) {
+      pushPlan({ countrycode: plan.countrycode });
+    }
+  }
+  return out.slice(0, 4);
+}
+
 async function fetchRadioBrowserPlan(
   plan: FilterPlan,
   httpsOnly: boolean,
   limit = 16
 ): Promise<Station[]> {
-  const attempts: FilterPlan[] = [plan];
-  // Progressive relaxation if a combined query (e.g. tag + countrycode + language + name) is too narrow
-  if (plan.tag && (plan.countrycode || plan.language || plan.name)) {
-    if (plan.countrycode) attempts.push({ tag: plan.tag, countrycode: plan.countrycode });
-    attempts.push({ tag: plan.tag });
-  }
-  if (plan.tag && plan.tag.includes(' ')) {
-    for (const token of plan.tag.split(/\s+/)) {
-      if (token.trim().length >= 3) {
-        attempts.push({ tag: token.trim() });
-      }
-    }
-  }
-  if (!plan.tag && plan.countrycode && (plan.language || plan.name)) {
-    attempts.push({ countrycode: plan.countrycode });
-  }
-
-  for (const attempt of attempts) {
-    const stations = await fetchRadioBrowserPath(
-      buildPlanQueryPath(attempt, httpsOnly, limit),
-      httpsOnly,
-      12000
-    );
-    if (stations.length > 0) return stations;
-  }
-  return [];
+  return fetchRadioBrowserPath(buildPlanQueryPath(plan, httpsOnly, limit), httpsOnly, 3500);
 }
 
 async function fetchPopularFallbackStations(httpsOnly: boolean): Promise<Station[]> {
@@ -383,7 +432,7 @@ async function fetchPopularFallbackStations(httpsOnly: boolean): Promise<Station
     limit: '60',
   });
   if (httpsOnly) q.set('is_https', 'true');
-  const list = await fetchRadioBrowserPath(`/json/stations/search?${q.toString()}`, httpsOnly, 12000);
+  const list = await fetchRadioBrowserPath(`/json/stations/search?${q.toString()}`, httpsOnly, 3500);
   if (list.length > 0) {
     popularFallbackCache = { expiresAt: Date.now() + 10 * 60 * 1000, stations: list };
   }
@@ -400,6 +449,7 @@ function stripJsonFence(raw: string): string {
 
 async function planSearchWithLlm(
   ai: GoogleGenAI,
+  model: AiModelId,
   thinkingLevel: AiThinkingLevel,
   opts: { mode: 'search'; query: string } | { mode: 'similar'; station: Station }
 ): Promise<QueryPlanResult> {
@@ -411,12 +461,14 @@ async function planSearchWithLlm(
       ? `Listener prompt: "${opts.query}"\nGenerate 2 to 4 diverse Radio Browser search plans (at least one broad tag plan without country restriction for fallback coverage), a short atmospheric editorial headline (3-6 words), a 1-sentence host intro, and a rich semanticProfile describing the sonic texture, tempo, mood, era, and geography.`
       : `Seed radio station:\n${buildStationDescriptor(opts.station)}\nGenerate 2 to 4 Radio Browser search plans to discover spiritual and sonic cousins from around the world (include both same/adjacent genres and regional/cultural echoes), an editorial headline like "Echoes of ${opts.station.name.slice(0, 28)}", a 1-sentence host intro, and a rich semanticProfile capturing its sonic essence.`;
 
+  const plannerCfg = getPlannerConfig(model, thinkingLevel);
+
   const response = await ai.models.generateContent({
-    model: LLM_MODEL,
+    model: plannerCfg.model,
     contents: userPrompt,
     config: {
       systemInstruction,
-      thinkingConfig: { thinkingLevel: toSdkThinkingLevel(thinkingLevel) },
+      thinkingConfig: { thinkingLevel: plannerCfg.thinkingLevel },
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
@@ -521,29 +573,35 @@ async function getOrEmbedStations(
     missing.push({ station, descriptor, sig });
   }
 
-  // 3. Batch-embed uncached live stations via gemini-embedding-2
+  // 3. Batch-embed uncached live stations in parallel via gemini-embedding-2
   const BATCH_SIZE = 32;
+  const slices: Array<Array<{ station: Station; descriptor: string; sig: string }>> = [];
   for (let i = 0; i < missing.length; i += BATCH_SIZE) {
-    const slice = missing.slice(i, i + BATCH_SIZE);
-    const vecs = await embedTexts(
-      ai,
-      slice.map((m) => m.descriptor)
-    );
-    slice.forEach((m, idx) => {
-      const vec = vecs[idx];
-      if (vec) {
-        liveVectorCache.set(m.station.stationuuid, { signature: m.sig, vector: vec });
-        result.set(m.station.stationuuid, vec);
-      }
-    });
+    slices.push(missing.slice(i, i + BATCH_SIZE));
   }
+  await Promise.all(
+    slices.map(async (slice) => {
+      const vecs = await embedTexts(
+        ai,
+        slice.map((m) => m.descriptor)
+      );
+      slice.forEach((m, idx) => {
+        const vec = vecs[idx];
+        if (vec) {
+          liveVectorCache.set(m.station.stationuuid, { signature: m.sig, vector: vec });
+          result.set(m.station.stationuuid, vec);
+        }
+      });
+    })
+  );
 
   return result;
 }
 
 async function generateDjNotes(
   ai: GoogleGenAI,
-  thinkingLevel: AiThinkingLevel,
+  notesModel: AiModelId,
+  notesThinkingLevel: AiThinkingLevel,
   contextLabel: string,
   stations: Station[]
 ): Promise<Record<string, string>> {
@@ -558,13 +616,14 @@ async function generateDjNotes(
   }));
 
   try {
+    const notesCfg = getDjNotesConfig(notesModel, notesThinkingLevel);
     const response = await ai.models.generateContent({
-      model: LLM_MODEL,
+      model: notesCfg.model,
       contents: `Context: ${contextLabel}\nStations:\n${JSON.stringify(compactList)}`,
       config: {
         systemInstruction:
           'You are a warm, knowledgeable late-night radio DJ for World Radio. For each station in the JSON list, write exactly ONE crisp, evocative sentence (max 18 words) explaining why this specific station fits the context. Ground every note strictly in the station\'s real name, country, language, and tags. Never invent percentages, scores, or fake live song titles.',
-        thinkingConfig: { thinkingLevel: toSdkThinkingLevel(thinkingLevel) },
+        thinkingConfig: { thinkingLevel: notesCfg.thinkingLevel },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.ARRAY,
@@ -601,14 +660,33 @@ async function generateDjNotes(
 async function runHybridPipeline(
   ai: GoogleGenAI,
   opts:
-    | { mode: 'search'; query: string; thinkingLevel: AiThinkingLevel; httpsOnly: boolean }
-    | { mode: 'similar'; station: Station; thinkingLevel: AiThinkingLevel; httpsOnly: boolean }
+    | {
+        mode: 'search';
+        query: string;
+        model: AiModelId;
+        thinkingLevel: AiThinkingLevel;
+        notesModel?: AiModelId;
+        notesThinkingLevel?: AiThinkingLevel;
+        httpsOnly: boolean;
+        includeDjNotes?: boolean;
+      }
+    | {
+        mode: 'similar';
+        station: Station;
+        model: AiModelId;
+        thinkingLevel: AiThinkingLevel;
+        notesModel?: AiModelId;
+        notesThinkingLevel?: AiThinkingLevel;
+        httpsOnly: boolean;
+        includeDjNotes?: boolean;
+      }
 ): Promise<AiSearchResponse> {
   const seedStats = seedIndexStore.getStats();
 
-  // Step 1: Plan structured queries & semantic profile with gemini-4-hydrogen
+  // Step 1: Plan structured queries & semantic profile with selected Station model & thinking level
   const plan = await planSearchWithLlm(
     ai,
+    opts.model,
     opts.thinkingLevel,
     opts.mode === 'search'
       ? { mode: 'search', query: opts.query }
@@ -679,6 +757,24 @@ async function runHybridPipeline(
     }
   }
 
+  // Parallel wave of relaxed Radio Browser plans only when combined primary results are sparse
+  if (candidateMap.size < 12) {
+    const relaxedPlans = buildRelaxedPlans(plan.plans);
+    if (relaxedPlans.length > 0) {
+      const relaxedLists = await Promise.all(
+        relaxedPlans.map((p) => fetchRadioBrowserPlan(p, opts.httpsOnly, 16))
+      );
+      for (const list of relaxedLists) {
+        for (const st of list) {
+          if (excludeUuid && st.stationuuid === excludeUuid) continue;
+          if (!candidateMap.has(st.stationuuid)) {
+            candidateMap.set(st.stationuuid, st);
+          }
+        }
+      }
+    }
+  }
+
   // Last-resort live fallback so semantic reranking always has playable candidates
   if (candidateMap.size < 8) {
     const firstTagToken =
@@ -715,6 +811,7 @@ async function runHybridPipeline(
       planTags: plan.planTags,
       usedSeedIndex: seedStats.totalStations > 0,
       seedCount: seedStats.totalStations,
+      model: opts.model,
       thinkingLevel: opts.thinkingLevel,
     };
   }
@@ -755,12 +852,21 @@ async function runHybridPipeline(
     }
   }
 
-  // Step 5: Generate crisp 1-sentence Radio Sommelier DJ notes
-  const contextLabel =
-    opts.mode === 'search'
-      ? `Listener mood/scene prompt: "${opts.query}"`
-      : `Finding stations similar to "${opts.station.name}" (${opts.station.country}, tags: ${opts.station.tags})`;
-  const djNotes = await generateDjNotes(ai, opts.thinkingLevel, contextLabel, selected);
+  // Step 5: Optionally generate crisp 1-sentence Radio Sommelier DJ notes (deferred to /api/ai/dj-notes by default)
+  let djNotes: Record<string, string> = {};
+  if (opts.includeDjNotes) {
+    const contextLabel =
+      opts.mode === 'search'
+        ? `Listener mood/scene prompt: "${opts.query}"`
+        : `Finding stations similar to "${opts.station.name}" (${opts.station.country}, tags: ${opts.station.tags})`;
+    djNotes = await generateDjNotes(
+      ai,
+      opts.notesModel ?? opts.model,
+      opts.notesThinkingLevel ?? opts.thinkingLevel,
+      contextLabel,
+      selected
+    );
+  }
 
   return {
     headline: plan.headline,
@@ -770,6 +876,7 @@ async function runHybridPipeline(
     planTags: plan.planTags,
     usedSeedIndex: seedStats.totalStations > 0,
     seedCount: seedStats.totalStations,
+    model: opts.model,
     thinkingLevel: opts.thinkingLevel,
   };
 }
@@ -858,8 +965,12 @@ export async function handleAiSearchRequest(
   if (pathname === '/api/ai/search') {
     const body = await parseJsonBody<{
       query?: string;
+      model?: unknown;
       thinkingLevel?: unknown;
+      notesModel?: unknown;
+      notesThinkingLevel?: unknown;
       httpsOnly?: boolean;
+      includeDjNotes?: boolean;
     }>(req);
     const query = (body?.query || '').trim().slice(0, 240);
     if (!query) {
@@ -867,12 +978,19 @@ export async function handleAiSearchRequest(
       return true;
     }
 
+    const model = normalizeAiModel(body?.model);
     const thinkingLevel = normalizeThinkingLevel(body?.thinkingLevel);
+    const notesModel = body?.notesModel !== undefined ? normalizeAiModel(body.notesModel) : model;
+    const notesThinkingLevel =
+      body?.notesThinkingLevel !== undefined
+        ? normalizeThinkingLevel(body.notesThinkingLevel)
+        : thinkingLevel;
     const httpsOnly = body?.httpsOnly !== false;
-    const cacheKey = `search|${query.toLowerCase()}|${thinkingLevel}|${httpsOnly}`;
+    const includeDjNotes = body?.includeDjNotes === true;
+    const cacheKey = `search|${query.toLowerCase()}|${model}|${thinkingLevel}|${httpsOnly}`;
 
     const cached = responseCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (cached && cached.expiresAt > Date.now() && !includeDjNotes) {
       sendJson(res, 200, cached.data);
       return true;
     }
@@ -881,10 +999,14 @@ export async function handleAiSearchRequest(
       const result = await runHybridPipeline(ai, {
         mode: 'search',
         query,
+        model,
         thinkingLevel,
+        notesModel,
+        notesThinkingLevel,
         httpsOnly,
+        includeDjNotes,
       });
-      if (result.stations.length > 0) {
+      if (result.stations.length > 0 && !includeDjNotes) {
         responseCache.set(cacheKey, {
           expiresAt: Date.now() + RESPONSE_CACHE_TTL_MS,
           data: result,
@@ -901,8 +1023,12 @@ export async function handleAiSearchRequest(
   if (pathname === '/api/ai/similar') {
     const body = await parseJsonBody<{
       station?: unknown;
+      model?: unknown;
       thinkingLevel?: unknown;
+      notesModel?: unknown;
+      notesThinkingLevel?: unknown;
       httpsOnly?: boolean;
+      includeDjNotes?: boolean;
     }>(req);
     const station = sanitizeServerStation(body?.station);
     if (!station) {
@@ -910,12 +1036,19 @@ export async function handleAiSearchRequest(
       return true;
     }
 
+    const model = normalizeAiModel(body?.model);
     const thinkingLevel = normalizeThinkingLevel(body?.thinkingLevel);
+    const notesModel = body?.notesModel !== undefined ? normalizeAiModel(body.notesModel) : model;
+    const notesThinkingLevel =
+      body?.notesThinkingLevel !== undefined
+        ? normalizeThinkingLevel(body.notesThinkingLevel)
+        : thinkingLevel;
     const httpsOnly = body?.httpsOnly !== false;
-    const cacheKey = `similar|${station.stationuuid}|${thinkingLevel}|${httpsOnly}`;
+    const includeDjNotes = body?.includeDjNotes === true;
+    const cacheKey = `similar|${station.stationuuid}|${model}|${thinkingLevel}|${httpsOnly}`;
 
     const cached = responseCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (cached && cached.expiresAt > Date.now() && !includeDjNotes) {
       sendJson(res, 200, cached.data);
       return true;
     }
@@ -924,10 +1057,14 @@ export async function handleAiSearchRequest(
       const result = await runHybridPipeline(ai, {
         mode: 'similar',
         station,
+        model,
         thinkingLevel,
+        notesModel,
+        notesThinkingLevel,
         httpsOnly,
+        includeDjNotes,
       });
-      if (result.stations.length > 0) {
+      if (result.stations.length > 0 && !includeDjNotes) {
         responseCache.set(cacheKey, {
           expiresAt: Date.now() + RESPONSE_CACHE_TTL_MS,
           data: result,
@@ -936,6 +1073,71 @@ export async function handleAiSearchRequest(
       sendJson(res, 200, result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'AI similarity search failed';
+      sendJson(res, 502, { error: msg });
+    }
+    return true;
+  }
+
+  if (pathname === '/api/ai/dj-notes') {
+    const body = await parseJsonBody<{
+      query?: string;
+      seedStation?: unknown;
+      stations?: unknown[];
+      notesModel?: unknown;
+      notesThinkingLevel?: unknown;
+      model?: unknown;
+      thinkingLevel?: unknown;
+      httpsOnly?: boolean;
+    }>(req);
+    const seedStation = sanitizeServerStation(body?.seedStation);
+    const query = (body?.query || '').trim().slice(0, 240);
+    const rawStations = Array.isArray(body?.stations) ? body.stations : [];
+    const stations = rawStations
+      .map((s) => sanitizeServerStation(s))
+      .filter((s): s is Station => s !== null)
+      .slice(0, 16);
+
+    if (stations.length === 0 || (!query && !seedStation)) {
+      sendJson(res, 400, { error: 'Stations and query or seedStation are required for DJ notes.' });
+      return true;
+    }
+
+    const notesModel = normalizeAiModel(body?.notesModel ?? body?.model);
+    const notesThinkingLevel = normalizeThinkingLevel(
+      body?.notesThinkingLevel ?? body?.thinkingLevel
+    );
+    const mode = seedStation ? 'similar' : 'search';
+    const queryOrUuid = seedStation ? seedStation.stationuuid : query.toLowerCase();
+    const stationsHash = hashDescriptor(stations.map((s) => s.stationuuid).join(','));
+    const notesCacheKey = `${mode}|${queryOrUuid}|${stationsHash}|${notesModel}|${notesThinkingLevel}`;
+
+    const cached = djNotesCache.get(notesCacheKey);
+    if (cached && cached.expiresAt > Date.now() && Object.keys(cached.djNotes).length > 0) {
+      sendJson(res, 200, { djNotes: cached.djNotes });
+      return true;
+    }
+
+    const contextLabel = seedStation
+      ? `Finding stations similar to "${seedStation.name}" (${seedStation.country}, tags: ${seedStation.tags})`
+      : `Listener mood/scene prompt: "${query}"`;
+
+    try {
+      const djNotes = await generateDjNotes(
+        ai,
+        notesModel,
+        notesThinkingLevel,
+        contextLabel,
+        stations
+      );
+      if (Object.keys(djNotes).length > 0) {
+        djNotesCache.set(notesCacheKey, {
+          expiresAt: Date.now() + RESPONSE_CACHE_TTL_MS,
+          djNotes,
+        });
+      }
+      sendJson(res, 200, { djNotes });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'DJ note generation failed';
       sendJson(res, 502, { error: msg });
     }
     return true;

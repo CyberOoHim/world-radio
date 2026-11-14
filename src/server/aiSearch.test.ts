@@ -3,7 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { normalizeThinkingLevel, handleAiSearchRequest, resolveGeminiApiKey } from './aiSearch';
+import { ThinkingLevel } from '@google/genai';
+import {
+  getDjNotesConfig,
+  getPlannerConfig,
+  handleAiSearchRequest,
+  normalizeAiModel,
+  normalizeThinkingLevel,
+  resolveGeminiApiKey,
+} from './aiSearch';
 import { getJwtSecret, signJwt } from './auth';
 import {
   SEED_EMBEDDING_DIM,
@@ -34,14 +42,49 @@ function createMockRes() {
   };
 }
 
-describe('normalizeThinkingLevel', () => {
-  it('accepts low, medium, high and falls back to low for unsupported levels', () => {
+describe('normalizeAiModel and normalizeThinkingLevel', () => {
+  it('accepts gemini-flash-lite-latest and gemini-4-hydrogen and falls back to flash-lite-latest', () => {
+    expect(normalizeAiModel('gemini-flash-lite-latest')).toBe('gemini-flash-lite-latest');
+    expect(normalizeAiModel('gemini-4-hydrogen')).toBe('gemini-4-hydrogen');
+    expect(normalizeAiModel('gemini-3.1-flash-lite')).toBe('gemini-flash-lite-latest');
+    expect(normalizeAiModel('gemini-2.0-flash')).toBe('gemini-flash-lite-latest');
+    expect(normalizeAiModel(undefined)).toBe('gemini-flash-lite-latest');
+  });
+
+  it('accepts low, medium, high and falls back to medium for unsupported levels', () => {
     expect(normalizeThinkingLevel('low')).toBe('low');
     expect(normalizeThinkingLevel('medium')).toBe('medium');
     expect(normalizeThinkingLevel('high')).toBe('high');
-    expect(normalizeThinkingLevel('xhigh')).toBe('low');
-    expect(normalizeThinkingLevel('minimal')).toBe('low');
-    expect(normalizeThinkingLevel(undefined)).toBe('low');
+    expect(normalizeThinkingLevel('xhigh')).toBe('medium');
+    expect(normalizeThinkingLevel('minimal')).toBe('medium');
+    expect(normalizeThinkingLevel(undefined)).toBe('medium');
+  });
+
+  it('maps independent Station and DJ Note models and thinking levels cleanly', () => {
+    expect(getPlannerConfig('gemini-flash-lite-latest', 'low')).toEqual({
+      model: 'gemini-flash-lite-latest',
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    expect(getPlannerConfig('gemini-flash-lite-latest', 'medium')).toEqual({
+      model: 'gemini-flash-lite-latest',
+      thinkingLevel: ThinkingLevel.MEDIUM,
+    });
+    expect(getPlannerConfig('gemini-4-hydrogen', 'high')).toEqual({
+      model: 'gemini-4-hydrogen',
+      thinkingLevel: ThinkingLevel.HIGH,
+    });
+    expect(getDjNotesConfig('gemini-flash-lite-latest', 'medium')).toEqual({
+      model: 'gemini-flash-lite-latest',
+      thinkingLevel: ThinkingLevel.MEDIUM,
+    });
+    expect(getDjNotesConfig('gemini-4-hydrogen', 'low')).toEqual({
+      model: 'gemini-4-hydrogen',
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    expect(getDjNotesConfig('gemini-4-hydrogen', 'high')).toEqual({
+      model: 'gemini-4-hydrogen',
+      thinkingLevel: ThinkingLevel.HIGH,
+    });
   });
 });
 
@@ -98,8 +141,10 @@ describe('seedIndex vector quantization & descriptors', () => {
     expect(cosineUnitSimilarity(decoded!, negDecoded!)).toBeCloseTo(-1, 3);
   });
 
-  it('returns null when base64 vector length mismatches expected dimension', () => {
+  it('returns null when base64 vector length mismatches expected dimension or is all-zero', () => {
     expect(decodeBase64ToUnitVector('AAAA', SEED_EMBEDDING_DIM)).toBeNull();
+    const zeroBytes = Buffer.alloc(SEED_EMBEDDING_DIM, 0).toString('base64');
+    expect(decodeBase64ToUnitVector(zeroBytes, SEED_EMBEDDING_DIM)).toBeNull();
   });
 
   it('builds clean station text descriptors', () => {
@@ -244,6 +289,7 @@ describe('handleAiSearchRequest', () => {
     for (const target of [
       { url: '/api/ai/search', method: 'POST' },
       { url: '/api/ai/similar', method: 'POST' },
+      { url: '/api/ai/dj-notes', method: 'POST' },
       { url: '/api/ai/seed-export', method: 'GET' },
     ]) {
       const req = {

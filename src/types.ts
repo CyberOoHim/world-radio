@@ -54,6 +54,7 @@ export type ViewId =
   | 'search';
 
 export type SearchMode = 'name' | 'ai';
+export type AiModelId = 'gemini-flash-lite-latest' | 'gemini-4-hydrogen';
 export type AiThinkingLevel = 'low' | 'medium' | 'high';
 
 export interface AiSearchResponse {
@@ -64,6 +65,7 @@ export interface AiSearchResponse {
   planTags: string[];
   usedSeedIndex: boolean;
   seedCount: number;
+  model: AiModelId;
   thinkingLevel: AiThinkingLevel;
 }
 
@@ -92,10 +94,14 @@ export interface AppState {
   error: string | null;
   query: string;
   searchMode: SearchMode;
+  aiModel: AiModelId;
   aiThinkingLevel: AiThinkingLevel;
+  aiNotesModel: AiModelId;
+  aiNotesThinkingLevel: AiThinkingLevel;
   aiQuery: string;
   aiSeedStation: Station | null;
   aiLoading: boolean;
+  aiNotesLoading: boolean;
   aiError: string | null;
   aiAuthRequired: boolean;
   aiHeadline: string;
@@ -151,6 +157,9 @@ export interface AppPrefs {
   view: ViewId;
   favoriteGroupFilter: string | null;
   powerSaver: PowerSaverMode;
+  aiModel: AiModelId;
   aiThinkingLevel: AiThinkingLevel;
+  aiNotesModel: AiModelId;
+  aiNotesThinkingLevel: AiThinkingLevel;
   searchMode: SearchMode;
 }

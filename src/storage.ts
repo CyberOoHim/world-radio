@@ -2,6 +2,7 @@ import { DEFAULT_EQ_BANDS, type EqBands } from './equalizer';
 import { sanitizePassportStamp, type PassportStamp } from './mapPassport';
 import { DEFAULT_MAP_STYLE, sanitizeMapStyle, type MapStyleId } from './mapStyle';
 import type {
+  AiModelId,
   AiThinkingLevel,
   AppPrefs,
   PowerSaverMode,
@@ -316,7 +317,10 @@ export const DEFAULT_PREFS: AppPrefs = {
   view: 'discover',
   favoriteGroupFilter: null,
   powerSaver: 'auto',
-  aiThinkingLevel: 'low',
+  aiModel: 'gemini-flash-lite-latest',
+  aiThinkingLevel: 'medium',
+  aiNotesModel: 'gemini-flash-lite-latest',
+  aiNotesThinkingLevel: 'medium',
   searchMode: 'name',
 };
 
@@ -338,6 +342,13 @@ function sanitizePowerSaverMode(v: unknown): PowerSaverMode {
     return v;
   }
   return DEFAULT_PREFS.powerSaver;
+}
+
+export function sanitizeAiModel(v: unknown): AiModelId {
+  if (v === 'gemini-flash-lite-latest' || v === 'gemini-4-hydrogen') {
+    return v;
+  }
+  return DEFAULT_PREFS.aiModel;
 }
 
 export function sanitizeAiThinkingLevel(v: unknown): AiThinkingLevel {
@@ -415,7 +426,10 @@ export function loadPrefs(): AppPrefs {
           ? parsed.favoriteGroupFilter.trim().slice(0, 40)
           : null,
       powerSaver: sanitizePowerSaverMode(parsed.powerSaver),
+      aiModel: sanitizeAiModel(parsed.aiModel),
       aiThinkingLevel: sanitizeAiThinkingLevel(parsed.aiThinkingLevel),
+      aiNotesModel: sanitizeAiModel(parsed.aiNotesModel),
+      aiNotesThinkingLevel: sanitizeAiThinkingLevel(parsed.aiNotesThinkingLevel),
       searchMode: sanitizeSearchMode(parsed.searchMode),
     };
   } catch {

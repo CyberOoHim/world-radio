@@ -5,6 +5,7 @@ import {
   SEED_EMBEDDING_DIM,
   SEED_SWEET_SPOT_COUNT,
   buildStationDescriptor,
+  decodeBase64ToUnitVector,
   quantizeUnitVectorToBase64,
   type SeedIndexFile,
   type SeedStationItem,
@@ -152,7 +153,9 @@ async function main(): Promise<void> {
     items = stations.map((station) => ({ station }));
   }
 
-  const missing = items.filter((item) => typeof item.vec !== 'string' || item.vec.length === 0);
+  const missing = items.filter(
+    (item) => typeof item.vec !== 'string' || !decodeBase64ToUnitVector(item.vec, SEED_EMBEDDING_DIM)
+  );
   if (missing.length === 0) {
     console.log(`All ${items.length} stations already have pre-computed vectors.`);
   } else if (apiKey) {
@@ -161,22 +164,33 @@ async function main(): Promise<void> {
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
     const BATCH = 50;
+    const CONCURRENCY = 4;
+    const batches: SeedStationItem[][] = [];
     for (let i = 0; i < missing.length; i += BATCH) {
-      const slice = missing.slice(i, i + BATCH);
-      const texts = slice.map((item) => buildStationDescriptor(item.station));
-      const res = await ai.models.embedContent({
-        model: 'gemini-embedding-2',
-        contents: texts,
-        config: { outputDimensionality: SEED_EMBEDDING_DIM },
-      });
-      const embeddings = res.embeddings ?? [];
-      slice.forEach((item, idx) => {
-        const vals = embeddings[idx]?.values;
-        if (vals && vals.length === SEED_EMBEDDING_DIM) {
-          item.vec = quantizeUnitVectorToBase64(vals);
-        }
-      });
-      console.log(`Embedded ${Math.min(i + BATCH, missing.length)} / ${missing.length}`);
+      batches.push(missing.slice(i, i + BATCH));
+    }
+    let completed = 0;
+    for (let i = 0; i < batches.length; i += CONCURRENCY) {
+      const wave = batches.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        wave.map(async (slice) => {
+          const texts = slice.map((item) => buildStationDescriptor(item.station));
+          const res = await ai.models.embedContent({
+            model: 'gemini-embedding-2',
+            contents: texts,
+            config: { outputDimensionality: SEED_EMBEDDING_DIM },
+          });
+          const embeddings = res.embeddings ?? [];
+          slice.forEach((item, idx) => {
+            const vals = embeddings[idx]?.values;
+            if (vals && vals.length === SEED_EMBEDDING_DIM) {
+              item.vec = quantizeUnitVectorToBase64(vals);
+            }
+          });
+          completed += slice.length;
+        })
+      );
+      console.log(`Embedded ${Math.min(completed, missing.length)} / ${missing.length}`);
     }
   } else {
     console.warn('GEMINI_API_KEY not set — writing station metadata without pre-computed vectors.');

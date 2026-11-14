@@ -88,12 +88,20 @@ export function quantizeUnitVectorToBase64(values: ArrayLike<number>): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
 }
 
-/** Decode base64 Int8 vector back into an L2-normalized Float32Array. */
+/** Decode base64 Int8 vector back into an L2-normalized Float32Array. Returns null for empty/all-zero vectors. */
 export function decodeBase64ToUnitVector(b64: string, expectedDim = SEED_EMBEDDING_DIM): Float32Array | null {
   try {
     const buf = Buffer.from(b64, 'base64');
     if (buf.length !== expectedDim) return null;
     const raw = new Int8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    let hasNonZero = false;
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] !== 0) {
+        hasNonZero = true;
+        break;
+      }
+    }
+    if (!hasNonZero) return null;
     return normalizeVector(raw);
   } catch {
     return null;

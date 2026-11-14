@@ -4497,6 +4497,17 @@ html.is-backgrounded .radar-ring {
   font-size: 0.82rem;
   line-height: 1.48;
   color: var(--text-soft);
+  transition: opacity 0.18s var(--ease);
+}
+
+.station-dj-note.is-pending {
+  color: var(--text-muted);
+  opacity: 0.65;
+  font-style: italic;
+}
+
+.station-dj-note.is-ready {
+  opacity: 1;
 }
 
 .ai-composer {
@@ -4536,12 +4547,25 @@ html.is-backgrounded .radar-ring {
   line-height: 1.5;
 }
 
-.ai-thinking-control {
+.ai-controls-stack {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.ai-control-group {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 0.78rem;
-  font-weight: 500;
+}
+
+.ai-control-group-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   color: var(--text-soft);
   white-space: nowrap;
   flex-shrink: 0;
@@ -4557,6 +4581,7 @@ html.is-backgrounded .radar-ring {
   color: #f8fafc;
   font-size: 0.82rem;
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;

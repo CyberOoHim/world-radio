@@ -27,9 +27,11 @@ import {
   type SearchParams,
 } from './api/radioBrowser';
 import {
+  AI_MODEL_OPTIONS,
   AI_THINKING_OPTIONS,
   AI_VIBE_PRESETS,
   AiAuthError,
+  aiFetchDjNotes,
   aiFindSimilarStations,
   aiSearchStations,
 } from './api/aiSearch';
@@ -128,6 +130,7 @@ import {
   toSnapshot,
 } from './storage';
 import type {
+  AiModelId,
   AiThinkingLevel,
   AppState,
   Country,
@@ -167,10 +170,14 @@ const state: AppState = {
   error: null,
   query: '',
   searchMode: prefs.searchMode,
+  aiModel: prefs.aiModel,
   aiThinkingLevel: prefs.aiThinkingLevel,
+  aiNotesModel: prefs.aiNotesModel,
+  aiNotesThinkingLevel: prefs.aiNotesThinkingLevel,
   aiQuery: '',
   aiSeedStation: null,
   aiLoading: false,
+  aiNotesLoading: false,
   aiError: null,
   aiAuthRequired: false,
   aiHeadline: '',
@@ -441,7 +448,10 @@ function persistPrefs() {
     view: state.view,
     favoriteGroupFilter: state.favoriteGroupFilter,
     powerSaver: state.powerSaver,
+    aiModel: state.aiModel,
     aiThinkingLevel: state.aiThinkingLevel,
+    aiNotesModel: state.aiNotesModel,
+    aiNotesThinkingLevel: state.aiNotesThinkingLevel,
     searchMode: state.searchMode,
   });
 }
@@ -1743,6 +1753,59 @@ async function loadSearch(q: string, reset = true) {
   }
 }
 
+function syncAiDjNotesInDom(): void {
+  const slots = document.querySelectorAll<HTMLElement>('[data-dj-note-for]');
+  slots.forEach((slot) => {
+    const id = slot.dataset.djNoteFor || '';
+    const note = id ? state.aiDjNotes[id] : undefined;
+    if (note) {
+      slot.classList.remove('is-pending');
+      slot.classList.add('is-ready');
+      slot.textContent = note;
+    } else if (!state.aiNotesLoading) {
+      slot.remove();
+    }
+  });
+}
+
+function hydrateAiDjNotesAsync(params: {
+  seq: number;
+  signal: AbortSignal;
+  query?: string;
+  seedStation?: Station | null;
+  stations: Station[];
+}): void {
+  if (params.stations.length === 0) {
+    state.aiNotesLoading = false;
+    return;
+  }
+  state.aiNotesLoading = true;
+  void aiFetchDjNotes({
+    query: params.query,
+    seedStation: params.seedStation,
+    stations: params.stations,
+    notesModel: state.aiNotesModel,
+    notesThinkingLevel: state.aiNotesThinkingLevel,
+    httpsOnly: state.httpsOnly,
+    signal: params.signal,
+  })
+    .then((notes) => {
+      if (params.seq !== aiSeq || params.signal.aborted) return;
+      state.aiDjNotes = { ...state.aiDjNotes, ...notes };
+      state.aiNotesLoading = false;
+      if (state.view === 'ai') {
+        syncAiDjNotesInDom();
+      }
+    })
+    .catch(() => {
+      if (params.seq !== aiSeq || params.signal.aborted) return;
+      state.aiNotesLoading = false;
+      if (state.view === 'ai') {
+        syncAiDjNotesInDom();
+      }
+    });
+}
+
 async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
   const q = rawQuery.trim();
   if (!q) {
@@ -1763,6 +1826,8 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
   state.query = q;
   state.aiSeedStation = null;
   state.aiLoading = true;
+  state.aiNotesLoading = false;
+  state.aiDjNotes = {};
   state.aiError = null;
   state.aiAuthRequired = false;
   persistPrefs();
@@ -1780,6 +1845,7 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
   try {
     const res = await aiSearchStations({
       query: q,
+      model: state.aiModel,
       thinkingLevel: state.aiThinkingLevel,
       httpsOnly: state.httpsOnly,
       signal: aiAbort.signal,
@@ -1797,6 +1863,18 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
     state.aiError = null;
     state.aiAuthRequired = false;
     pendingAiRetry = null;
+
+    const needsNotes = res.stations.length > 0 && Object.keys(res.djNotes).length === 0;
+    if (needsNotes) {
+      hydrateAiDjNotesAsync({
+        seq,
+        signal: aiAbort.signal,
+        query: q,
+        stations: res.stations,
+      });
+    } else {
+      state.aiNotesLoading = false;
+    }
   } catch (e) {
     if (seq !== aiSeq) return;
     if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -1840,6 +1918,8 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
   state.detailStation = null;
   state.aiSeedStation = station;
   state.aiLoading = true;
+  state.aiNotesLoading = false;
+  state.aiDjNotes = {};
   state.aiError = null;
   state.aiAuthRequired = false;
   persistPrefs();
@@ -1857,6 +1937,7 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
   try {
     const res = await aiFindSimilarStations({
       station,
+      model: state.aiModel,
       thinkingLevel: state.aiThinkingLevel,
       httpsOnly: state.httpsOnly,
       signal: aiAbort.signal,
@@ -1874,6 +1955,18 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
     state.aiError = null;
     state.aiAuthRequired = false;
     pendingAiRetry = null;
+
+    const needsNotes = res.stations.length > 0 && Object.keys(res.djNotes).length === 0;
+    if (needsNotes) {
+      hydrateAiDjNotesAsync({
+        seq,
+        signal: aiAbort.signal,
+        seedStation: station,
+        stations: res.stations,
+      });
+    } else {
+      state.aiNotesLoading = false;
+    }
   } catch (e) {
     if (seq !== aiSeq) return;
     if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -2592,7 +2685,13 @@ function stationCard(station: Station): string {
           }
         </div>
       </div>
-      ${djNote ? `<p class="station-dj-note">${escapeHtml(djNote)}</p>` : ''}
+      ${
+        djNote
+          ? `<p class="station-dj-note is-ready" data-dj-note-for="${escapeHtml(station.stationuuid)}">${escapeHtml(djNote)}</p>`
+          : state.view === 'ai' && state.aiNotesLoading
+            ? `<p class="station-dj-note is-pending" data-dj-note-for="${escapeHtml(station.stationuuid)}">Curating sommelier note…</p>`
+            : ''
+      }
       <div class="station-actions">
         <button type="button" class="btn-play ${playing ? 'is-playing' : ''}" data-action="play" data-id="${escapeHtml(station.stationuuid)}">
           ${playing ? icons.pause : icons.play}
@@ -3050,8 +3149,15 @@ function renderGenres(): string {
 
 function renderAiView(): string {
   const auth = getAuthState();
-  const thinkingLabel =
-    AI_THINKING_OPTIONS.find((o) => o.id === state.aiThinkingLevel)?.label ?? 'Low · Fast';
+  const stationModelLabel =
+    AI_MODEL_OPTIONS.find((o) => o.id === state.aiModel)?.label ?? 'Flash Lite Latest';
+  const stationThinkingLabel =
+    AI_THINKING_OPTIONS.find((o) => o.id === state.aiThinkingLevel)?.label ?? 'Medium · Balanced';
+  const notesModelLabel =
+    AI_MODEL_OPTIONS.find((o) => o.id === state.aiNotesModel)?.label ?? 'Flash Lite Latest';
+  const notesThinkingLabel =
+    AI_THINKING_OPTIONS.find((o) => o.id === state.aiNotesThinkingLevel)?.label ??
+    'Medium · Balanced';
 
   const composerHtml = `
     <section class="ai-composer">
@@ -3060,15 +3166,38 @@ function renderAiView(): string {
           <h2>AI Frequency Finder</h2>
           <p class="ai-composer-sub">Describe a time, place, memory, or sonic texture. Hybrid AI plans live searches and ranks frequencies by vibe.</p>
         </div>
-        <label class="ai-thinking-control">
-          <span>Thinking</span>
-          <select class="ai-thinking-select" data-action="ai-thinking-level" aria-label="AI thinking level">
-            ${AI_THINKING_OPTIONS.map(
-              (opt) =>
-                `<option value="${opt.id}" ${state.aiThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
-            ).join('')}
-          </select>
-        </label>
+        <div class="ai-controls-stack">
+          <div class="ai-control-group" role="group" aria-label="Station search LLM controls">
+            <span class="ai-control-group-label">Station</span>
+            <select class="ai-thinking-select" data-action="ai-model" aria-label="Station search model">
+              ${AI_MODEL_OPTIONS.map(
+                (opt) =>
+                  `<option value="${opt.id}" ${state.aiModel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+              ).join('')}
+            </select>
+            <select class="ai-thinking-select" data-action="ai-thinking-level" aria-label="Station search thinking level">
+              ${AI_THINKING_OPTIONS.map(
+                (opt) =>
+                  `<option value="${opt.id}" ${state.aiThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="ai-control-group" role="group" aria-label="DJ note LLM controls">
+            <span class="ai-control-group-label">DJ Note</span>
+            <select class="ai-thinking-select" data-action="ai-notes-model" aria-label="DJ note model">
+              ${AI_MODEL_OPTIONS.map(
+                (opt) =>
+                  `<option value="${opt.id}" ${state.aiNotesModel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+              ).join('')}
+            </select>
+            <select class="ai-thinking-select" data-action="ai-notes-thinking-level" aria-label="DJ note thinking level">
+              ${AI_THINKING_OPTIONS.map(
+                (opt) =>
+                  `<option value="${opt.id}" ${state.aiNotesThinkingLevel === opt.id ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`
+              ).join('')}
+            </select>
+          </div>
+        </div>
       </div>
 
       <form class="ai-composer-form" data-action="ai-prompt-form">
@@ -3145,7 +3274,7 @@ function renderAiView(): string {
     bodyHtml = `
       <div class="loading-box">
         <div class="spinner"></div>
-        <p>Curating frequencies (${escapeHtml(thinkingLabel)})…</p>
+        <p>Curating frequencies (${escapeHtml(stationModelLabel)} · ${escapeHtml(stationThinkingLabel)})…</p>
       </div>
       ${skeletonGrid()}
     `;
@@ -3173,7 +3302,9 @@ function renderAiView(): string {
         <div class="ai-results-meta">
           <span>${state.aiResults.length} stations</span>
           <span class="dot"></span>
-          <span>${escapeHtml(thinkingLabel)}</span>
+          <span>Station: ${escapeHtml(stationModelLabel)} (${escapeHtml(stationThinkingLabel)})</span>
+          <span class="dot"></span>
+          <span>DJ Note: ${escapeHtml(notesModelLabel)} (${escapeHtml(notesThinkingLabel)})</span>
           <span class="dot"></span>
           <span>${escapeHtml(sourceMeta)}</span>
           ${themesMeta ? `<span class="dot"></span><span>${escapeHtml(themesMeta)}</span>` : ''}
@@ -4058,10 +4189,14 @@ function restoreAllDefaults(): void {
   state.recentQuery = '';
   state.query = '';
   state.searchMode = 'name';
-  state.aiThinkingLevel = 'low';
+  state.aiModel = 'gemini-flash-lite-latest';
+  state.aiThinkingLevel = 'medium';
+  state.aiNotesModel = 'gemini-flash-lite-latest';
+  state.aiNotesThinkingLevel = 'medium';
   state.aiQuery = '';
   state.aiSeedStation = null;
   state.aiLoading = false;
+  state.aiNotesLoading = false;
   state.aiError = null;
   state.aiAuthRequired = false;
   state.aiHeadline = '';
@@ -4132,7 +4267,10 @@ function ensureAppEvents() {
       !action ||
       action === 'search' ||
       action === 'ai-query-input' ||
+      action === 'ai-model' ||
       action === 'ai-thinking-level' ||
+      action === 'ai-notes-model' ||
+      action === 'ai-notes-thinking-level' ||
       action === 'volume' ||
       action === 'browse-filter' ||
       action === 'recent-filter' ||
@@ -4184,9 +4322,11 @@ function ensureAppEvents() {
         }
         break;
       case 'ai-clear-seed':
+        aiAbort?.abort();
         state.aiSeedStation = null;
         state.aiResults = [];
         state.aiDjNotes = {};
+        state.aiNotesLoading = false;
         state.aiHeadline = '';
         state.aiIntro = '';
         state.aiPlanTags = [];
@@ -4813,13 +4953,83 @@ function ensureAppEvents() {
       }
       return;
     }
+    if (t.dataset.action === 'ai-model' && t instanceof HTMLSelectElement) {
+      const val = t.value as AiModelId;
+      if (val === 'gemini-flash-lite-latest' || val === 'gemini-4-hydrogen') {
+        state.aiModel = val;
+        persistPrefs();
+        const label = AI_MODEL_OPTIONS.find((o) => o.id === val)?.label ?? val;
+        showToast(`Station model: ${label}`);
+      }
+      return;
+    }
     if (t.dataset.action === 'ai-thinking-level' && t instanceof HTMLSelectElement) {
       const val = t.value as AiThinkingLevel;
       if (val === 'low' || val === 'medium' || val === 'high') {
         state.aiThinkingLevel = val;
         persistPrefs();
         const label = AI_THINKING_OPTIONS.find((o) => o.id === val)?.label ?? val;
-        showToast(`AI thinking level: ${label}`);
+        showToast(`Station thinking: ${label}`);
+      }
+      return;
+    }
+    if (t.dataset.action === 'ai-notes-model' && t instanceof HTMLSelectElement) {
+      const val = t.value as AiModelId;
+      if (val === 'gemini-flash-lite-latest' || val === 'gemini-4-hydrogen') {
+        state.aiNotesModel = val;
+        persistPrefs();
+        const label = AI_MODEL_OPTIONS.find((o) => o.id === val)?.label ?? val;
+        showToast(`DJ note model: ${label}`);
+        if (
+          state.view === 'ai' &&
+          state.aiResults.length > 0 &&
+          !state.aiLoading &&
+          (state.aiQuery.trim() || state.aiSeedStation)
+        ) {
+          if (aiAbort) aiAbort.abort();
+          aiAbort = new AbortController();
+          const seq = ++aiSeq;
+          state.aiDjNotes = {};
+          state.aiNotesLoading = true;
+          renderMain();
+          hydrateAiDjNotesAsync({
+            seq,
+            signal: aiAbort.signal,
+            query: state.aiSeedStation ? undefined : state.aiQuery.trim(),
+            seedStation: state.aiSeedStation,
+            stations: state.aiResults,
+          });
+        }
+      }
+      return;
+    }
+    if (t.dataset.action === 'ai-notes-thinking-level' && t instanceof HTMLSelectElement) {
+      const val = t.value as AiThinkingLevel;
+      if (val === 'low' || val === 'medium' || val === 'high') {
+        state.aiNotesThinkingLevel = val;
+        persistPrefs();
+        const label = AI_THINKING_OPTIONS.find((o) => o.id === val)?.label ?? val;
+        showToast(`DJ note thinking: ${label}`);
+        if (
+          state.view === 'ai' &&
+          state.aiResults.length > 0 &&
+          !state.aiLoading &&
+          (state.aiQuery.trim() || state.aiSeedStation)
+        ) {
+          if (aiAbort) aiAbort.abort();
+          aiAbort = new AbortController();
+          const seq = ++aiSeq;
+          state.aiDjNotes = {};
+          state.aiNotesLoading = true;
+          renderMain();
+          hydrateAiDjNotesAsync({
+            seq,
+            signal: aiAbort.signal,
+            query: state.aiSeedStation ? undefined : state.aiQuery.trim(),
+            seedStation: state.aiSeedStation,
+            stations: state.aiResults,
+          });
+        }
       }
       return;
     }

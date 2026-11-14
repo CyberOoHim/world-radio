@@ -1,6 +1,6 @@
 import { getStoredAuthToken } from '../auth';
 import { sanitizeStation } from '../storage';
-import type { AiSearchResponse, AiThinkingLevel, Station } from '../types';
+import type { AiModelId, AiSearchResponse, AiThinkingLevel, Station } from '../types';
 
 export class AiAuthError extends Error {
   code: string;
@@ -60,6 +60,23 @@ export const AI_VIBE_PRESETS: VibePreset[] = [
   },
 ];
 
+export const AI_MODEL_OPTIONS: Array<{
+  id: AiModelId;
+  label: string;
+  detail: string;
+}> = [
+  {
+    id: 'gemini-flash-lite-latest',
+    label: 'Flash Lite Latest',
+    detail: 'Fast, lightweight curation',
+  },
+  {
+    id: 'gemini-4-hydrogen',
+    label: 'Gemini 4 Hydrogen',
+    detail: 'Deep reasoning & richer voice',
+  },
+];
+
 export const AI_THINKING_OPTIONS: Array<{
   id: AiThinkingLevel;
   label: string;
@@ -101,9 +118,12 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
     ? obj.planTags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
     : [];
 
+  const model: AiModelId =
+    obj.model === 'gemini-4-hydrogen' ? 'gemini-4-hydrogen' : 'gemini-flash-lite-latest';
+
   const level = obj.thinkingLevel;
   const thinkingLevel: AiThinkingLevel =
-    level === 'low' || level === 'medium' || level === 'high' ? level : 'low';
+    level === 'low' || level === 'medium' || level === 'high' ? level : 'medium';
 
   return {
     headline: typeof obj.headline === 'string' ? obj.headline : 'Curated Frequencies',
@@ -113,12 +133,14 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
     planTags,
     usedSeedIndex: Boolean(obj.usedSeedIndex),
     seedCount: typeof obj.seedCount === 'number' ? obj.seedCount : 0,
+    model,
     thinkingLevel,
   };
 }
 
 export async function aiSearchStations(params: {
   query: string;
+  model: AiModelId;
   thinkingLevel: AiThinkingLevel;
   httpsOnly: boolean;
   signal?: AbortSignal;
@@ -130,6 +152,7 @@ export async function aiSearchStations(params: {
     signal: params.signal,
     body: JSON.stringify({
       query: params.query,
+      model: params.model,
       thinkingLevel: params.thinkingLevel,
       httpsOnly: params.httpsOnly,
     }),
@@ -153,6 +176,7 @@ export async function aiSearchStations(params: {
 
 export async function aiFindSimilarStations(params: {
   station: Station;
+  model: AiModelId;
   thinkingLevel: AiThinkingLevel;
   httpsOnly: boolean;
   signal?: AbortSignal;
@@ -164,6 +188,7 @@ export async function aiFindSimilarStations(params: {
     signal: params.signal,
     body: JSON.stringify({
       station: params.station,
+      model: params.model,
       thinkingLevel: params.thinkingLevel,
       httpsOnly: params.httpsOnly,
     }),
@@ -183,4 +208,43 @@ export async function aiFindSimilarStations(params: {
   }
 
   return normalizeAiResponse(data);
+}
+
+export async function aiFetchDjNotes(params: {
+  query?: string;
+  seedStation?: Station | null;
+  stations: Station[];
+  notesModel: AiModelId;
+  notesThinkingLevel: AiThinkingLevel;
+  httpsOnly: boolean;
+  signal?: AbortSignal;
+}): Promise<Record<string, string>> {
+  const res = await fetch('/api/ai/dj-notes', {
+    method: 'POST',
+    headers: authHeaders(),
+    credentials: 'same-origin',
+    signal: params.signal,
+    body: JSON.stringify({
+      query: params.query,
+      seedStation: params.seedStation ?? undefined,
+      stations: params.stations,
+      notesModel: params.notesModel,
+      notesThinkingLevel: params.notesThinkingLevel,
+      httpsOnly: params.httpsOnly,
+    }),
+  });
+
+  if (!res.ok) {
+    return {};
+  }
+
+  const data = (await res.json().catch(() => ({}))) as { djNotes?: Record<string, unknown> };
+  const raw = data?.djNotes && typeof data.djNotes === 'object' ? data.djNotes : {};
+  const djNotes: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'string' && v.trim()) {
+      djNotes[k] = v.trim();
+    }
+  }
+  return djNotes;
 }

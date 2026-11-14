@@ -259,7 +259,7 @@ describe('loadPrefs and savePrefs', () => {
     }
   });
 
-  it('sanitizes and roundtrips aiThinkingLevel (low/medium/high) and searchMode (name/ai)', () => {
+  it('sanitizes and roundtrips Station & DJ Note AI model and thinking preferences', () => {
     const memory = new Map<string, string>();
     const stub = {
       getItem: (k: string) => memory.get(k) ?? null,
@@ -270,24 +270,52 @@ describe('loadPrefs and savePrefs', () => {
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: stub });
     try {
       const defaults = loadPrefs();
-      expect(defaults.aiThinkingLevel).toBe('low');
+      expect(defaults.aiModel).toBe('gemini-flash-lite-latest');
+      expect(defaults.aiThinkingLevel).toBe('medium');
+      expect(defaults.aiNotesModel).toBe('gemini-flash-lite-latest');
+      expect(defaults.aiNotesThinkingLevel).toBe('medium');
       expect(defaults.searchMode).toBe('name');
 
-      savePrefs({ ...defaults, aiThinkingLevel: 'high', searchMode: 'ai', view: 'ai' });
-      const loadedHigh = loadPrefs();
-      expect(loadedHigh.aiThinkingLevel).toBe('high');
-      expect(loadedHigh.searchMode).toBe('ai');
-      expect(loadedHigh.view).toBe('ai');
+      savePrefs({
+        ...defaults,
+        aiModel: 'gemini-4-hydrogen',
+        aiThinkingLevel: 'high',
+        aiNotesModel: 'gemini-4-hydrogen',
+        aiNotesThinkingLevel: 'low',
+        searchMode: 'ai',
+        view: 'ai',
+      });
+      const loadedCustom = loadPrefs();
+      expect(loadedCustom.aiModel).toBe('gemini-4-hydrogen');
+      expect(loadedCustom.aiThinkingLevel).toBe('high');
+      expect(loadedCustom.aiNotesModel).toBe('gemini-4-hydrogen');
+      expect(loadedCustom.aiNotesThinkingLevel).toBe('low');
+      expect(loadedCustom.searchMode).toBe('ai');
+      expect(loadedCustom.view).toBe('ai');
 
-      savePrefs({ ...defaults, aiThinkingLevel: 'medium' });
-      expect(loadPrefs().aiThinkingLevel).toBe('medium');
+      savePrefs({ ...defaults, aiThinkingLevel: 'low', aiNotesThinkingLevel: 'high' });
+      const loadedMixed = loadPrefs();
+      expect(loadedMixed.aiModel).toBe('gemini-flash-lite-latest');
+      expect(loadedMixed.aiThinkingLevel).toBe('low');
+      expect(loadedMixed.aiNotesModel).toBe('gemini-flash-lite-latest');
+      expect(loadedMixed.aiNotesThinkingLevel).toBe('high');
 
       memory.set(
         'world-radio:prefs',
-        JSON.stringify({ aiThinkingLevel: 'xhigh', searchMode: 'bogus', view: 'unknown' })
+        JSON.stringify({
+          aiModel: 'gemini-2.0-flash',
+          aiThinkingLevel: 'xhigh',
+          aiNotesModel: 'unknown-model',
+          aiNotesThinkingLevel: 'minimal',
+          searchMode: 'bogus',
+          view: 'unknown',
+        })
       );
       const sanitized = loadPrefs();
-      expect(sanitized.aiThinkingLevel).toBe('low');
+      expect(sanitized.aiModel).toBe('gemini-flash-lite-latest');
+      expect(sanitized.aiThinkingLevel).toBe('medium');
+      expect(sanitized.aiNotesModel).toBe('gemini-flash-lite-latest');
+      expect(sanitized.aiNotesThinkingLevel).toBe('medium');
       expect(sanitized.searchMode).toBe('name');
       expect(sanitized.view).toBe('discover');
     } finally {
