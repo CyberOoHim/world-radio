@@ -1897,7 +1897,7 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
         openPasscodeModal(
           () => {
             reloadMapTiles();
-            showToast('AI passcode verified! Tuning AI search…');
+            showToast('App passcode verified! Tuning AI search…');
             renderTopbar();
             renderNav();
           },
@@ -1992,7 +1992,7 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
         openPasscodeModal(
           () => {
             reloadMapTiles();
-            showToast('AI passcode verified! Finding similar stations…');
+            showToast('App passcode verified! Finding similar stations…');
             renderTopbar();
             renderNav();
           },
@@ -2928,9 +2928,16 @@ function renderDiscover(): string {
       </div>
       <div class="hero-actions">
         ${surpriseActionsHtml()}
-        <button type="button" class="chip chip-auth ${getAuthState().authenticated ? 'active' : ''}" data-action="open-auth-modal" title="Backend Access (Passcode / JWT)">
-          ${getAuthState().authenticated ? '🔓 Backend Connected' : '🔑 Passcode / Auth'}
-        </button>
+        ${(() => {
+          const auth = getAuthState();
+          const chipCls = auth.aiAuthorized ? 'active' : auth.authenticated ? 'is-guest' : '';
+          const chipLabel = auth.aiAuthorized
+            ? '🔓 Full Access (Map + AI)'
+            : auth.authenticated
+              ? '🗺️ Guest · Map Only'
+              : '🔑 Passcode / Auth';
+          return `<button type="button" class="chip chip-auth ${chipCls}" data-action="open-auth-modal" title="Backend Access (Passcode / JWT)">${chipLabel}</button>`;
+        })()}
         <button type="button" class="chip ${state.nearMe ? 'active' : ''}" data-action="near-me" title="Live stations near your physical location">${icons.pin} Local</button>
         <button type="button" class="chip" data-action="open-map">${icons.map} Map</button>
         ${
@@ -3300,17 +3307,17 @@ function renderAiView(): string {
     bodyHtml = `
       <div class="ai-auth-card">
         <div class="ai-auth-copy">
-          <h3>${auth.authenticated && !auth.aiAuthorized ? 'AI passcode required' : 'Passcode required for AI search'}</h3>
+          <h3>${auth.authenticated && !auth.aiAuthorized ? 'App passcode required for AI' : 'Passcode required for AI search'}</h3>
           <p>${
             auth.authenticated && !auth.aiAuthorized
-              ? 'The general passcode (<code>radio-2026</code>) unlocks map tiles only and does not authorize AI features. Unlock with an AI-authorized passcode to tune this prompt.'
-              : 'AI query planning and Gemini embedding reranking run securely on the server. Unlock with an AI-authorized passcode to tune this prompt.'
+              ? 'Guest mode (<code>guest-radio</code>) unlocks map tiles only and does not authorize AI features. Enter the app passcode to tune this prompt.'
+              : 'AI query planning and Gemini embedding reranking run securely on the server. Enter the app passcode to tune this prompt.'
           }</p>
         </div>
         <div class="ai-auth-actions">
           <button type="button" class="btn-ai-tune" data-action="open-auth-modal">
             ${icons.lock}
-            <span>${auth.authenticated && !auth.aiAuthorized ? 'Unlock AI Access' : 'Unlock with Passcode'}</span>
+            <span>${auth.authenticated && !auth.aiAuthorized ? 'Unlock with App Passcode' : 'Unlock with Passcode'}</span>
           </button>
           <button type="button" class="chip" data-action="switch-to-name-search">Use Name Search</button>
         </div>
@@ -3385,8 +3392,8 @@ function renderAiView(): string {
         ${
           !auth.aiAuthorized
             ? auth.authenticated
-              ? `<p>General passcode is active for map tiles, but does not authorize AI search — <button type="button" class="link-btn" data-action="open-auth-modal">enter AI passcode</button> to run AI searches.</p>`
-              : `<p>Backend passcode is currently locked — <button type="button" class="link-btn" data-action="open-auth-modal">unlock passcode</button> when ready to run AI searches.</p>`
+              ? `<p>Guest mode (map only) is active — <button type="button" class="link-btn" data-action="open-auth-modal">enter the app passcode</button> to run AI searches.</p>`
+              : `<p>Passcode is currently locked — <button type="button" class="link-btn" data-action="open-auth-modal">unlock with app passcode</button> when ready to run AI searches.</p>`
             : `<p>Pick a curated scene above, describe any mood or city, or click the overlapping-circles icon on any station to find sonic siblings.</p>`
         }
       </div>
@@ -3669,10 +3676,19 @@ function renderNavHtml(): string {
     ${navBtn('favorites', icons.heart, 'Favorites', state.favorites.length)}
     ${navBtn('recent', icons.clock, 'Recent')}
     <div class="nav-section">Access &amp; Security</div>
-    <button type="button" class="nav-btn ${getAuthState().authenticated ? 'active' : ''}" data-action="open-auth-modal" title="Backend Access Passcode">
-      ${getAuthState().authenticated ? icons.unlock : icons.lock}
-      <span>Backend Access (${getAuthState().authenticated ? 'Unlocked' : 'Passcode'})</span>
-    </button>
+    ${(() => {
+      const auth = getAuthState();
+      const navCls = auth.aiAuthorized ? 'active' : auth.authenticated ? 'nav-btn-guest' : '';
+      const navLabel = auth.aiAuthorized
+        ? 'Backend Access (Full)'
+        : auth.authenticated
+          ? 'Backend Access (Guest · Map)'
+          : 'Backend Access (Passcode)';
+      return `<button type="button" class="nav-btn ${navCls}" data-action="open-auth-modal" title="Backend Access Passcode">
+      ${auth.authenticated ? icons.unlock : icons.lock}
+      <span>${navLabel}</span>
+    </button>`;
+    })()}
     <div class="nav-footer">
       <div class="nav-font-control">
         <span class="nav-font-label">Text Size</span>
@@ -3807,11 +3823,26 @@ function renderTopbar() {
   const auth = getAuthState();
   const authBtn = qs<HTMLButtonElement>('.auth-status-btn');
   if (authBtn) {
-    authBtn.className = `auth-status-btn ${auth.authenticated ? 'is-authenticated' : 'is-locked'}`;
-    authBtn.title = `Backend Access (${auth.authenticated ? 'JWT Authenticated' : 'Passcode Required'})`;
+    const statusCls = auth.aiAuthorized
+      ? 'is-authenticated'
+      : auth.authenticated
+        ? 'is-guest'
+        : 'is-locked';
+    const statusTitle = auth.aiAuthorized
+      ? 'Backend Access (Full: Map + AI)'
+      : auth.authenticated
+        ? 'Backend Access (Guest: Map Only)'
+        : 'Backend Access (Passcode Required)';
+    const statusText = auth.aiAuthorized
+      ? 'Connected'
+      : auth.authenticated
+        ? 'Guest · Map'
+        : 'Passcode';
+    authBtn.className = `auth-status-btn ${statusCls}`;
+    authBtn.title = statusTitle;
     authBtn.innerHTML = `
       <span class="auth-status-dot"></span>
-      <span class="auth-status-text">${auth.authenticated ? 'Connected' : 'Passcode'}</span>
+      <span class="auth-status-text">${statusText}</span>
     `;
   }
   const searchWrap = qs<HTMLElement>('.search-wrap');
@@ -4711,8 +4742,8 @@ function ensureAppEvents() {
             reloadMapTiles();
             showToast(
               getAuthState().aiAuthorized
-                ? 'Passcode verified! Backend & AI connected.'
-                : 'General passcode verified! Map tiles connected (AI locked).'
+                ? 'App passcode verified! Full Map & AI access active.'
+                : 'Guest passcode verified! Map access active (AI locked).'
             );
             renderTopbar();
             renderNav();

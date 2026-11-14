@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
   computeGeoTieredRank,
+  ensureSeedIndexSynced,
   generateContentWithFallback,
   getDjNotesConfig,
   getPlannerConfig,
@@ -19,13 +20,17 @@ import {
 import { resolveGeoIntentFromText } from './geoTaxonomy';
 import { getJwtSecret, signJwt } from './auth';
 import {
+  DEFAULT_SEED_SWEET_SPOT_COUNT,
   SEED_EMBEDDING_DIM,
+  SEED_SWEET_SPOT_COUNT,
   SeedIndexStore,
   buildStationDescriptor,
   cosineUnitSimilarity,
   decodeBase64ToUnitVector,
   quantizeUnitVectorToBase64,
+  resolveSeedSweetSpotCount,
 } from './seedIndex';
+import { computeScaledSamplingPlan, gatherDiverseStations } from './seedSync';
 import type { Station } from '../types';
 
 function createMockRes() {
@@ -280,11 +285,11 @@ describe('handleAiSearchRequest', () => {
     expect(mock.res.statusCode).toBe(401);
   });
 
-  it('rejects general-passcode JWTs (ai: false) with 403 AI_AUTH_REQUIRED', async () => {
-    const generalToken = signJwt(
+  it('rejects guest-passcode JWTs (ai: false) with 403 AI_AUTH_REQUIRED', async () => {
+    const guestToken = signJwt(
       {
-        sub: 'authorized_user',
-        role: 'listener',
+        sub: 'guest_user',
+        role: 'guest',
         ai: false,
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
@@ -301,7 +306,7 @@ describe('handleAiSearchRequest', () => {
       const req = {
         url: target.url,
         method: target.method,
-        headers: { authorization: `Bearer ${generalToken}` },
+        headers: { authorization: `Bearer ${guestToken}` },
       } as unknown as IncomingMessage;
       const mock = createMockRes();
       const handled = await handleAiSearchRequest(req, mock.res);
@@ -309,7 +314,7 @@ describe('handleAiSearchRequest', () => {
       expect(mock.res.statusCode).toBe(403);
       expect(JSON.parse(mock.getBody())).toEqual({
         error:
-          'Forbidden: The general passcode does not authorize AI search. An AI passcode is required.',
+          'Forbidden: Guest passcode only covers map access. App passcode is required for AI search.',
         code: 'AI_AUTH_REQUIRED',
       });
     }
@@ -703,5 +708,207 @@ describe('rerankCandidatesWithLlm', () => {
     expect(result.stations.map((s) => s.stationuuid)).toEqual(['ke-1', 'tz-1']);
   });
 });
+
+describe('SEED_SWEET_SPOT_COUNT config & automatic incremental sync', () => {
+  const makeStation = (id: string, countrycode = 'JP'): Station => ({
+    changeuuid: '',
+    stationuuid: id,
+    name: `Station ${id}`,
+    url: `https://example.com/${id}`,
+    url_resolved: `https://example.com/${id}`,
+    homepage: '',
+    favicon: '',
+    tags: 'jazz, ambient',
+    country: countrycode,
+    countrycode,
+    state: '',
+    language: 'english',
+    languagecodes: 'en',
+    votes: 10,
+    codec: 'MP3',
+    bitrate: 128,
+    lastcheckok: 1,
+    clickcount: 100,
+    clicktrend: 0,
+    geo_lat: null,
+    geo_long: null,
+  });
+
+  it('defaults SEED_SWEET_SPOT_COUNT to 6000 and resolves env/bounds safely', () => {
+    expect(DEFAULT_SEED_SWEET_SPOT_COUNT).toBe(6000);
+    expect(SEED_SWEET_SPOT_COUNT).toBe(6000);
+
+    const prev = process.env.SEED_SWEET_SPOT_COUNT;
+    try {
+      delete process.env.SEED_SWEET_SPOT_COUNT;
+      expect(resolveSeedSweetSpotCount()).toBe(6000);
+
+      process.env.SEED_SWEET_SPOT_COUNT = '7500';
+      expect(resolveSeedSweetSpotCount()).toBe(7500);
+
+      process.env.SEED_SWEET_SPOT_COUNT = '25';
+      expect(resolveSeedSweetSpotCount()).toBe(100);
+
+      process.env.SEED_SWEET_SPOT_COUNT = '99999';
+      expect(resolveSeedSweetSpotCount()).toBe(25000);
+
+      process.env.SEED_SWEET_SPOT_COUNT = 'not-a-number';
+      expect(resolveSeedSweetSpotCount()).toBe(6000);
+
+      expect(resolveSeedSweetSpotCount('5200')).toBe(5200);
+    } finally {
+      if (prev === undefined) delete process.env.SEED_SWEET_SPOT_COUNT;
+      else process.env.SEED_SWEET_SPOT_COUNT = prev;
+    }
+  });
+
+  it('scales regional quotas, cultural tags, and global offsets proportionally for 6000', () => {
+    const plan4500 = computeScaledSamplingPlan(4500);
+    const plan6000 = computeScaledSamplingPlan(6000);
+    expect(plan6000.scaleFactor).toBeCloseTo(6000 / 4500, 3);
+    expect(plan6000.regionalGroups[0].perCountryLimit).toBeGreaterThan(
+      plan4500.regionalGroups[0].perCountryLimit
+    );
+    expect(plan6000.culturalTagLimit).toBeGreaterThan(plan4500.culturalTagLimit);
+    expect(plan6000.globalOffsets.length).toBeGreaterThan(plan4500.globalOffsets.length);
+  });
+
+  it('incrementally tops up existing stations without duplicate UUIDs and skips fetching when already full', async () => {
+    const existing = [makeStation('s1'), makeStation('s2')];
+    let calls = 0;
+    const noFetchResult = await gatherDiverseStations(2, {
+      existingStations: existing,
+      fetchJsonFn: async () => {
+        calls++;
+        return [];
+      },
+    });
+    expect(calls).toBe(0);
+    expect(noFetchResult.map((s) => s.stationuuid)).toEqual(['s1', 's2']);
+
+    const grown = await gatherDiverseStations(4, {
+      existingStations: existing,
+      fetchJsonFn: async () => [
+        makeStation('s2'), // duplicate should be skipped
+        makeStation('s3'),
+        makeStation('s4'),
+        makeStation('s5'),
+      ],
+    });
+    expect(grown.map((s) => s.stationuuid)).toEqual(['s1', 's2', 's3', 's4']);
+  });
+
+  it('auto-detects config drift in ensureSeedIndexSynced for grow, trim, and model/dim re-embed', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seed-sync-test-'));
+    const seedPath = path.join(tmpDir, 'seed.json');
+    const unitVec = Array.from({ length: SEED_EMBEDDING_DIM }, (_, i) => (i === 0 ? 1 : 0));
+    const vecB64 = quantizeUnitVectorToBase64(unitVec);
+
+    fs.writeFileSync(
+      seedPath,
+      JSON.stringify({
+        version: 1,
+        model: 'gemini-embedding-2',
+        dim: SEED_EMBEDDING_DIM,
+        generatedAt: '2026-01-01T00:00:00Z',
+        targetCount: 100,
+        items: Array.from({ length: 100 }, (_, idx) => ({
+          station: makeStation(`s-${idx}`),
+          vec: vecB64,
+        })),
+      })
+    );
+
+    const store = new SeedIndexStore();
+    store.load(seedPath);
+
+    // 1. No-op when config matches
+    let embedCalls = 0;
+    const fakeAi = {
+      models: {
+        async embedContent(req: { contents: string[] }) {
+          embedCalls += req.contents.length;
+          return {
+            embeddings: req.contents.map(() => ({
+              values: Array.from({ length: SEED_EMBEDDING_DIM }, (_, i) => (i === 1 ? 1 : 0)),
+            })),
+          };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const noop = await ensureSeedIndexSynced({
+      store,
+      targetCount: 100,
+      hydrateVectors: true,
+      ai: fakeAi,
+    });
+    expect(noop.synced).toBe(false);
+    expect(embedCalls).toBe(0);
+
+    // 2. Grow incrementally (100 -> 150) preserving existing 100 vectors
+    const grownSync = await ensureSeedIndexSynced({
+      store,
+      targetCount: 150,
+      hydrateVectors: true,
+      ai: fakeAi,
+      gatherStationsFn: async (_target, opts) => [
+        ...(opts?.existingStations ?? []),
+        ...Array.from({ length: 50 }, (_, idx) => makeStation(`new-${idx}`)),
+      ],
+    });
+    expect(grownSync.synced).toBe(true);
+    expect(grownSync.status.currentCount).toBe(150);
+    expect(grownSync.status.vectorCount).toBe(150);
+    // Only the 50 newly added stations should have been embedded (original 100 preserved!)
+    expect(embedCalls).toBe(50);
+    expect(store.getVector('s-0')?.[0]).toBeCloseTo(1, 2);
+
+    // 3. Trim when target shrinks (150 -> 110) without re-embedding
+    const prevEmbeds = embedCalls;
+    const trimmed = await ensureSeedIndexSynced({
+      store,
+      targetCount: 110,
+      hydrateVectors: true,
+      ai: fakeAi,
+    });
+    expect(trimmed.synced).toBe(true);
+    expect(trimmed.status.currentCount).toBe(110);
+    expect(trimmed.status.vectorCount).toBe(110);
+    expect(embedCalls).toBe(prevEmbeds);
+
+    // 4. Re-embed when model/dim in file mismatches current config
+    const staleStore = new SeedIndexStore();
+    const stalePath = path.join(tmpDir, 'stale.json');
+    fs.writeFileSync(
+      stalePath,
+      JSON.stringify({
+        version: 1,
+        model: 'legacy-embedding-model',
+        dim: SEED_EMBEDDING_DIM,
+        generatedAt: '2026-01-01T00:00:00Z',
+        targetCount: 100,
+        items: Array.from({ length: 100 }, (_, idx) => ({
+          station: makeStation(`st-${idx}`),
+          vec: vecB64,
+        })),
+      })
+    );
+    staleStore.load(stalePath);
+    const reembedRes = await ensureSeedIndexSynced({
+      store: staleStore,
+      targetCount: 100,
+      hydrateVectors: true,
+      ai: fakeAi,
+    });
+    expect(reembedRes.synced).toBe(true);
+    expect(reembedRes.status.needsReembed).toBe(false);
+    expect(reembedRes.status.vectorCount).toBe(100);
+    expect(staleStore.getVector('st-0')?.[1]).toBeCloseTo(1, 2);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
 
 

@@ -60,13 +60,14 @@ describe('client-side auth module', () => {
     );
   });
 
-  it('verifies general passcode without granting AI authorization', async () => {
+  it('verifies guest-radio passcode for map access without granting AI authorization', async () => {
     global.fetch = vi.fn(async () => {
       return new Response(
         JSON.stringify({
           success: true,
           authenticated: true,
           aiAuthorized: false,
+          isGuest: true,
           token: 'returned-jwt-456',
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -75,18 +76,43 @@ describe('client-side auth module', () => {
 
     let receivedAuth: boolean | undefined;
     let receivedAiAuth: boolean | undefined;
+    let receivedGuest: boolean | undefined;
     const unsub = subscribeAuth((s) => {
       receivedAuth = s.authenticated;
       receivedAiAuth = s.aiAuthorized;
+      receivedGuest = s.isGuest;
     });
 
-    const result = await verifyPasscode('radio-2026');
+    const result = await verifyPasscode('guest-radio');
     expect(result.success).toBe(true);
     expect(result.aiAuthorized).toBe(false);
+    expect(result.isGuest).toBe(true);
     expect(getStoredAuthToken()).toBe('returned-jwt-456');
     expect(receivedAuth).toBe(true);
     expect(receivedAiAuth).toBe(false);
+    expect(receivedGuest).toBe(true);
     unsub();
+  });
+
+  it('verifies app passcode with full map and AI authorization', async () => {
+    global.fetch = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          authenticated: true,
+          aiAuthorized: true,
+          isGuest: false,
+          token: 'returned-full-jwt',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await verifyPasscode('my-app-passcode');
+    expect(result.success).toBe(true);
+    expect(result.aiAuthorized).toBe(true);
+    expect(result.isGuest).toBe(false);
+    expect(getStoredAuthToken()).toBe('returned-full-jwt');
   });
 
   it('handles incorrect passcode with descriptive error', async () => {

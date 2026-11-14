@@ -89,41 +89,41 @@ export async function copyJwtToken(): Promise<boolean> {
 export function renderPasscodeModalHtml(): string {
   if (!isOpen) return '';
 
-  const { authenticated, aiAuthorized, token } = getAuthState();
-  const isPartialGeneralOnly = authenticated && !aiAuthorized;
+  const { authenticated, aiAuthorized, appPasscodeConfigured, token } = getAuthState();
+  const isGuestMode = authenticated && !aiAuthorized;
 
   const badgeClass = aiAuthorized
     ? 'is-authenticated'
-    : isPartialGeneralOnly
+    : isGuestMode
       ? 'is-partial'
       : 'is-locked';
   const badgeText = aiAuthorized
-    ? 'Authenticated (JWT + AI)'
-    : isPartialGeneralOnly
-      ? 'General Access (AI Locked)'
+    ? 'Full Access (Map + AI)'
+    : isGuestMode
+      ? 'Guest · Map Only'
       : 'Passcode Required';
 
   const modalTitle = aiAuthorized
-    ? 'Full Backend & AI Access Granted'
-    : isPartialGeneralOnly
-      ? 'General Access Active · AI Locked'
+    ? 'Full Map & AI Access Granted'
+    : isGuestMode
+      ? 'Guest Access Active · Map Only'
       : requireAiAccess
-        ? 'AI Passcode Required'
-        : 'Backend Passcode Access';
+        ? 'App Passcode Required for AI'
+        : 'Passcode Access';
 
   const modalDesc = aiAuthorized
-    ? 'Your session is securely authenticated with the backend via signed JWT. Map tile proxying and AI Station Search are both active.'
-    : isPartialGeneralOnly
-      ? 'Your session is connected for map tiles and general backend routes. The general passcode (radio-2026) does not authorize AI features — enter an AI passcode below to unlock AI search.'
+    ? 'Your session is authenticated with the backend via signed JWT. Map tiles and AI Station Search are both active.'
+    : isGuestMode
+      ? 'Guest mode is active for map tiles. Enter the app passcode below to unlock AI search as well.'
       : requireAiAccess
-        ? 'AI query planning and semantic reranking require an AI-authorized passcode. The general passcode (radio-2026) only unlocks map tiles.'
-        : 'Enter the access passcode to verify your session with the backend. The general passcode unlocks map tiles; AI search requires an AI-authorized passcode.';
+        ? 'AI query planning and semantic reranking require the app passcode. Guest passcode (guest-radio) only unlocks map tiles.'
+        : 'Enter the app passcode for full Map & AI access, or enter guest-radio for map-only access.';
 
-  const passcodeFormHtml = (scope: 'general' | 'ai', submitLabel: string) => `
-    <form class="auth-form" data-action="submit-passcode" data-scope="${scope}">
+  const passcodeFormHtml = (submitLabel: string) => `
+    <form class="auth-form" data-action="submit-passcode">
       <div class="auth-input-group">
         <label for="passcode-input" class="auth-input-label">
-          ${scope === 'ai' ? 'AI Access Passcode' : 'Access Passcode'}
+          ${isGuestMode ? 'Upgrade with App Passcode' : 'Access Passcode'}
         </label>
         <div class="auth-input-wrapper">
           <input
@@ -131,7 +131,7 @@ export function renderPasscodeModalHtml(): string {
             type="${showPasscode ? 'text' : 'password'}"
             class="auth-input passcode-input"
             value="${escapeHtml(currentPasscode)}"
-            placeholder="${scope === 'ai' ? 'Enter AI passcode' : 'Enter passcode (e.g. radio-2026)'}"
+            placeholder="${isGuestMode ? 'Enter app passcode to unlock AI' : 'Enter app passcode or guest-radio'}"
             autocomplete="current-password"
             required
             ${isSubmitting ? 'disabled' : ''}
@@ -149,16 +149,18 @@ export function renderPasscodeModalHtml(): string {
         </div>
         <div class="auth-hint">
           ${
-            scope === 'ai'
-              ? 'General passcode <code>radio-2026</code> does not authorize AI usage. Set <code>AI_PASSCODE</code> or a custom <code>APP_PASSCODE</code> on the server.'
-              : 'General passcode for map tiles &amp; backend proxy: <code>radio-2026</code> (does not authorize AI features).'
+            isGuestMode
+              ? appPasscodeConfigured
+                ? 'Enter the server <code>APP_PASSCODE</code> to unlock AI search alongside map tiles.'
+                : 'AI search requires <code>APP_PASSCODE</code> to be configured on the server.'
+              : 'Guest passcode for map tiles only: <code>guest-radio</code> · Full Map &amp; AI access requires the app passcode.'
           }
         </div>
       </div>
 
       <div class="auth-modal-actions">
         ${
-          scope === 'ai'
+          isGuestMode
             ? `<button type="button" class="btn-secondary auth-logout-btn" data-action="auth-logout" ${isSubmitting ? 'disabled' : ''}>Log Out</button>`
             : `<button type="button" class="btn-secondary" data-action="close-auth-modal" ${isSubmitting ? 'disabled' : ''}>Cancel</button>`
         }
@@ -208,7 +210,7 @@ export function renderPasscodeModalHtml(): string {
               <div class="auth-info-row">
                 <span class="auth-info-label">AI Station Search:</span>
                 <span class="auth-info-value ${aiAuthorized ? 'is-green' : 'is-amber'}">
-                  ${aiAuthorized ? '● Authorized' : '🔒 Locked (General Passcode Excluded)'}
+                  ${aiAuthorized ? '● Authorized' : '🔒 Locked (Guest · Map Only)'}
                 </span>
               </div>
 
@@ -235,10 +237,10 @@ export function renderPasscodeModalHtml(): string {
               </button>
             </div>
             `
-                : passcodeFormHtml('ai', 'Unlock AI Access')
+                : passcodeFormHtml('Unlock Full Access')
             }
             `
-              : passcodeFormHtml(requireAiAccess ? 'ai' : 'general', 'Verify &amp; Unlock')
+              : passcodeFormHtml('Verify &amp; Unlock')
           }
         </div>
       </div>
@@ -274,7 +276,6 @@ export async function handlePasscodeSubmit(form: HTMLFormElement): Promise<void>
   if (!input) return;
 
   const code = input.value.trim();
-  const scope = form.dataset.scope === 'ai' ? 'ai' : 'general';
   currentPasscode = input.value;
   if (!code) {
     errorMessage = 'Please enter a passcode.';
@@ -286,13 +287,21 @@ export async function handlePasscodeSubmit(form: HTMLFormElement): Promise<void>
   errorMessage = '';
   renderPasscodeModal();
 
-  const res = await verifyPasscode(code, scope);
+  const res = await verifyPasscode(code);
   isSubmitting = false;
 
   if (res.success) {
     currentPasscode = '';
     showPasscode = false;
-    if (onAuthSuccessCallback && (!requireAiAccess || res.aiAuthorized)) {
+    if (requireAiAccess && !res.aiAuthorized) {
+      errorMessage =
+        'Guest passcode (guest-radio) unlocks map access only. Enter the app passcode to unlock AI search.';
+      renderPasscodeModal();
+      const nextInput = document.querySelector<HTMLInputElement>('.passcode-input');
+      nextInput?.focus();
+      return;
+    }
+    if (onAuthSuccessCallback) {
       onAuthSuccessCallback();
       onAuthSuccessCallback = null;
     }

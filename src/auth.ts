@@ -3,7 +3,8 @@ const STORAGE_KEY = 'world_radio_jwt';
 export interface AuthState {
   authenticated: boolean;
   aiAuthorized: boolean;
-  aiPasscodeConfigured: boolean;
+  isGuest: boolean;
+  appPasscodeConfigured: boolean;
   required: boolean;
   token: string | null;
 }
@@ -31,7 +32,8 @@ const initialToken = getStoredAuthToken();
 let currentState: AuthState = {
   authenticated: false,
   aiAuthorized: decodeJwtAiClaim(initialToken),
-  aiPasscodeConfigured: false,
+  isGuest: false,
+  appPasscodeConfigured: false,
   required: true,
   token: initialToken,
 };
@@ -97,15 +99,20 @@ export async function checkAuthStatus(): Promise<AuthState> {
       const data = (await res.json()) as {
         authenticated?: boolean;
         aiAuthorized?: boolean;
-        aiPasscodeConfigured?: boolean;
+        isGuest?: boolean;
+        appPasscodeConfigured?: boolean;
         required?: boolean;
       };
       const authenticated = Boolean(data.authenticated);
+      const aiAuthorized = Boolean(data.aiAuthorized);
+      const isGuest =
+        typeof data.isGuest === 'boolean' ? data.isGuest : authenticated && !aiAuthorized;
       currentState = {
         authenticated,
-        aiAuthorized: Boolean(data.aiAuthorized),
-        aiPasscodeConfigured: Boolean(data.aiPasscodeConfigured),
-        required: Boolean(data.required),
+        aiAuthorized,
+        isGuest,
+        appPasscodeConfigured: Boolean(data.appPasscodeConfigured),
+        required: data.required !== false,
         token: authenticated ? token : null,
       };
       if (!authenticated && token) {
@@ -119,10 +126,13 @@ export async function checkAuthStatus(): Promise<AuthState> {
   }
 
   // Fallback
+  const authenticated = Boolean(token);
+  const aiAuthorized = decodeJwtAiClaim(token);
   currentState = {
-    authenticated: Boolean(token),
-    aiAuthorized: decodeJwtAiClaim(token),
-    aiPasscodeConfigured: false,
+    authenticated,
+    aiAuthorized,
+    isGuest: authenticated && !aiAuthorized,
+    appPasscodeConfigured: false,
     required: true,
     token,
   };
@@ -132,9 +142,8 @@ export async function checkAuthStatus(): Promise<AuthState> {
 
 /** Submit passcode to verify with backend and obtain signed JWT */
 export async function verifyPasscode(
-  passcode: string,
-  scope: 'general' | 'ai' = 'general'
-): Promise<{ success: boolean; aiAuthorized?: boolean; code?: string; error?: string }> {
+  passcode: string
+): Promise<{ success: boolean; aiAuthorized?: boolean; isGuest?: boolean; code?: string; error?: string }> {
   try {
     const res = await fetch('/api/auth/verify', {
       method: 'POST',
@@ -142,13 +151,14 @@ export async function verifyPasscode(
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify({ passcode, scope }),
+      body: JSON.stringify({ passcode }),
     });
 
     const data = (await res.json().catch(() => ({}))) as {
       success?: boolean;
       aiAuthorized?: boolean;
-      aiPasscodeConfigured?: boolean;
+      isGuest?: boolean;
+      appPasscodeConfigured?: boolean;
       token?: string;
       code?: string;
       error?: string;
@@ -159,21 +169,24 @@ export async function verifyPasscode(
         typeof data.aiAuthorized === 'boolean'
           ? data.aiAuthorized
           : decodeJwtAiClaim(data.token);
+      const isGuest = typeof data.isGuest === 'boolean' ? data.isGuest : !aiAuthorized;
       setStoredAuthToken(data.token);
       currentState = {
         authenticated: true,
         aiAuthorized,
-        aiPasscodeConfigured: Boolean(data.aiPasscodeConfigured),
+        isGuest,
+        appPasscodeConfigured: Boolean(data.appPasscodeConfigured),
         required: true,
         token: data.token,
       };
       notify();
-      return { success: true, aiAuthorized };
+      return { success: true, aiAuthorized, isGuest };
     }
 
     return {
       success: false,
       aiAuthorized: Boolean(data.aiAuthorized),
+      isGuest: Boolean(data.isGuest),
       code: data.code,
       error: data.error || 'Authentication failed. Please check the passcode.',
     };
@@ -194,7 +207,8 @@ export async function logoutPasscode(): Promise<void> {
     currentState = {
       authenticated: false,
       aiAuthorized: false,
-      aiPasscodeConfigured: currentState.aiPasscodeConfigured,
+      isGuest: false,
+      appPasscodeConfigured: currentState.appPasscodeConfigured,
       required: true,
       token: null,
     };

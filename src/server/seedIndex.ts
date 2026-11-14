@@ -1,10 +1,48 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Station } from '../types.ts';
 import { getStationGeoLabels } from './geoTaxonomy.ts';
 
 export const SEED_EMBEDDING_DIM = 768;
-export const SEED_SWEET_SPOT_COUNT = 4500;
+export const SEED_EMBEDDING_MODEL = 'gemini-embedding-2';
+export const SEED_DESCRIPTOR_VERSION = 2;
+export const DEFAULT_SEED_SWEET_SPOT_COUNT = 6000;
+export const SEED_SWEET_SPOT_COUNT = DEFAULT_SEED_SWEET_SPOT_COUNT;
+export const MIN_SEED_SWEET_SPOT_COUNT = 100;
+export const MAX_SEED_SWEET_SPOT_COUNT = 25000;
+
+/**
+ * Resolve the target AI seed catalog size from an explicit override or
+ * `process.env.SEED_SWEET_SPOT_COUNT`, falling back to `6000` when unset/invalid.
+ */
+export function resolveSeedSweetSpotCount(override?: string | number | null): number {
+  const raw =
+    override !== undefined && override !== null
+      ? String(override).trim()
+      : (process.env.SEED_SWEET_SPOT_COUNT || '').trim();
+  if (!raw) return DEFAULT_SEED_SWEET_SPOT_COUNT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_SEED_SWEET_SPOT_COUNT;
+  }
+  return Math.max(MIN_SEED_SWEET_SPOT_COUNT, Math.min(MAX_SEED_SWEET_SPOT_COUNT, parsed));
+}
+
+export function computeSeedConfigHash(cfg: {
+  targetCount: number;
+  model?: string;
+  dim?: number;
+  descriptorVersion?: number;
+}): string {
+  const normalized = {
+    targetCount: cfg.targetCount,
+    model: cfg.model || SEED_EMBEDDING_MODEL,
+    dim: cfg.dim || SEED_EMBEDDING_DIM,
+    descriptorVersion: cfg.descriptorVersion ?? SEED_DESCRIPTOR_VERSION,
+  };
+  return crypto.createHash('sha1').update(JSON.stringify(normalized)).digest('hex').slice(0, 12);
+}
 
 export interface SeedStationItem {
   station: Station;
@@ -17,12 +55,32 @@ export interface SeedIndexFile {
   model: string;
   dim: number;
   generatedAt: string;
+  targetCount?: number;
+  descriptorVersion?: number;
+  configHash?: string;
   items: SeedStationItem[];
 }
 
 export interface LoadedSeedEntry {
   station: Station;
   vector: Float32Array | null;
+  searchHaystack: string;
+}
+
+export interface SeedSyncStatus {
+  currentCount: number;
+  vectorCount: number;
+  targetCount: number;
+  fileTargetCount: number | null;
+  modelMatches: boolean;
+  dimMatches: boolean;
+  descriptorMatches: boolean;
+  needsGrow: boolean;
+  needsTrim: boolean;
+  needsReembed: boolean;
+  needsHydration: boolean;
+  configChanged: boolean;
+  needsAnySync: boolean;
 }
 
 /** Build a dense, semantically rich text descriptor for embedding a radio station. */
@@ -55,6 +113,14 @@ export function buildStationDescriptor(station: Station): string {
     if (audio) parts.push(`Audio: ${audio}`);
   }
   return parts.join(' | ');
+}
+
+export function buildStationSearchHaystack(station: Station): string {
+  const code = (station.countrycode || '').trim().toUpperCase();
+  const geo = getStationGeoLabels(code);
+  return `${station.name} ${station.tags} ${station.country} ${station.state} ${station.language} ${
+    geo ? `${geo.subRegion} ${geo.continent}` : ''
+  }`.toLowerCase();
 }
 
 /** Normalize a numeric vector to L2 unit length (Float32Array). */
@@ -130,6 +196,11 @@ export class SeedIndexStore {
   private byUuid = new Map<string, LoadedSeedEntry>();
   private vectorCount = 0;
   private generatedAt = '';
+  private fileModel: string | null = null;
+  private fileDim: number | null = null;
+  private fileTargetCount: number | null = null;
+  private fileDescriptorVersion: number | null = null;
+  private fileConfigHash: string | null = null;
 
   load(seedFilePath = path.resolve(process.cwd(), 'data', 'station-seed-index.json')): void {
     if (this.loaded) return;
@@ -145,15 +216,32 @@ export class SeedIndexStore {
       if (!Array.isArray(parsed.items)) return;
 
       const dim = typeof parsed.dim === 'number' && parsed.dim > 0 ? parsed.dim : SEED_EMBEDDING_DIM;
+      this.fileDim = typeof parsed.dim === 'number' && parsed.dim > 0 ? parsed.dim : null;
+      this.fileModel = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : null;
+      this.fileTargetCount =
+        typeof parsed.targetCount === 'number' && Number.isFinite(parsed.targetCount) && parsed.targetCount > 0
+          ? Math.round(parsed.targetCount)
+          : null;
+      this.fileDescriptorVersion =
+        typeof parsed.descriptorVersion === 'number' && Number.isFinite(parsed.descriptorVersion)
+          ? parsed.descriptorVersion
+          : null;
+      this.fileConfigHash = typeof parsed.configHash === 'string' && parsed.configHash ? parsed.configHash : null;
       this.generatedAt = typeof parsed.generatedAt === 'string' ? parsed.generatedAt : '';
 
       for (const item of parsed.items) {
         if (!item || typeof item !== 'object' || !item.station?.stationuuid) continue;
-        const vec = typeof item.vec === 'string' && item.vec.length > 0
-          ? decodeBase64ToUnitVector(item.vec, dim)
-          : null;
+        if (this.byUuid.has(item.station.stationuuid)) continue;
+        const vec =
+          typeof item.vec === 'string' && item.vec.length > 0
+            ? decodeBase64ToUnitVector(item.vec, dim)
+            : null;
         if (vec) this.vectorCount++;
-        const entry: LoadedSeedEntry = { station: item.station, vector: vec };
+        const entry: LoadedSeedEntry = {
+          station: item.station,
+          vector: vec,
+          searchHaystack: buildStationSearchHaystack(item.station),
+        };
         this.entries.push(entry);
         this.byUuid.set(item.station.stationuuid, entry);
       }
@@ -162,12 +250,58 @@ export class SeedIndexStore {
     }
   }
 
-  getStats(): { totalStations: number; vectorCount: number; generatedAt: string } {
+  getStats(): {
+    totalStations: number;
+    vectorCount: number;
+    generatedAt: string;
+    targetCount: number;
+    fileTargetCount: number | null;
+  } {
     this.load();
     return {
       totalStations: this.entries.length,
       vectorCount: this.vectorCount,
       generatedAt: this.generatedAt,
+      targetCount: resolveSeedSweetSpotCount(),
+      fileTargetCount: this.fileTargetCount,
+    };
+  }
+
+  inspectSyncStatus(targetCountOverride?: number): SeedSyncStatus {
+    this.load();
+    const targetCount = resolveSeedSweetSpotCount(targetCountOverride);
+    const currentCount = this.entries.length;
+    const modelMatches = this.fileModel === null || this.fileModel === SEED_EMBEDDING_MODEL;
+    const dimMatches = this.fileDim === null || this.fileDim === SEED_EMBEDDING_DIM;
+    const descriptorMatches =
+      this.fileDescriptorVersion === null || this.fileDescriptorVersion === SEED_DESCRIPTOR_VERSION;
+
+    const needsGrow = currentCount < targetCount;
+    const needsTrim = currentCount > targetCount;
+    const needsReembed = this.entries.length > 0 && (!modelMatches || !dimMatches || !descriptorMatches);
+    const needsHydration = needsReembed ? currentCount > 0 : this.vectorCount < currentCount;
+    const expectedHash = computeSeedConfigHash({ targetCount });
+    const configChanged =
+      (this.fileTargetCount !== null && this.fileTargetCount !== targetCount) ||
+      (this.fileConfigHash !== null && this.fileConfigHash !== expectedHash) ||
+      needsGrow ||
+      needsTrim ||
+      needsReembed;
+
+    return {
+      currentCount,
+      vectorCount: this.vectorCount,
+      targetCount,
+      fileTargetCount: this.fileTargetCount,
+      modelMatches,
+      dimMatches,
+      descriptorMatches,
+      needsGrow,
+      needsTrim,
+      needsReembed,
+      needsHydration,
+      configChanged,
+      needsAnySync: needsGrow || needsTrim || needsReembed || needsHydration,
     };
   }
 
@@ -186,6 +320,114 @@ export class SeedIndexStore {
     entry.vector = vector;
   }
 
+  invalidateVectors(): number {
+    this.load();
+    let cleared = 0;
+    for (const entry of this.entries) {
+      if (entry.vector) {
+        entry.vector = null;
+        cleared++;
+      }
+    }
+    this.vectorCount = 0;
+    this.fileModel = SEED_EMBEDDING_MODEL;
+    this.fileDim = SEED_EMBEDDING_DIM;
+    this.fileDescriptorVersion = SEED_DESCRIPTOR_VERSION;
+    return cleared;
+  }
+
+  trimToTargetCount(targetCount: number): number {
+    this.load();
+    const normalizedTarget = Math.max(0, Math.round(targetCount));
+    if (this.entries.length <= normalizedTarget) {
+      this.markConfigSynced(normalizedTarget);
+      return 0;
+    }
+    const removed = this.entries.length - normalizedTarget;
+    const kept = this.entries.slice(0, normalizedTarget);
+    const nextByUuid = new Map<string, LoadedSeedEntry>();
+    let nextVecCount = 0;
+    for (const entry of kept) {
+      nextByUuid.set(entry.station.stationuuid, entry);
+      if (entry.vector) nextVecCount++;
+    }
+    this.entries = kept;
+    this.byUuid = nextByUuid;
+    this.vectorCount = nextVecCount;
+    this.markConfigSynced(normalizedTarget);
+    return removed;
+  }
+
+  appendStations(stations: Station[], targetCount: number): number {
+    this.load();
+    const normalizedTarget = Math.max(0, Math.round(targetCount));
+    let added = 0;
+    for (const station of stations) {
+      if (this.entries.length >= normalizedTarget) break;
+      if (!station?.stationuuid || this.byUuid.has(station.stationuuid)) continue;
+      const entry: LoadedSeedEntry = {
+        station,
+        vector: null,
+        searchHaystack: buildStationSearchHaystack(station),
+      };
+      this.entries.push(entry);
+      this.byUuid.set(station.stationuuid, entry);
+      added++;
+    }
+    this.markConfigSynced(normalizedTarget);
+    return added;
+  }
+
+  applyTargetStations(
+    stations: Station[],
+    opts: { targetCount?: number; preserveExistingVectors?: boolean } = {}
+  ): { totalStations: number; preservedVectors: number } {
+    this.load();
+    const targetCount = resolveSeedSweetSpotCount(opts.targetCount);
+    const preserve = opts.preserveExistingVectors !== false;
+    const prevVectors = new Map<string, Float32Array>();
+    if (preserve) {
+      for (const entry of this.entries) {
+        if (entry.vector) {
+          prevVectors.set(entry.station.stationuuid, entry.vector);
+        }
+      }
+    }
+
+    const nextEntries: LoadedSeedEntry[] = [];
+    const nextByUuid = new Map<string, LoadedSeedEntry>();
+    let nextVecCount = 0;
+
+    for (const station of stations) {
+      if (nextEntries.length >= targetCount) break;
+      if (!station?.stationuuid || nextByUuid.has(station.stationuuid)) continue;
+      const vector = prevVectors.get(station.stationuuid) ?? null;
+      if (vector) nextVecCount++;
+      const entry: LoadedSeedEntry = {
+        station,
+        vector,
+        searchHaystack: buildStationSearchHaystack(station),
+      };
+      nextEntries.push(entry);
+      nextByUuid.set(station.stationuuid, entry);
+    }
+
+    this.entries = nextEntries;
+    this.byUuid = nextByUuid;
+    this.vectorCount = nextVecCount;
+    this.markConfigSynced(targetCount);
+    return { totalStations: nextEntries.length, preservedVectors: nextVecCount };
+  }
+
+  markConfigSynced(targetCount = resolveSeedSweetSpotCount()): void {
+    this.fileModel = SEED_EMBEDDING_MODEL;
+    this.fileDim = SEED_EMBEDDING_DIM;
+    this.fileTargetCount = targetCount;
+    this.fileDescriptorVersion = SEED_DESCRIPTOR_VERSION;
+    this.fileConfigHash = computeSeedConfigHash({ targetCount });
+    this.generatedAt = new Date().toISOString();
+  }
+
   getMissingVectorStations(): Station[] {
     this.load();
     const missing: Station[] = [];
@@ -200,13 +442,17 @@ export class SeedIndexStore {
     return this.entries;
   }
 
-  exportSeedFile(): SeedIndexFile {
+  exportSeedFile(targetCountOverride?: number): SeedIndexFile {
     this.load();
+    const targetCount = resolveSeedSweetSpotCount(targetCountOverride ?? this.fileTargetCount);
     return {
       version: 1,
-      model: 'gemini-embedding-2',
+      model: SEED_EMBEDDING_MODEL,
       dim: SEED_EMBEDDING_DIM,
       generatedAt: this.generatedAt || new Date().toISOString(),
+      targetCount,
+      descriptorVersion: SEED_DESCRIPTOR_VERSION,
+      configHash: computeSeedConfigHash({ targetCount }),
       items: this.entries.map((entry) =>
         entry.vector
           ? { station: entry.station, vec: quantizeUnitVectorToBase64(entry.vector) }
@@ -215,7 +461,7 @@ export class SeedIndexStore {
     };
   }
 
-  /** Fast <3ms brute-force cosine search across all bundled seed stations with vectors. */
+  /** Fast brute-force cosine search across all bundled seed stations with vectors. */
   searchTopMatches(
     queryVector: Float32Array,
     opts: { limit?: number; httpsOnly?: boolean; excludeUuid?: string; countryCodes?: string[] } = {}
@@ -250,7 +496,7 @@ export class SeedIndexStore {
     return scored.slice(0, limit);
   }
 
-  /** Fast <2ms lexical/tag/country fallback search across all bundled seed stations (works with or without pre-computed vectors). */
+  /** Fast lexical/tag/country fallback search across all bundled seed stations (works with or without pre-computed vectors). */
   searchMetadataCandidates(
     terms: string[],
     opts: {
@@ -293,8 +539,7 @@ export class SeedIndexStore {
       if (httpsOnly && !/^https:\/\//i.test(streamUrl)) continue;
       if (st.lastcheckok === 0) continue;
 
-      const geo = getStationGeoLabels(code);
-      const haystack = `${st.name} ${st.tags} ${st.country} ${st.state} ${st.language} ${geo ? `${geo.subRegion} ${geo.continent}` : ''}`.toLowerCase();
+      const haystack = entry.searchHaystack;
       let matchScore = 0;
       for (const term of cleanTerms) {
         if (haystack.includes(term)) {
@@ -314,3 +559,4 @@ export class SeedIndexStore {
 }
 
 export const seedIndexStore = new SeedIndexStore();
+

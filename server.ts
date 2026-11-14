@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { handleTileProxyRequest } from './src/server/tileProxy.ts';
 import { handleAuthRequest } from './src/server/auth.ts';
-import { handleAiSearchRequest } from './src/server/aiSearch.ts';
+import { handleAiSearchRequest, startSeedSyncBackground } from './src/server/aiSearch.ts';
 
 // Load .env files for production execution if present (without overwriting non-empty env vars)
 function loadEnv(): void {
@@ -163,4 +163,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`World Radio server running on http://${HOST}:${PORT}`);
+  startSeedSyncBackground();
 });

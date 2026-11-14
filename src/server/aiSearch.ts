@@ -12,18 +12,23 @@ import {
 import { validateAiRequestAuth, validateRequestAuth } from './auth.ts';
 import {
   SEED_EMBEDDING_DIM,
+  SEED_EMBEDDING_MODEL,
+  type SeedIndexStore,
+  type SeedSyncStatus,
   buildStationDescriptor,
   cosineUnitSimilarity,
   normalizeVector,
+  resolveSeedSweetSpotCount,
   seedIndexStore,
 } from './seedIndex.ts';
+import { gatherDiverseStations } from './seedSync.ts';
 import { getStationGeoLabels, resolveGeoIntentFromText } from './geoTaxonomy.ts';
 import type { AiModelId, AiSearchResponse, AiThinkingLevel, Station } from '../types.ts';
 
 import dns from 'node:dns/promises';
 
 export const DEFAULT_AI_MODEL: AiModelId = 'gemini-flash-lite-latest';
-const EMBEDDING_MODEL = 'gemini-embedding-2';
+const EMBEDDING_MODEL = SEED_EMBEDDING_MODEL;
 
 const DEFAULT_RADIO_MIRRORS = [
   'https://de1.api.radio-browser.info',
@@ -106,15 +111,20 @@ class LruCache<K, V> {
 const liveVectorCache = new LruCache<string, CachedVectorEntry>(LIVE_LRU_MAX);
 const responseCache = new LruCache<string, CachedResponseEntry>(RESPONSE_CACHE_MAX);
 const djNotesCache = new LruCache<string, CachedDjNotesEntry>(RESPONSE_CACHE_MAX);
-let seedWarmStarted = false;
 let seedHydratePromise: Promise<void> | null = null;
+let seedSyncPromise: Promise<{ status: SeedSyncStatus; synced: boolean }> | null = null;
+let lastBackgroundSyncTarget: number | null = null;
 
-async function hydrateMissingSeedVectors(ai: GoogleGenAI): Promise<void> {
-  if (seedHydratePromise) return seedHydratePromise;
-  const missing = seedIndexStore.getMissingVectorStations();
+async function hydrateMissingSeedVectors(
+  ai: GoogleGenAI,
+  store: SeedIndexStore = seedIndexStore
+): Promise<void> {
+  const isDefaultStore = store === seedIndexStore;
+  if (isDefaultStore && seedHydratePromise) return seedHydratePromise;
+  const missing = store.getMissingVectorStations();
   if (missing.length === 0) return;
 
-  seedHydratePromise = (async () => {
+  const task = (async () => {
     const BATCH = 64;
     const CONCURRENCY = 3;
     const batches: Station[][] = [];
@@ -132,7 +142,7 @@ async function hydrateMissingSeedVectors(ai: GoogleGenAI): Promise<void> {
           slice.forEach((st, idx) => {
             const vec = vecs[idx];
             if (vec && vec.length > 0) {
-              seedIndexStore.setVector(st.stationuuid, vec);
+              store.setVector(st.stationuuid, vec);
             }
           });
         })
@@ -141,24 +151,109 @@ async function hydrateMissingSeedVectors(ai: GoogleGenAI): Promise<void> {
         await new Promise((r) => setTimeout(r, 60));
       }
     }
-  })().finally(() => {
+  })();
+
+  if (!isDefaultStore) {
+    return task;
+  }
+
+  seedHydratePromise = task.finally(() => {
     seedHydratePromise = null;
   });
-
   return seedHydratePromise;
 }
 
-function warmSeedIndexInBackground(ai: GoogleGenAI): void {
-  if (seedWarmStarted) return;
-  const missing = seedIndexStore.getMissingVectorStations();
-  if (missing.length === 0) {
-    seedWarmStarted = true;
+export async function ensureSeedIndexSynced(opts: {
+  store?: SeedIndexStore;
+  targetCount?: number;
+  hydrateVectors?: boolean;
+  ai?: GoogleGenAI | null;
+  gatherStationsFn?: typeof gatherDiverseStations;
+} = {}): Promise<{ status: SeedSyncStatus; synced: boolean }> {
+  const store = opts.store ?? seedIndexStore;
+  const isDefaultStore = store === seedIndexStore && !opts.gatherStationsFn && opts.ai === undefined;
+
+  if (isDefaultStore && seedSyncPromise) {
+    return seedSyncPromise;
+  }
+
+  const runSync = async (): Promise<{ status: SeedSyncStatus; synced: boolean }> => {
+    const targetCount = resolveSeedSweetSpotCount(opts.targetCount);
+    const initialStatus = store.inspectSyncStatus(targetCount);
+    let synced = false;
+
+    if (initialStatus.needsReembed) {
+      store.invalidateVectors();
+      synced = true;
+    }
+
+    if (initialStatus.needsTrim) {
+      store.trimToTargetCount(targetCount);
+      synced = true;
+    } else if (initialStatus.needsGrow) {
+      const existingStations = store.getAllEntries().map((e) => e.station);
+      const gather = opts.gatherStationsFn ?? gatherDiverseStations;
+      try {
+        const expanded = await gather(targetCount, { existingStations });
+        if (expanded.length > existingStations.length) {
+          store.applyTargetStations(expanded, {
+            targetCount,
+            preserveExistingVectors: true,
+          });
+          synced = true;
+        } else {
+          store.markConfigSynced(targetCount);
+        }
+      } catch (err) {
+        console.warn('[aiSearch] Incremental seed expansion failed, keeping current pool:', extractErrorMessage(err));
+      }
+    } else if (initialStatus.configChanged) {
+      store.markConfigSynced(targetCount);
+      synced = true;
+    }
+
+    if (opts.hydrateVectors !== false && store.getMissingVectorStations().length > 0) {
+      const ai = opts.ai !== undefined ? opts.ai : getGeminiClient();
+      if (ai) {
+        await hydrateMissingSeedVectors(ai, store);
+        synced = true;
+      }
+    }
+
+    return {
+      status: store.inspectSyncStatus(targetCount),
+      synced,
+    };
+  };
+
+  if (!isDefaultStore) {
+    return runSync();
+  }
+
+  seedSyncPromise = runSync().finally(() => {
+    seedSyncPromise = null;
+  });
+  return seedSyncPromise;
+}
+
+export function startSeedSyncBackground(): void {
+  const targetCount = resolveSeedSweetSpotCount();
+  const status = seedIndexStore.inspectSyncStatus(targetCount);
+  if (status.needsTrim && !status.needsReembed && !status.needsHydration) {
+    seedIndexStore.trimToTargetCount(targetCount);
+    lastBackgroundSyncTarget = targetCount;
     return;
   }
-  seedWarmStarted = true;
-
-  void hydrateMissingSeedVectors(ai).catch(() => {
-    // Stop background warming on transient/quota failure; user searches still embed on demand
+  if (!status.needsAnySync && !status.configChanged) {
+    lastBackgroundSyncTarget = targetCount;
+    return;
+  }
+  if (lastBackgroundSyncTarget === targetCount && seedSyncPromise) {
+    return;
+  }
+  lastBackgroundSyncTarget = targetCount;
+  void ensureSeedIndexSynced({ hydrateVectors: true, targetCount }).catch(() => {
+    // Non-fatal background sync error; searches remain functional with existing seed/live fallback
   });
 }
 
@@ -1299,6 +1394,7 @@ async function runHybridPipeline(
         useReranker?: boolean;
       }
 ): Promise<AiSearchResponse> {
+  startSeedSyncBackground();
   const seedStats = seedIndexStore.getStats();
 
   // Step 1: Plan structured queries, geo intent & semantic profile
@@ -1339,8 +1435,8 @@ async function runHybridPipeline(
   const geoLiveLists = allLiveLists.slice(plan.plans.length);
 
   const queryVector = queryVecArr[0];
-  if (queryVector && seedStats.vectorCount < seedStats.totalStations) {
-    warmSeedIndexInBackground(ai);
+  if (queryVector && (seedStats.vectorCount < seedStats.totalStations || seedStats.totalStations !== seedStats.targetCount)) {
+    startSeedSyncBackground();
   }
 
   // Step 3: Regional-first candidate assembly from seed index & live mirrors
@@ -1584,7 +1680,7 @@ export async function handleAiSearchRequest(
   }
   if (!validateAiRequestAuth(req)) {
     sendJson(res, 403, {
-      error: 'Forbidden: The general passcode does not authorize AI search. An AI passcode is required.',
+      error: 'Forbidden: Guest passcode only covers map access. App passcode is required for AI search.',
       code: 'AI_AUTH_REQUIRED',
     });
     return true;
@@ -1594,6 +1690,7 @@ export async function handleAiSearchRequest(
     const queryStr = rawUrl.split('?')[1] || '';
     const params = new URLSearchParams(queryStr);
     const shouldHydrate = params.get('hydrate') === '1' || params.get('hydrate') === 'true';
+    const targetCount = resolveSeedSweetSpotCount();
     if (shouldHydrate) {
       const ai = getGeminiClient();
       if (!ai) {
@@ -1604,14 +1701,16 @@ export async function handleAiSearchRequest(
         return true;
       }
       try {
-        await hydrateMissingSeedVectors(ai);
+        await ensureSeedIndexSynced({ hydrateVectors: true, ai, targetCount });
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Seed embedding hydration failed';
         sendJson(res, 502, { error: msg });
         return true;
       }
+    } else if (seedIndexStore.inspectSyncStatus(targetCount).needsTrim) {
+      seedIndexStore.trimToTargetCount(targetCount);
     }
-    const payload = seedIndexStore.exportSeedFile();
+    const payload = seedIndexStore.exportSeedFile(targetCount);
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="station-seed-index.json"');

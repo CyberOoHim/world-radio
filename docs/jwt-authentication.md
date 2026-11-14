@@ -11,32 +11,33 @@ The authentication system employs a stateless, symmetric HMAC-SHA256 model:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ 1. Passcode Input                                           │
-│    User enters passcode (default: 'radio-2026') in the UI   │
+│    User enters APP_PASSCODE (full) or 'guest-radio' (map)   │
 └──────────────────────────────┬──────────────────────────────┘
                                │ POST /api/auth/verify { passcode }
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. Backend Server                                           │
-│    - Verifies passcode against process.env.APP_PASSCODE      │
+│    - Verifies passcode against APP_PASSCODE or 'guest-radio'│
 │    - Reads process.env.JWT_SECRET (from .env or fallback)   │
 │    - Signs JWT payload using HMAC-SHA256 (30-day expiry)    │
-│    - Sets 'world_radio_jwt' cookie in Set-Cookie header     │
-│    - Returns { ok: true, authenticated: true, token: "..." }│
+│    - Sets 'auth_token' cookie in Set-Cookie header          │
+│    - Returns { success: true, authenticated: true,          │
+│      aiAuthorized, isGuest, token: "..." }                  │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ 3. Client Browser                                           │
-│    - Stores token in cookie and sessionStorage              │
-│    - Displays "Connected & Authorized" status in modal      │
+│    - Stores token in cookie and localStorage                │
+│    - Displays Guest (Map Only) or Full Access status        │
 │    - Provides "Copy JWT" button for developer / CLI testing │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 4. Protected Route Access (/api/tiles/*)                    │
-│    Tile requests authenticate via:                          │
-│      a) Cookie: 'world_radio_jwt' (automatic for Leaflet)   │
+│ 4. Protected Route Access (/api/tiles/* and /api/ai/*)      │
+│    Requests authenticate via:                               │
+│      a) Cookie: 'auth_token' (automatic for Leaflet)        │
 │      b) Header: 'Authorization: Bearer <token>'             │
 │      c) Query:  '?token=<token>' (fallback for <img> tags)  │
 │    Backend validates signature using JWT_SECRET             │
@@ -55,11 +56,10 @@ The authentication system employs a stateless, symmetric HMAC-SHA256 model:
 - **Example config:**
   ```env
   # Server-Side Only - Never prefix with VITE_
-  APP_PASSCODE=radio-2026
-  AI_PASSCODE=your-private-ai-passcode
+  APP_PASSCODE=your-private-app-passcode
   JWT_SECRET=world-radio-jwt-secret-key-32chars!!
   ```
-  *(Note: `'radio-2026'` is a general passcode for map tile proxying and general routes only—it issues `ai: false` in the JWT and never authorizes `/api/ai/*` endpoints.)*
+  *(Note: `APP_PASSCODE` unlocks both Map tiles and `/api/ai/*` endpoints. When `APP_PASSCODE` is unset, only the built-in guest passcode `'guest-radio'` works for map tiles (`ai: false`), and AI endpoints remain locked.)*
 - **Fallback behavior:** If `JWT_SECRET` is not set in the environment, the server cleanly falls back to `'world-radio-jwt-secret-key-32chars!!'` in development mode to ensure zero downtime.
 - **Production recommendation:** Generate a high-entropy 256-bit random key:
   ```bash
@@ -76,21 +76,21 @@ The authentication system employs a stateless, symmetric HMAC-SHA256 model:
 When a user submits a passcode in the UI:
 
 1. **Endpoint:** `POST /api/auth/verify`
-2. **Payload:** `{"passcode": "radio-2026"}`
-3. **Verification:** The backend verifies that the submitted passcode matches `APP_PASSCODE`, `AI_PASSCODE`, or fallback general passcodes (`'radio-2026'`, `'world-radio-passcode'`). General passcodes never set `ai: true`.
+2. **Payload:** `{"passcode": "guest-radio"}` (or `{"passcode": "<APP_PASSCODE>"}`)
+3. **Verification:** The backend verifies whether the submitted passcode matches `'guest-radio'` (map-only access, `ai: false`) or `APP_PASSCODE` (full Map + AI access, `ai: true`).
 4. **Token Generation (`signJwt` in `src/server/auth.ts`):**
    - **Header:** `{"alg": "HS256", "typ": "JWT"}`
-   - **Payload:**
+   - **Payload (Guest):**
      ```json
      {
-       "sub": "authorized_user",
-       "role": "listener",
+       "sub": "guest_user",
+       "role": "guest",
        "ai": false,
        "iat": 1791132966,
        "exp": 1793724966
      }
      ```
-     *(Tokens issued via `AI_PASSCODE` or a custom non-general `APP_PASSCODE` receive `"role": "ai_listener"` and `"ai": true`.)*
+     *(Tokens issued via `APP_PASSCODE` receive `"sub": "authorized_user"`, `"role": "listener_full"`, and `"ai": true`.)*
    - **Signature:**
      $$\text{Signature} = \text{HMAC-SHA256}(\text{base64url}(\text{Header}) + "." + \text{base64url}(\text{Payload}), \text{JWT\_SECRET})$$
    - **Complete Token:** `header.payload.signature`
@@ -101,13 +101,14 @@ When a user submits a passcode in the UI:
        "success": true,
        "authenticated": true,
        "aiAuthorized": false,
+       "isGuest": true,
        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI...",
        "expiresAt": 1793724966
      }
      ```
    - HTTP response header:
      ```http
-     Set-Cookie: world_radio_jwt=eyJhbGci...; Path=/; Max-Age=2592000; SameSite=Lax
+     Set-Cookie: auth_token=eyJhbGci...; Path=/; Max-Age=2592000; SameSite=Lax; HttpOnly
      ```
 
 ---

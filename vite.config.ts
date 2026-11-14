@@ -43,7 +43,6 @@ export default defineConfig(({ mode }) => {
   for (const key of [
     'CARTO_API_KEY',
     'APP_PASSCODE',
-    'AI_PASSCODE',
     'JWT_SECRET',
     'GEMINI_API_KEY',
     'GOOGLE_API_KEY',

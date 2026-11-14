@@ -28,7 +28,7 @@ import {
   type PassportStamp,
 } from './mapPassport';
 import { MAP_STYLE_IDS, MAP_STYLES, sanitizeMapStyle, type MapStyleId } from './mapStyle';
-import { getAuthenticatedTileUrl } from './auth';
+import { getAuthState, getAuthenticatedTileUrl } from './auth';
 import { loadMapStyle, loadMapViewport, saveMapStyle, saveMapViewport } from './storage';
 import type { Station } from './types';
 
@@ -214,6 +214,39 @@ export function reloadMapTiles(): void {
     }
     tiles = tileLayerFor(currentStyle).addTo(map);
   }
+  syncMapAuthChip();
+}
+
+function mapAuthChipMeta(): { cls: string; label: string; title: string } {
+  const auth = getAuthState();
+  if (auth.aiAuthorized) {
+    return {
+      cls: 'is-authenticated',
+      label: '🔓 Full Access',
+      title: 'Backend Access (Full: Map + AI)',
+    };
+  }
+  if (auth.authenticated) {
+    return {
+      cls: 'is-guest',
+      label: '🗺️ Guest · Map',
+      title: 'Backend Access (Guest: Map Only — AI locked)',
+    };
+  }
+  return {
+    cls: '',
+    label: '🔑 Passcode',
+    title: 'Backend Access Passcode & JWT',
+  };
+}
+
+function syncMapAuthChip(): void {
+  const chip = document.querySelector<HTMLButtonElement>('.map-auth-chip');
+  if (!chip) return;
+  const meta = mapAuthChipMeta();
+  chip.className = `chip map-auth-chip${meta.cls ? ` ${meta.cls}` : ''}`;
+  chip.textContent = meta.label;
+  chip.title = meta.title;
 }
 
 function syncStyleChrome(): void {
@@ -840,7 +873,10 @@ function shellHtml(): string {
       <button type="button" class="chip" data-action="map-random" title="Worldwide random station (R)">🌐 Global Shuffle</button>
       <button type="button" class="chip" data-action="map-wander" title="Blind listening — destination revealed after 20s (W)">🧭 Mystery Station</button>
       <button type="button" class="chip" data-action="map-locate" title="Center the map on live stations near you">📍 Local</button>
-      <button type="button" class="chip map-auth-chip" data-action="open-auth-modal" title="Backend Access Passcode &amp; JWT">🔑 Passcode</button>
+      ${(() => {
+        const meta = mapAuthChipMeta();
+        return `<button type="button" class="chip map-auth-chip${meta.cls ? ` ${meta.cls}` : ''}" data-action="open-auth-modal" title="${escapeHtml(meta.title)}">${meta.label}</button>`;
+      })()}
       <button type="button" class="chip" data-action="map-now-playing" title="Nothing is playing" disabled>▶ Now playing</button>
       <button type="button" class="chip" data-action="map-passport" title="Passport — listen to stamp countries">✦ 0</button>
       <button type="button" class="chip" data-action="map-toolbar-share" title="Share current map selection">🔗 Share</button>

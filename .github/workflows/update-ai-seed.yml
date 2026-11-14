@@ -1,10 +1,25 @@
 name: Update AI Seed Embeddings
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/server/seedIndex.ts'
+      - 'src/server/seedSync.ts'
+      - 'src/server/geoTaxonomy.ts'
+      - 'scripts/build-ai-seed.ts'
   workflow_dispatch:
     inputs:
+      seed_count:
+        description: 'Target SEED_SWEET_SPOT_COUNT override (defaults to repo var or 6000)'
+        type: string
+        default: ''
       refresh_stations:
-        description: 'Re-fetch the 4,500-station catalog from Radio Browser before embedding'
+        description: 'Re-fetch the full station catalog from Radio Browser before embedding'
+        type: boolean
+        default: false
+      reembed_all:
+        description: 'Re-compute all station vectors from scratch'
         type: boolean
         default: false
 
@@ -30,16 +45,24 @@ jobs:
       - name: Compute AI Seed Embeddings
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SEED_SWEET_SPOT_COUNT: ${{ inputs.seed_count || vars.SEED_SWEET_SPOT_COUNT || '' }}
         run: |
           if [ -z "$GEMINI_API_KEY" ]; then
-            echo "Missing GEMINI_API_KEY repository secret."
-            exit 1
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "Missing GEMINI_API_KEY repository secret."
+              exit 1
+            fi
+            echo "GEMINI_API_KEY secret is not configured; skipping automatic push seed sync."
+            exit 0
           fi
+          FLAGS=""
           if [ "${{ inputs.refresh_stations }}" = "true" ]; then
-            npm run ai:seed -- --refresh
-          else
-            npm run ai:seed
+            FLAGS="$FLAGS --refresh"
           fi
+          if [ "${{ inputs.reembed_all }}" = "true" ]; then
+            FLAGS="$FLAGS --reembed"
+          fi
+          npm run ai:seed -- $FLAGS
 
       - name: Commit updated seed index
         run: |
@@ -50,5 +73,6 @@ jobs:
             echo "No changes to data/station-seed-index.json"
             exit 0
           fi
-          git commit -m "chore: update pre-computed AI station embeddings"
+          git commit -m "chore: sync AI station seed index and embeddings [skip ci]"
           git push
+

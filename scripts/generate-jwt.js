@@ -27,11 +27,11 @@ const now = Math.floor(Date.now() / 1000);
 const exp = now + 86400 * 30; // 30 days
 
 const header = { alg: 'HS256', typ: 'JWT' };
-const includeAiScope = process.argv.includes('--ai');
+const isGuest = process.argv.includes('--guest');
 const payload = {
-  sub: 'authorized_user',
-  role: includeAiScope ? 'ai_listener' : 'listener',
-  ai: includeAiScope,
+  sub: isGuest ? 'guest_user' : 'authorized_user',
+  role: isGuest ? 'guest' : 'listener_full',
+  ai: !isGuest,
   iat: now,
   exp: exp,
 };
@@ -45,6 +45,7 @@ const token = `${signatureInput}.${signature}`;
 console.log('\n=== World Radio JWT String ===');
 console.log(token);
 console.log('==============================\n');
+console.log(`Scope:   ${isGuest ? 'Guest (Map Only)' : 'Full Access (Map + AI)'}`);
 console.log(`Expires: ${new Date(exp * 1000).toISOString()}`);
 console.log('Use with Authorization Header:  Authorization: Bearer ' + token);
 console.log('Use with Query Parameter:       ?token=' + token + '\n');
