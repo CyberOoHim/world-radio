@@ -123,6 +123,15 @@ export function buildStationSearchHaystack(station: Station): string {
   }`.toLowerCase();
 }
 
+/** Return true when a numeric vector is non-empty and contains at least one non-zero value. */
+export function hasNonZeroVectorValues(values: ArrayLike<number>): boolean {
+  if (!values || values.length === 0) return false;
+  for (let i = 0; i < values.length; i++) {
+    if (Number(values[i]) !== 0) return true;
+  }
+  return false;
+}
+
 /** Normalize a numeric vector to L2 unit length (Float32Array). */
 export function normalizeVector(values: ArrayLike<number>): Float32Array {
   const len = values.length;
@@ -313,7 +322,7 @@ export class SeedIndexStore {
   setVector(stationuuid: string, vector: Float32Array): void {
     this.load();
     const entry = this.byUuid.get(stationuuid);
-    if (!entry) return;
+    if (!entry || vector.length !== SEED_EMBEDDING_DIM || !hasNonZeroVectorValues(vector)) return;
     if (!entry.vector) {
       this.vectorCount++;
     }
@@ -453,11 +462,15 @@ export class SeedIndexStore {
       targetCount,
       descriptorVersion: SEED_DESCRIPTOR_VERSION,
       configHash: computeSeedConfigHash({ targetCount }),
-      items: this.entries.map((entry) =>
-        entry.vector
-          ? { station: entry.station, vec: quantizeUnitVectorToBase64(entry.vector) }
-          : { station: entry.station }
-      ),
+      items: this.entries.map((entry) => {
+        if (entry.vector && hasNonZeroVectorValues(entry.vector)) {
+          const b64 = quantizeUnitVectorToBase64(entry.vector);
+          if (b64 && !/^A+$/.test(b64)) {
+            return { station: entry.station, vec: b64 };
+          }
+        }
+        return { station: entry.station };
+      }),
     };
   }
 

@@ -57,6 +57,18 @@ export type SearchMode = 'name' | 'ai';
 export type AiModelId = 'gemini-flash-lite-latest' | 'gemini-flash-latest';
 export type AiThinkingLevel = 'low' | 'medium' | 'high';
 
+export interface AiImagePayload {
+  data: string;
+  mimeType: string;
+}
+
+export interface AiImageAttachment extends AiImagePayload {
+  previewUrl: string;
+  name: string;
+  width?: number;
+  height?: number;
+}
+
 export interface AiSearchResponse {
   headline: string;
   intro: string;
@@ -69,6 +81,7 @@ export interface AiSearchResponse {
   thinkingLevel: AiThinkingLevel;
   usedReranker?: boolean;
   targetRegions?: string[];
+  imageSummary?: string;
 }
 
 export type SortId = 'clickcount' | 'votes' | 'name' | 'bitrate' | 'clicktrend' | 'random';
@@ -101,6 +114,8 @@ export interface AppState {
   aiNotesModel: AiModelId;
   aiNotesThinkingLevel: AiThinkingLevel;
   aiQuery: string;
+  aiImage: AiImageAttachment | null;
+  aiImageSummary: string;
   aiSeedStation: Station | null;
   aiLoading: boolean;
   aiNotesLoading: boolean;

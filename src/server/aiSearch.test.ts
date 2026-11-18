@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
   computeGeoTieredRank,
@@ -16,6 +17,8 @@ import {
   normalizeThinkingLevel,
   rerankCandidatesWithLlm,
   resolveGeminiApiKey,
+  runHybridPipeline,
+  sanitizeAiImageInput,
 } from './aiSearch';
 import { resolveGeoIntentFromText } from './geoTaxonomy';
 import { getJwtSecret, signJwt } from './auth';
@@ -156,6 +159,62 @@ describe('seedIndex vector quantization & descriptors', () => {
     expect(decodeBase64ToUnitVector('AAAA', SEED_EMBEDDING_DIM)).toBeNull();
     const zeroBytes = Buffer.alloc(SEED_EMBEDDING_DIM, 0).toString('base64');
     expect(decodeBase64ToUnitVector(zeroBytes, SEED_EMBEDDING_DIM)).toBeNull();
+  });
+
+  it('ignores all-zero or mismatched vectors in setVector and omits vec on export', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seed-zero-test-'));
+    const seedPath = path.join(tmpDir, 'seed.json');
+    const zeroVec = Buffer.alloc(SEED_EMBEDDING_DIM, 0).toString('base64');
+    const mk = (id: string): Station => ({
+      changeuuid: '',
+      stationuuid: id,
+      name: `Station ${id}`,
+      url: `https://example.com/${id}`,
+      url_resolved: `https://example.com/${id}`,
+      homepage: '',
+      favicon: '',
+      tags: 'jazz',
+      country: 'Japan',
+      countrycode: 'JP',
+      state: '',
+      language: 'japanese',
+      languagecodes: 'ja',
+      votes: 10,
+      codec: 'MP3',
+      bitrate: 128,
+      lastcheckok: 1,
+      clickcount: 50,
+      clicktrend: 0,
+      geo_lat: null,
+      geo_long: null,
+    });
+
+    fs.writeFileSync(
+      seedPath,
+      JSON.stringify({
+        version: 1,
+        model: 'gemini-embedding-2',
+        dim: SEED_EMBEDDING_DIM,
+        generatedAt: '2026-01-01T00:00:00Z',
+        items: [
+          { station: mk('s1') },
+          { station: mk('s2'), vec: zeroVec },
+        ],
+      })
+    );
+
+    const store = new SeedIndexStore();
+    store.load(seedPath);
+    store.setVector('s1', new Float32Array(SEED_EMBEDDING_DIM));
+    store.setVector('s1', new Float32Array(16).fill(1));
+
+    expect(store.getVector('s1')).toBeNull();
+    expect(store.getVector('s2')).toBeNull();
+    expect(store.getStats().vectorCount).toBe(0);
+
+    const exported = store.exportSeedFile();
+    expect(exported.items.every((item) => item.vec === undefined)).toBe(true);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('builds clean station text descriptors', () => {
@@ -826,7 +885,7 @@ describe('SEED_SWEET_SPOT_COUNT config & automatic incremental sync', () => {
     let embedCalls = 0;
     const fakeAi = {
       models: {
-        async embedContent(req: { contents: string[] }) {
+        async embedContent(req: { contents: Array<{ role: string; parts: Array<{ text: string }> }> }) {
           embedCalls += req.contents.length;
           return {
             embeddings: req.contents.map(() => ({
@@ -908,7 +967,405 @@ describe('SEED_SWEET_SPOT_COUNT config & automatic incremental sync', () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it('wraps each station descriptor in its own Content object when hydrating batches', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seed-batch-content-test-'));
+    const seedPath = path.join(tmpDir, 'seed.json');
+    const stations = Array.from({ length: 100 }, (_, idx) => makeStation(`batch-${idx}`));
+    fs.writeFileSync(
+      seedPath,
+      JSON.stringify({
+        version: 1,
+        model: 'gemini-embedding-2',
+        dim: SEED_EMBEDDING_DIM,
+        generatedAt: '2026-01-01T00:00:00Z',
+        targetCount: 100,
+        items: stations.map((station) => ({ station })),
+      })
+    );
+
+    const store = new SeedIndexStore();
+    store.load(seedPath);
+
+    const observedBatches: unknown[] = [];
+    const fakeAi = {
+      models: {
+        async embedContent(req: { contents: unknown[] }) {
+          observedBatches.push(req.contents);
+          return {
+            embeddings: req.contents.map((_, idx) => ({
+              values: Array.from({ length: SEED_EMBEDDING_DIM }, (__, d) => (d === idx % 8 ? 1 : 0)),
+            })),
+          };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    const result = await ensureSeedIndexSynced({
+      store,
+      targetCount: 100,
+      hydrateVectors: true,
+      ai: fakeAi,
+    });
+
+    expect(result.synced).toBe(true);
+    expect(result.status.vectorCount).toBe(100);
+    expect(result.status.needsAnySync).toBe(false);
+    expect(observedBatches.length).toBe(2);
+    const firstBatch = observedBatches[0] as Array<{ role?: string; parts?: Array<{ text?: string }> }>;
+    expect(firstBatch[0]).toEqual({
+      role: 'user',
+      parts: [{ text: expect.stringContaining('Station: Station batch-0') }],
+    });
+    expect(firstBatch[63]).toEqual({
+      role: 'user',
+      parts: [{ text: expect.stringContaining('Station: Station batch-63') }],
+    });
+
+    const exported = store.exportSeedFile(100);
+    expect(exported.items.every((item) => typeof item.vec === 'string' && !/^A+$/.test(item.vec))).toBe(true);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
+
+function createJsonPostReq(url: string, body: unknown, token: string): IncomingMessage {
+  const payload = JSON.stringify(body);
+  const stream = Readable.from([Buffer.from(payload, 'utf8')]) as unknown as IncomingMessage;
+  (stream as { url?: string; method?: string; headers?: Record<string, string> }).url = url;
+  (stream as { method?: string }).method = 'POST';
+  (stream as { headers?: Record<string, string> }).headers = {
+    authorization: `Bearer ${token}`,
+    'content-type': 'application/json',
+  };
+  return stream;
+}
+
+describe('image query sanitization, multimodal pipeline & endpoints', () => {
+  it('validates and normalizes image inputs in sanitizeAiImageInput', () => {
+    const sampleB64 = Buffer.from('fake-jpeg-bytes').toString('base64');
+    expect(sanitizeAiImageInput(undefined)).toEqual({});
+    expect(sanitizeAiImageInput({ mimeType: 'image/jpg', data: `data:image/jpeg;base64,${sampleB64}` })).toEqual({
+      image: { mimeType: 'image/jpeg', data: sampleB64 },
+    });
+    expect(sanitizeAiImageInput({ mimeType: 'image/svg+xml', data: sampleB64 }).error).toMatch(
+      /Unsupported image format/i
+    );
+    expect(sanitizeAiImageInput({ mimeType: 'image/png', data: 'not*valid*b64!' }).error).toMatch(
+      /Invalid base64/i
+    );
+    const oversizedB64 = Buffer.alloc(4 * 1024 * 1024 + 32, 1).toString('base64');
+    expect(sanitizeAiImageInput({ mimeType: 'image/jpeg', data: oversizedB64 }).error).toMatch(
+      /4 MB/i
+    );
+  });
+
+  it('skips text-only interactions fallback when contents contain inlineData', async () => {
+    let interactionsCalled = false;
+    const fakeAi = {
+      models: {
+        async generateContent() {
+          throw Object.assign(new Error('404 NOT_FOUND'), { status: 404 });
+        },
+      },
+      interactions: {
+        async create() {
+          interactionsCalled = true;
+          return { output_text: 'should not run' };
+        },
+      },
+    } as unknown as GoogleGenAI;
+
+    await expect(
+      generateContentWithFallback(fakeAi, {
+        model: 'gemini-flash-latest',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType: 'image/jpeg', data: Buffer.from('img').toString('base64') } },
+              { text: 'describe image' },
+            ],
+          },
+        ],
+        systemInstruction: 'sys',
+        thinkingLevel: ThinkingLevel.LOW,
+      })
+    ).rejects.toThrow(/404/);
+    expect(interactionsCalled).toBe(false);
+  });
+
+  it('runs multimodal image-only pipeline through planner, gemini-embedding-2, and reranker', async () => {
+    const sampleB64 = Buffer.from('tokyo-neon-alley').toString('base64');
+    const generateCalls: Array<{ parts: unknown[] }> = [];
+    const embedCalls: Array<{ model: string; contents: unknown[] }> = [];
+    const originalFetch = globalThis.fetch;
+
+    const tokyoStation: Station = {
+      changeuuid: '',
+      stationuuid: 'jp-tokyo-1',
+      name: 'Shibuya Vinyl FM',
+      url: 'https://example.com/shibuya',
+      url_resolved: 'https://example.com/shibuya',
+      homepage: '',
+      favicon: '',
+      tags: 'jazz, city pop, vinyl',
+      country: 'Japan',
+      countrycode: 'JP',
+      state: 'Tokyo',
+      language: 'japanese',
+      languagecodes: 'ja',
+      votes: 220,
+      codec: 'AAC',
+      bitrate: 192,
+      lastcheckok: 1,
+      clickcount: 1400,
+      clicktrend: 12,
+      geo_lat: 35.66,
+      geo_long: 139.7,
+    };
+
+    const berlinStation: Station = {
+      ...tokyoStation,
+      stationuuid: 'de-berlin-1',
+      name: 'Berlin Techno Club',
+      url: 'https://example.com/berlin',
+      url_resolved: 'https://example.com/berlin',
+      tags: 'techno, minimal',
+      country: 'Germany',
+      countrycode: 'DE',
+      state: 'Berlin',
+      language: 'german',
+      languagecodes: 'de',
+    };
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify([tokyoStation, berlinStation]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch;
+
+    try {
+      const fakeAi = {
+        models: {
+          async generateContent(req: { contents: Array<{ parts: unknown[] }> }) {
+            const parts = req.contents?.[0]?.parts ?? [];
+            generateCalls.push({ parts });
+            if (generateCalls.length === 1) {
+              return {
+                text: JSON.stringify({
+                  headline: 'Neon Rain in Tokyo',
+                  intro: 'Late-night Japanese vinyl jazz and city pop frequencies.',
+                  semanticProfile: 'Rainy neon Tokyo street with warm saxophone and analog city pop',
+                  imageSummary: 'Rainy neon-lit Tokyo alley evoking midnight city pop and jazz.',
+                  geoPriority: true,
+                  targetCountryCodes: ['JP'],
+                  targetRegions: ['Tokyo', 'Japan'],
+                  planTags: ['jazz', 'city pop'],
+                  plans: [{ countrycode: 'JP', tag: 'jazz' }],
+                }),
+              };
+            }
+            return {
+              text: JSON.stringify({
+                orderedUuids: ['jp-tokyo-1'],
+                rejectedUuids: ['de-berlin-1'],
+              }),
+            };
+          },
+          async embedContent(req: { model: string; contents: unknown[] }) {
+            embedCalls.push({ model: req.model, contents: req.contents });
+            return {
+              embeddings: req.contents.map(() => ({
+                values: Array.from({ length: SEED_EMBEDDING_DIM }, (_, idx) => (idx === 0 ? 1 : 0)),
+              })),
+            };
+          },
+        },
+      } as unknown as GoogleGenAI;
+
+      const result = await runHybridPipeline(fakeAi, {
+        mode: 'search',
+        query: '',
+        image: { mimeType: 'image/jpeg', data: sampleB64 },
+        model: 'gemini-flash-lite-latest',
+        thinkingLevel: 'low',
+        httpsOnly: true,
+        useReranker: true,
+      });
+
+      expect(result.headline).toBe('Neon Rain in Tokyo');
+      expect(result.imageSummary).toBe('Rainy neon-lit Tokyo alley evoking midnight city pop and jazz.');
+      expect(result.targetRegions).toContain('Japan');
+      const uuids = result.stations.map((s) => s.stationuuid);
+      expect(uuids[0]).toBe('jp-tokyo-1');
+      expect(uuids).not.toContain('de-berlin-1');
+      expect(result.usedReranker).toBe(true);
+
+      // Both planner and reranker should have received inlineData image parts
+      expect(generateCalls.length).toBe(2);
+      expect(generateCalls[0].parts[0]).toEqual({
+        inlineData: { mimeType: 'image/jpeg', data: sampleB64 },
+      });
+      expect(generateCalls[1].parts[0]).toEqual({
+        inlineData: { mimeType: 'image/jpeg', data: sampleB64 },
+      });
+
+      // Query embedding call should use gemini-embedding-2 with inlineData + semantic text
+      expect(embedCalls[0].model).toBe('gemini-embedding-2');
+      const queryEmbedParts = (embedCalls[0].contents[0] as { parts: unknown[] }).parts;
+      expect(queryEmbedParts[0]).toEqual({
+        inlineData: { mimeType: 'image/jpeg', data: sampleB64 },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to text-only embedding when multimodal embedContent fails', async () => {
+    const sampleB64 = Buffer.from('coastal-sunset').toString('base64');
+    const embedAttempts: number[] = [];
+    const originalFetch = globalThis.fetch;
+
+    const lisbonStation: Station = {
+      changeuuid: '',
+      stationuuid: 'pt-lisbon-1',
+      name: 'Lisboa Terrace FM',
+      url: 'https://example.com/lisboa',
+      url_resolved: 'https://example.com/lisboa',
+      homepage: '',
+      favicon: '',
+      tags: 'bossa, acoustic',
+      country: 'Portugal',
+      countrycode: 'PT',
+      state: 'Lisbon',
+      language: 'portuguese',
+      languagecodes: 'pt',
+      votes: 90,
+      codec: 'MP3',
+      bitrate: 128,
+      lastcheckok: 1,
+      clickcount: 400,
+      clicktrend: 5,
+      geo_lat: 38.72,
+      geo_long: -9.14,
+    };
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify([lisbonStation]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch;
+
+    try {
+      const fakeAi = {
+        models: {
+          async generateContent() {
+            return {
+              text: JSON.stringify({
+                headline: 'Lisbon Sunset Acoustic',
+                intro: 'Warm acoustic frequencies from Lisbon.',
+                semanticProfile: 'Golden hour coastal terrace with acoustic guitar and bossa nova',
+                imageSummary: 'Golden coastal terrace at sunset.',
+                geoPriority: true,
+                targetCountryCodes: ['PT'],
+                targetRegions: ['Portugal'],
+                planTags: ['acoustic', 'bossa'],
+                plans: [{ countrycode: 'PT' }],
+              }),
+            };
+          },
+          async embedContent(req: { contents: Array<{ parts: Array<{ inlineData?: unknown }> }> }) {
+            embedAttempts.push(req.contents.length);
+            const hasInline = req.contents.some((c) => c.parts?.some((p) => Boolean(p.inlineData)));
+            if (hasInline) {
+              throw new Error('500 multimodal embed temporary error');
+            }
+            return {
+              embeddings: req.contents.map(() => ({
+                values: Array.from({ length: SEED_EMBEDDING_DIM }, (_, idx) => (idx === 2 ? 1 : 0)),
+              })),
+            };
+          },
+        },
+      } as unknown as GoogleGenAI;
+
+      const result = await runHybridPipeline(fakeAi, {
+        mode: 'search',
+        query: 'sunset guitar',
+        image: { mimeType: 'image/png', data: sampleB64 },
+        model: 'gemini-flash-lite-latest',
+        thinkingLevel: 'low',
+        httpsOnly: true,
+        useReranker: false,
+      });
+
+      expect(result.stations[0]?.stationuuid).toBe('pt-lisbon-1');
+      expect(embedAttempts.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('validates /api/ai/search empty/invalid image requests and /api/ai/dj-notes imageContext', async () => {
+    const prevKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = 'test-key';
+    const appToken = signJwt(
+      {
+        sub: 'app_user',
+        role: 'app',
+        ai: true,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      },
+      getJwtSecret()
+    );
+
+    try {
+      const emptyReq = createJsonPostReq('/api/ai/search', { query: '   ' }, appToken);
+      const emptyMock = createMockRes();
+      await handleAiSearchRequest(emptyReq, emptyMock.res);
+      expect(emptyMock.res.statusCode).toBe(400);
+
+      const badImgReq = createJsonPostReq(
+        '/api/ai/search',
+        { query: '', image: { mimeType: 'image/tiff', data: 'AQID' } },
+        appToken
+      );
+      const badImgMock = createMockRes();
+      await handleAiSearchRequest(badImgReq, badImgMock.res);
+      expect(badImgMock.res.statusCode).toBe(400);
+      expect(JSON.parse(badImgMock.getBody()).error).toMatch(/Unsupported image format/i);
+
+      const missingNotesReq = createJsonPostReq(
+        '/api/ai/dj-notes',
+        { query: '', stations: [{ stationuuid: 's1', name: 'Test FM', url: 'https://a.fm' }] },
+        appToken
+      );
+      const missingNotesMock = createMockRes();
+      await handleAiSearchRequest(missingNotesReq, missingNotesMock.res);
+      expect(missingNotesMock.res.statusCode).toBe(400);
+
+      const imageContextNotesReq = createJsonPostReq(
+        '/api/ai/dj-notes',
+        {
+          query: '',
+          imageContext: 'Rainy neon Tokyo alley evoking midnight vinyl jazz',
+          stations: [{ stationuuid: 's1', name: 'Shibuya FM', url: 'https://a.fm' }],
+        },
+        appToken
+      );
+      const imageContextNotesMock = createMockRes();
+      await handleAiSearchRequest(imageContextNotesReq, imageContextNotesMock.res);
+      expect(imageContextNotesMock.res.statusCode).toBe(200);
+      expect(JSON.parse(imageContextNotesMock.getBody())).toHaveProperty('djNotes');
+    } finally {
+      if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevKey;
+    }
+  });
+});
+
 
 
 

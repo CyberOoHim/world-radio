@@ -6,9 +6,11 @@ import {
   SEED_EMBEDDING_MODEL,
   SeedIndexStore,
   buildStationDescriptor,
+  hasNonZeroVectorValues,
   normalizeVector,
   resolveSeedSweetSpotCount,
 } from '../src/server/seedIndex.ts';
+import { resolveGeminiApiKey, toEmbedContents } from '../src/server/aiSearch.ts';
 import { gatherDiverseStations } from '../src/server/seedSync.ts';
 import type { Station } from '../src/types.ts';
 
@@ -36,45 +38,107 @@ function parseCountArg(argv: string[]): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-async function embedMissingStations(ai: GoogleGenAI, store: SeedIndexStore): Promise<void> {
+function isRateLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = (err as { status?: unknown })?.status;
+  return status === 429 || /\b429\b|RESOURCE_EXHAUSTED/i.test(msg);
+}
+
+function parseRetryDelaySeconds(err: unknown): number | undefined {
+  const msg = err instanceof Error ? err.message : String(err);
+  const match =
+    msg.match(/Please retry in\s+([0-9.]+)s/i) ??
+    msg.match(/"retryDelay"\s*:\s*"([0-9.]+)s"/i);
+  if (!match) return undefined;
+  const parsed = Number.parseFloat(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function isRetryableEmbedError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/API_KEY_INVALID|API key not valid|PERMISSION_DENIED|UNAUTHENTICATED|\b(401|403)\b/i.test(msg)) {
+    return false;
+  }
+  return /\b(429|500|502|503|504)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|DEADLINE_EXCEEDED|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
+    msg
+  );
+}
+
+async function embedBatchWithRetry(
+  ai: GoogleGenAI,
+  texts: string[],
+  maxAttempts = 8
+) {
+  const contents = toEmbedContents(texts);
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await ai.models.embedContent({
+        model: SEED_EMBEDDING_MODEL,
+        contents,
+        config: { outputDimensionality: SEED_EMBEDDING_DIM },
+      });
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= maxAttempts || !isRetryableEmbedError(err)) {
+        throw err;
+      }
+      const backoffMs = isRateLimitError(err)
+        ? Math.max(15000, Math.ceil((parseRetryDelaySeconds(err) ?? 22) * 1000) + 2500)
+        : 1500 * 2 ** (attempt - 1);
+      console.warn(
+        `Embed batch attempt ${attempt}/${maxAttempts} failed (${err instanceof Error ? err.message : String(err)}); retrying in ${backoffMs}ms...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  throw lastErr;
+}
+
+async function embedMissingStations(
+  ai: GoogleGenAI,
+  store: SeedIndexStore,
+  onCheckpoint?: () => void
+): Promise<void> {
   const missing = store.getMissingVectorStations();
   if (missing.length === 0) return;
 
   const BATCH = 50;
-  const CONCURRENCY = 4;
+  const CONCURRENCY = 2;
   const batches: Station[][] = [];
   for (let i = 0; i < missing.length; i += BATCH) {
     batches.push(missing.slice(i, i + BATCH));
   }
 
   let completed = 0;
+  let waveCount = 0;
   for (let i = 0; i < batches.length; i += CONCURRENCY) {
     const wave = batches.slice(i, i + CONCURRENCY);
     await Promise.all(
       wave.map(async (slice) => {
         const texts = slice.map((st) => buildStationDescriptor(st));
-        const res = await ai.models.embedContent({
-          model: SEED_EMBEDDING_MODEL,
-          contents: texts,
-          config: { outputDimensionality: SEED_EMBEDDING_DIM },
-        });
+        const res = await embedBatchWithRetry(ai, texts);
         const embeddings = res.embeddings ?? [];
         slice.forEach((st, idx) => {
           const vals = embeddings[idx]?.values;
-          if (vals && vals.length === SEED_EMBEDDING_DIM) {
+          if (vals && vals.length === SEED_EMBEDDING_DIM && hasNonZeroVectorValues(vals)) {
             store.setVector(st.stationuuid, normalizeVector(vals));
           }
         });
         completed += slice.length;
       })
     );
+    waveCount++;
+    if (onCheckpoint && waveCount % 5 === 0) {
+      onCheckpoint();
+    }
     console.log(`Embedded ${Math.min(completed, missing.length)} / ${missing.length}`);
   }
 }
 
 async function main(): Promise<void> {
   loadEnvLocal();
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const apiKey = resolveGeminiApiKey() || (process.env.GEMINI_API_KEY || '').trim();
   const outDir = path.resolve(process.cwd(), 'data');
   const outPath = path.join(outDir, 'station-seed-index.json');
   const forceRefresh = process.argv.includes('--refresh');
@@ -167,7 +231,10 @@ async function main(): Promise<void> {
       apiKey,
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
-    await embedMissingStations(ai, store);
+    await embedMissingStations(ai, store, () => {
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(outPath, JSON.stringify(store.exportSeedFile(targetCount)));
+    });
     mutated = true;
   } else {
     console.warn(

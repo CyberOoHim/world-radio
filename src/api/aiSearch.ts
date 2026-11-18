@@ -1,6 +1,12 @@
 import { getStoredAuthToken } from '../auth';
 import { sanitizeStation } from '../storage';
-import type { AiModelId, AiSearchResponse, AiThinkingLevel, Station } from '../types';
+import type {
+  AiImagePayload,
+  AiModelId,
+  AiSearchResponse,
+  AiThinkingLevel,
+  Station,
+} from '../types';
 
 export class AiAuthError extends Error {
   code: string;
@@ -129,6 +135,11 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
     ? obj.targetRegions.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
     : [];
 
+  const imageSummary =
+    typeof obj.imageSummary === 'string' && obj.imageSummary.trim()
+      ? obj.imageSummary.trim()
+      : undefined;
+
   return {
     headline: typeof obj.headline === 'string' ? obj.headline : 'Curated Frequencies',
     intro: typeof obj.intro === 'string' ? obj.intro : '',
@@ -141,11 +152,13 @@ function normalizeAiResponse(raw: unknown): AiSearchResponse {
     thinkingLevel,
     usedReranker: typeof obj.usedReranker === 'boolean' ? obj.usedReranker : undefined,
     targetRegions,
+    imageSummary,
   };
 }
 
 export async function aiSearchStations(params: {
-  query: string;
+  query?: string;
+  image?: AiImagePayload | null;
   model: AiModelId;
   thinkingLevel: AiThinkingLevel;
   httpsOnly: boolean;
@@ -158,7 +171,8 @@ export async function aiSearchStations(params: {
     credentials: 'same-origin',
     signal: params.signal,
     body: JSON.stringify({
-      query: params.query,
+      query: params.query ?? '',
+      image: params.image ? { data: params.image.data, mimeType: params.image.mimeType } : undefined,
       model: params.model,
       thinkingLevel: params.thinkingLevel,
       httpsOnly: params.httpsOnly,
@@ -222,6 +236,7 @@ export async function aiFindSimilarStations(params: {
 
 export async function aiFetchDjNotes(params: {
   query?: string;
+  imageContext?: string;
   seedStation?: Station | null;
   stations: Station[];
   notesModel: AiModelId;
@@ -236,6 +251,7 @@ export async function aiFetchDjNotes(params: {
     signal: params.signal,
     body: JSON.stringify({
       query: params.query,
+      imageContext: params.imageContext,
       seedStation: params.seedStation ?? undefined,
       stations: params.stations,
       notesModel: params.notesModel,

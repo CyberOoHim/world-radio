@@ -129,7 +129,12 @@ import {
   saveVolume,
   toSnapshot,
 } from './storage';
+import {
+  extractImageFileFromDataTransfer,
+  prepareAiImageFile,
+} from './imageQuery';
 import type {
+  AiImageAttachment,
   AiModelId,
   AiThinkingLevel,
   AppState,
@@ -175,6 +180,8 @@ const state: AppState = {
   aiNotesModel: prefs.aiNotesModel,
   aiNotesThinkingLevel: prefs.aiNotesThinkingLevel,
   aiQuery: '',
+  aiImage: null,
+  aiImageSummary: '',
   aiSeedStation: null,
   aiLoading: false,
   aiNotesLoading: false,
@@ -380,6 +387,7 @@ const icons = {
   lock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
   unlock: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`,
   sparkles: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>`,
+  image: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="8.5" cy="9.5" r="1.5" fill="currentColor" stroke="none"/><path d="M21 15l-4.5-4.5L7 20"/></svg>`,
   similar: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="17" height="17"><circle cx="8" cy="12" r="4.5"/><circle cx="16" cy="12" r="4.5"/></svg>`,
   chevronDown: `<svg class="ai-expander-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M6 9l6 6 6-6"/></svg>`,
 };
@@ -1778,6 +1786,7 @@ function hydrateAiDjNotesAsync(params: {
   seq: number;
   signal: AbortSignal;
   query?: string;
+  imageContext?: string;
   seedStation?: Station | null;
   stations: Station[];
 }): void {
@@ -1788,6 +1797,7 @@ function hydrateAiDjNotesAsync(params: {
   state.aiNotesLoading = true;
   void aiFetchDjNotes({
     query: params.query,
+    imageContext: params.imageContext,
     seedStation: params.seedStation,
     stations: params.stations,
     notesModel: state.aiNotesModel,
@@ -1812,10 +1822,27 @@ function hydrateAiDjNotesAsync(params: {
     });
 }
 
-async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
+async function handleAiImageFileSelected(file: File, baseQuery?: string) {
+  try {
+    const attachment = await prepareAiImageFile(file);
+    const q = (baseQuery ?? (state.view === 'ai' ? state.aiQuery : state.query)).trim();
+    showToast(`Attached image: ${attachment.name}`);
+    await runAiSearch(q, { image: attachment });
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Could not load image');
+  }
+}
+
+async function runAiSearch(
+  rawQuery: string,
+  opts?: { skipHash?: boolean; image?: AiImageAttachment | null }
+) {
   const q = rawQuery.trim();
-  if (!q) {
+  const activeImage = opts && 'image' in opts ? opts.image ?? null : state.aiImage;
+  if (!q && !activeImage) {
     state.aiQuery = '';
+    state.aiImage = null;
+    state.aiImageSummary = '';
     setView('ai', { skipHash: opts?.skipHash });
     return;
   }
@@ -1830,6 +1857,8 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
   state.detailStation = null;
   state.aiQuery = q;
   state.query = q;
+  state.aiImage = activeImage;
+  state.aiImageSummary = '';
   state.aiSeedStation = null;
   state.aiLoading = true;
   state.aiNotesLoading = false;
@@ -1839,7 +1868,11 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
   persistPrefs();
 
   if (!opts?.skipHash && !applyingRoute) {
-    setHash({ kind: 'ai', q });
+    if (q) {
+      setHash({ kind: 'ai', q });
+    } else {
+      setHash({ kind: 'view', view: 'ai' });
+    }
   }
 
   renderNav();
@@ -1851,6 +1884,7 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
   try {
     const res = await aiSearchStations({
       query: q,
+      image: activeImage ? { data: activeImage.data, mimeType: activeImage.mimeType } : null,
       model: state.aiModel,
       thinkingLevel: state.aiThinkingLevel,
       httpsOnly: state.httpsOnly,
@@ -1864,6 +1898,7 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
     state.aiDjNotes = res.djNotes;
     state.aiHeadline = res.headline;
     state.aiIntro = res.intro;
+    state.aiImageSummary = res.imageSummary ?? '';
     state.aiPlanTags = res.planTags;
     state.aiUsedSeedIndex = res.usedSeedIndex;
     state.aiSeedCount = res.seedCount;
@@ -1878,7 +1913,8 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
       hydrateAiDjNotesAsync({
         seq,
         signal: aiAbort.signal,
-        query: q,
+        query: q || undefined,
+        imageContext: res.imageSummary || (activeImage ? res.headline : undefined),
         stations: res.stations,
       });
     } else {
@@ -1891,7 +1927,7 @@ async function runAiSearch(rawQuery: string, opts?: { skipHash?: boolean }) {
       state.aiAuthRequired = true;
       state.aiError = null;
       pendingAiRetry = () => {
-        void runAiSearch(q, { skipHash: true });
+        void runAiSearch(q, { skipHash: true, image: activeImage });
       };
       if (!isPasscodeModalOpen()) {
         openPasscodeModal(
@@ -1925,6 +1961,8 @@ async function runAiSimilar(station: Station, opts?: { skipHash?: boolean }) {
   state.nearMe = false;
   state.surpriseMode = null;
   state.detailStation = null;
+  state.aiImage = null;
+  state.aiImageSummary = '';
   state.aiSeedStation = station;
   state.aiLoading = true;
   state.aiNotesLoading = false;
@@ -2019,7 +2057,7 @@ function handleAiSurprisePrompt() {
   const picked = pool[Math.floor(Math.random() * pool.length)];
   if (!picked) return;
   showToast(`AI vibe: ${picked.label}`);
-  void runAiSearch(picked.prompt);
+  void runAiSearch(picked.prompt, { image: null });
 }
 
 async function loadCountryStations(code: string, reset = true, opts?: { autoPlayTag?: boolean }) {
@@ -3180,11 +3218,11 @@ function renderAiView(): string {
   const notesThinkingShort = notesThinkingLabel.split(' · ')[0] || 'Low';
 
   const composerHtml = `
-    <section class="ai-composer">
+    <section class="ai-composer" data-ai-dropzone="true">
       <div class="ai-composer-head">
         <div>
           <h2>AI Frequency Finder</h2>
-          <p class="ai-composer-sub">Describe a time, place, memory, or sonic texture. Hybrid AI plans live searches and ranks frequencies by vibe.</p>
+          <p class="ai-composer-sub">Describe a time, place, memory, or upload/drop an image. Hybrid AI plans live searches and ranks frequencies by vibe.</p>
         </div>
       </div>
 
@@ -3193,11 +3231,27 @@ function renderAiView(): string {
           type="search"
           class="ai-prompt-input"
           data-action="ai-query-input"
-          placeholder="e.g. Rainy midnight vinyl jazz bar in Tokyo, or 1980s coastal highway synth…"
+          placeholder="Describe a vibe, place, or upload/drop an image…"
           value="${escapeHtml(state.aiQuery)}"
           autocomplete="off"
           spellcheck="false"
         />
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          data-action="ai-image-input"
+          hidden
+        />
+        <button
+          type="button"
+          class="btn-ai-image ${state.aiImage ? 'has-image' : ''}"
+          data-action="ai-pick-image"
+          title="Upload, drop, or paste an image to find matching stations"
+          ${state.aiLoading ? 'disabled' : ''}
+        >
+          ${icons.image}
+          <span>${state.aiImage ? 'Change image' : 'Image'}</span>
+        </button>
         <button type="submit" class="btn-ai-tune" ${state.aiLoading ? 'disabled' : ''}>
           ${icons.sparkles}
           <span>${state.aiLoading ? 'Tuning…' : 'Tune AI'}</span>
@@ -3206,6 +3260,24 @@ function renderAiView(): string {
           Surprise vibe
         </button>
       </form>
+
+      ${
+        state.aiImage
+          ? `
+        <div class="ai-image-preview">
+          <img src="${escapeHtml(state.aiImage.previewUrl)}" alt="${escapeHtml(state.aiImage.name)}" class="ai-image-thumb" />
+          <div class="ai-image-meta">
+            <span class="ai-image-badge">Image query attached</span>
+            <strong class="ai-image-name">${escapeHtml(state.aiImage.name)}</strong>
+            <span class="ai-image-hint">Add optional text above to steer the vibe, or press Tune AI.</span>
+          </div>
+          <button type="button" class="chip ai-image-clear" data-action="ai-clear-image" ${state.aiLoading ? 'disabled' : ''}>
+            Clear image
+          </button>
+        </div>
+      `
+          : ''
+      }
 
       <div class="ai-models-expander ${aiModelsExpanded ? 'is-open' : ''}">
         <button
@@ -3324,10 +3396,15 @@ function renderAiView(): string {
       </div>
     `;
   } else if (state.aiLoading) {
+    const loadingAction = state.aiImage
+      ? 'Reading image & curating frequencies'
+      : state.aiUseReranker
+        ? 'Curating & verifying frequencies'
+        : 'Curating frequencies';
     bodyHtml = `
       <div class="loading-box">
         <div class="spinner"></div>
-        <p>${state.aiUseReranker ? 'Curating & verifying frequencies' : 'Curating frequencies'} (${escapeHtml(stationModelLabel)} · ${escapeHtml(stationThinkingLabel)})…</p>
+        <p>${loadingAction} (${escapeHtml(stationModelLabel)} · ${escapeHtml(stationThinkingLabel)})…</p>
       </div>
       ${skeletonGrid()}
     `;
@@ -3357,6 +3434,11 @@ function renderAiView(): string {
         <div>
           <h3>${escapeHtml(state.aiHeadline || 'Curated Frequencies')}</h3>
           ${state.aiIntro ? `<p class="ai-results-intro">${escapeHtml(state.aiIntro)}</p>` : ''}
+          ${
+            state.aiImageSummary
+              ? `<div class="ai-results-visual-chip">${icons.image}<span>${escapeHtml(state.aiImageSummary)}</span></div>`
+              : ''
+          }
         </div>
         <div class="ai-results-meta">
           <span>${state.aiResults.length} stations</span>
@@ -3376,7 +3458,7 @@ function renderAiView(): string {
         ${state.aiResults.map(stationCard).join('')}
       </div>
     `;
-  } else if (state.aiQuery.trim() || state.aiSeedStation) {
+  } else if (state.aiQuery.trim() || state.aiImage || state.aiSeedStation) {
     bodyHtml = `
       <div class="empty">
         <p>No playable stations matched that scene right now. Try broadening the mood or switching to Name Search.</p>
@@ -3394,7 +3476,7 @@ function renderAiView(): string {
             ? auth.authenticated
               ? `<p>Guest mode (map only) is active — <button type="button" class="link-btn" data-action="open-auth-modal">enter the app passcode</button> to run AI searches.</p>`
               : `<p>Passcode is currently locked — <button type="button" class="link-btn" data-action="open-auth-modal">unlock with app passcode</button> when ready to run AI searches.</p>`
-            : `<p>Pick a curated scene above, describe any mood or city, or click the overlapping-circles icon on any station to find sonic siblings.</p>`
+            : `<p>Pick a curated scene above, describe any mood or city, upload or drop an image, or click the overlapping-circles icon on any station to find sonic siblings.</p>`
         }
       </div>
     `;
@@ -3758,6 +3840,22 @@ function ensureShell() {
             <button type="button" class="search-mode-btn ${state.searchMode === 'name' ? 'active' : ''}" data-action="search-mode" data-mode="name" aria-pressed="${state.searchMode === 'name'}">Name</button>
             <button type="button" class="search-mode-btn ${state.searchMode === 'ai' ? 'active' : ''}" data-action="search-mode" data-mode="ai" aria-pressed="${state.searchMode === 'ai'}">${icons.sparkles}<span>AI Vibe</span></button>
           </div>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            data-action="topbar-ai-image-input"
+            hidden
+          />
+          <button
+            type="button"
+            class="search-ai-image-btn"
+            data-action="topbar-ai-image"
+            ${state.searchMode === 'ai' ? '' : 'hidden'}
+            title="Search stations from an image"
+            aria-label="Search stations from an image"
+          >
+            ${icons.image}
+          </button>
           <button type="button" class="search-ai-submit" data-action="submit-ai-topbar" ${state.searchMode === 'ai' ? '' : 'hidden'} title="Run AI station search">Tune AI</button>
         </div>
         <div class="topbar-actions">
@@ -3854,6 +3952,12 @@ function renderTopbar() {
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-pressed', String(active));
   });
+  const aiImageBtn = qs<HTMLButtonElement>('[data-action="topbar-ai-image"]');
+  if (aiImageBtn) {
+    aiImageBtn.hidden = state.searchMode !== 'ai';
+    aiImageBtn.disabled = state.aiLoading;
+    aiImageBtn.classList.toggle('has-image', Boolean(state.aiImage));
+  }
   const aiSubmitBtn = qs<HTMLButtonElement>('[data-action="submit-ai-topbar"]');
   if (aiSubmitBtn) {
     aiSubmitBtn.hidden = state.searchMode !== 'ai';
@@ -4198,8 +4302,9 @@ function reloadCurrentList() {
   if (state.view === 'discover') void loadDiscover(true);
   else if (state.view === 'ai') {
     if (state.aiSeedStation) void runAiSimilar(state.aiSeedStation, { skipHash: true });
-    else if (state.aiQuery.trim()) void runAiSearch(state.aiQuery.trim(), { skipHash: true });
-    else renderMain();
+    else if (state.aiQuery.trim() || state.aiImage) {
+      void runAiSearch(state.aiQuery.trim(), { skipHash: true, image: state.aiImage });
+    } else renderMain();
   }
   else if (state.view === 'search' && state.query.trim()) void loadSearch(state.query.trim(), true);
   else if (state.view === 'countries' && state.selectedCountry)
@@ -4281,6 +4386,8 @@ function restoreAllDefaults(): void {
   state.aiNotesThinkingLevel = 'low';
   aiModelsExpanded = false;
   state.aiQuery = '';
+  state.aiImage = null;
+  state.aiImageSummary = '';
   state.aiSeedStation = null;
   state.aiLoading = false;
   state.aiNotesLoading = false;
@@ -4358,6 +4465,8 @@ function ensureAppEvents() {
       action === 'ai-thinking-level' ||
       action === 'ai-notes-model' ||
       action === 'ai-notes-thinking-level' ||
+      action === 'ai-image-input' ||
+      action === 'topbar-ai-image-input' ||
       action === 'volume' ||
       action === 'browse-filter' ||
       action === 'recent-filter' ||
@@ -4385,7 +4494,7 @@ function ensureAppEvents() {
       }
       case 'submit-ai-topbar': {
         const q = state.query.trim();
-        if (q) {
+        if (q || state.aiImage) {
           void runAiSearch(q);
         } else {
           setView('ai');
@@ -4393,6 +4502,34 @@ function ensureAppEvents() {
         }
         break;
       }
+      case 'topbar-ai-image':
+        qs<HTMLInputElement>('[data-action="topbar-ai-image-input"]')?.click();
+        break;
+      case 'ai-pick-image':
+        qs<HTMLInputElement>('[data-action="ai-image-input"]')?.click();
+        break;
+      case 'ai-clear-image':
+        state.aiImage = null;
+        state.aiImageSummary = '';
+        renderTopbar();
+        if (state.aiQuery.trim() && state.view === 'ai') {
+          void runAiSearch(state.aiQuery.trim(), { image: null });
+        } else {
+          if (state.view === 'ai') {
+            aiAbort?.abort();
+            state.aiResults = [];
+            state.aiDjNotes = {};
+            state.aiNotesLoading = false;
+            state.aiHeadline = '';
+            state.aiIntro = '';
+            state.aiPlanTags = [];
+            state.aiTargetRegions = [];
+            state.aiUsedReranker = false;
+            state.aiError = null;
+            renderMain();
+          }
+        }
+        break;
       case 'toggle-ai-models':
         aiModelsExpanded = !aiModelsExpanded;
         renderMain();
@@ -4408,8 +4545,8 @@ function ensureAppEvents() {
         if (state.view === 'ai' && !state.aiLoading) {
           if (state.aiSeedStation) {
             void runAiSimilar(state.aiSeedStation, { skipHash: true });
-          } else if (state.aiQuery.trim()) {
-            void runAiSearch(state.aiQuery.trim(), { skipHash: true });
+          } else if (state.aiQuery.trim() || state.aiImage) {
+            void runAiSearch(state.aiQuery.trim(), { skipHash: true, image: state.aiImage });
           } else {
             renderMain();
           }
@@ -4419,7 +4556,7 @@ function ensureAppEvents() {
         break;
       case 'ai-preset': {
         const prompt = t.dataset.prompt || '';
-        if (prompt) void runAiSearch(prompt);
+        if (prompt) void runAiSearch(prompt, { image: null });
         break;
       }
       case 'ai-surprise':
@@ -4428,8 +4565,8 @@ function ensureAppEvents() {
       case 'ai-retry':
         if (state.aiSeedStation) {
           void runAiSimilar(state.aiSeedStation);
-        } else if (state.aiQuery.trim()) {
-          void runAiSearch(state.aiQuery.trim());
+        } else if (state.aiQuery.trim() || state.aiImage) {
+          void runAiSearch(state.aiQuery.trim(), { image: state.aiImage });
         }
         break;
       case 'ai-clear-seed':
@@ -5099,7 +5236,7 @@ function ensureAppEvents() {
           state.view === 'ai' &&
           state.aiResults.length > 0 &&
           !state.aiLoading &&
-          (state.aiQuery.trim() || state.aiSeedStation)
+          (state.aiQuery.trim() || state.aiImage || state.aiSeedStation)
         ) {
           if (aiAbort) aiAbort.abort();
           aiAbort = new AbortController();
@@ -5110,7 +5247,10 @@ function ensureAppEvents() {
           hydrateAiDjNotesAsync({
             seq,
             signal: aiAbort.signal,
-            query: state.aiSeedStation ? undefined : state.aiQuery.trim(),
+            query: state.aiSeedStation ? undefined : state.aiQuery.trim() || undefined,
+            imageContext: state.aiSeedStation
+              ? undefined
+              : state.aiImageSummary || (state.aiImage ? state.aiHeadline : undefined),
             seedStation: state.aiSeedStation,
             stations: state.aiResults,
           });
@@ -5131,7 +5271,7 @@ function ensureAppEvents() {
           state.view === 'ai' &&
           state.aiResults.length > 0 &&
           !state.aiLoading &&
-          (state.aiQuery.trim() || state.aiSeedStation)
+          (state.aiQuery.trim() || state.aiImage || state.aiSeedStation)
         ) {
           if (aiAbort) aiAbort.abort();
           aiAbort = new AbortController();
@@ -5142,7 +5282,10 @@ function ensureAppEvents() {
           hydrateAiDjNotesAsync({
             seq,
             signal: aiAbort.signal,
-            query: state.aiSeedStation ? undefined : state.aiQuery.trim(),
+            query: state.aiSeedStation ? undefined : state.aiQuery.trim() || undefined,
+            imageContext: state.aiSeedStation
+              ? undefined
+              : state.aiImageSummary || (state.aiImage ? state.aiHeadline : undefined),
             seedStation: state.aiSeedStation,
             stations: state.aiResults,
           });
@@ -5150,6 +5293,18 @@ function ensureAppEvents() {
           renderMain();
         }
       }
+      return;
+    }
+    if (
+      (t.dataset.action === 'ai-image-input' || t.dataset.action === 'topbar-ai-image-input') &&
+      t instanceof HTMLInputElement &&
+      t.files?.[0]
+    ) {
+      const file = t.files[0];
+      const baseQuery =
+        t.dataset.action === 'topbar-ai-image-input' ? state.query : state.aiQuery;
+      t.value = '';
+      void handleAiImageFileSelected(file, baseQuery);
       return;
     }
     if (t.dataset.action === 'import-favs' && t instanceof HTMLInputElement && t.files?.[0]) {
@@ -5302,7 +5457,7 @@ function ensureAppEvents() {
       const q = state.query.trim();
       if (state.searchMode === 'ai') {
         ke.preventDefault();
-        if (q) void runAiSearch(q);
+        if (q || state.aiImage) void runAiSearch(q);
         else setView('ai');
         return;
       }
@@ -5325,16 +5480,62 @@ function ensureAppEvents() {
     }
   });
 
+  app.addEventListener('dragover', (e) => {
+    const de = e as DragEvent;
+    const zone = (de.target as HTMLElement | null)?.closest<HTMLElement>('[data-ai-dropzone="true"]');
+    if (!zone) return;
+    if (de.dataTransfer?.types?.includes('Files')) {
+      de.preventDefault();
+      if (de.dataTransfer) de.dataTransfer.dropEffect = 'copy';
+      zone.classList.add('is-drag-over');
+    }
+  });
+
+  app.addEventListener('dragleave', (e) => {
+    const de = e as DragEvent;
+    const zone = (de.target as HTMLElement | null)?.closest<HTMLElement>('[data-ai-dropzone="true"]');
+    if (!zone) return;
+    const related = de.relatedTarget as Node | null;
+    if (!related || !zone.contains(related)) {
+      zone.classList.remove('is-drag-over');
+    }
+  });
+
+  app.addEventListener('drop', (e) => {
+    const de = e as DragEvent;
+    const zone = (de.target as HTMLElement | null)?.closest<HTMLElement>('[data-ai-dropzone="true"]');
+    if (!zone) return;
+    zone.classList.remove('is-drag-over');
+    const file = extractImageFileFromDataTransfer(de.dataTransfer);
+    if (!file) return;
+    de.preventDefault();
+    void handleAiImageFileSelected(file, state.aiQuery);
+  });
+
+  document.addEventListener('paste', (e) => {
+    const ce = e as ClipboardEvent;
+    const activeEl = document.activeElement as HTMLElement | null;
+    const inAiContext =
+      state.view === 'ai' ||
+      (state.searchMode === 'ai' && activeEl?.classList.contains('search-input'));
+    if (!inAiContext) return;
+    const file = extractImageFileFromDataTransfer(ce.clipboardData);
+    if (!file) return;
+    ce.preventDefault();
+    const baseQuery = state.view === 'ai' ? state.aiQuery : state.query;
+    void handleAiImageFileSelected(file, baseQuery);
+  });
+
   app.addEventListener('submit', (e) => {
     const target = e.target as HTMLElement | null;
     if (target instanceof HTMLFormElement && target.dataset.action === 'ai-prompt-form') {
       e.preventDefault();
       const input = target.querySelector<HTMLInputElement>('[data-action="ai-query-input"]');
       const q = (input?.value ?? state.aiQuery).trim();
-      if (q) {
+      if (q || state.aiImage) {
         void runAiSearch(q);
       } else {
-        showToast('Describe a mood, place, or genre first');
+        showToast('Describe a mood, place, or upload an image first');
         input?.focus();
       }
     }

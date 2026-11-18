@@ -17,13 +17,20 @@ import {
   type SeedSyncStatus,
   buildStationDescriptor,
   cosineUnitSimilarity,
+  hasNonZeroVectorValues,
   normalizeVector,
   resolveSeedSweetSpotCount,
   seedIndexStore,
 } from './seedIndex.ts';
 import { gatherDiverseStations } from './seedSync.ts';
 import { getStationGeoLabels, resolveGeoIntentFromText } from './geoTaxonomy.ts';
-import type { AiModelId, AiSearchResponse, AiThinkingLevel, Station } from '../types.ts';
+import type {
+  AiImagePayload,
+  AiModelId,
+  AiSearchResponse,
+  AiThinkingLevel,
+  Station,
+} from '../types.ts';
 
 import dns from 'node:dns/promises';
 
@@ -141,7 +148,7 @@ async function hydrateMissingSeedVectors(
           );
           slice.forEach((st, idx) => {
             const vec = vecs[idx];
-            if (vec && vec.length > 0) {
+            if (vec && vec.length === SEED_EMBEDDING_DIM) {
               store.setVector(st.stationuuid, vec);
             }
           });
@@ -423,6 +430,25 @@ export interface GenerateContentFallbackInput {
   jsonFallbackHint?: string;
 }
 
+function hasInlineMediaParts(contents: ContentListUnion): boolean {
+  if (!contents || typeof contents === 'string') return false;
+  const checkPart = (p: unknown): boolean =>
+    Boolean(p && typeof p === 'object' && ('inlineData' in p || 'fileData' in p));
+  if (Array.isArray(contents)) {
+    return contents.some((item) => {
+      if (checkPart(item)) return true;
+      if (item && typeof item === 'object' && 'parts' in item && Array.isArray(item.parts)) {
+        return item.parts.some(checkPart);
+      }
+      return false;
+    });
+  }
+  if (typeof contents === 'object' && 'parts' in contents && Array.isArray(contents.parts)) {
+    return contents.parts.some(checkPart);
+  }
+  return false;
+}
+
 function extractTextFromContents(contents: ContentListUnion): string {
   if (typeof contents === 'string') return contents;
   if (Array.isArray(contents)) {
@@ -562,6 +588,7 @@ export async function generateContentWithFallback(
 
     if (
       candidateModel === 'gemini-flash-latest' &&
+      !hasInlineMediaParts(input.contents) &&
       typeof ai.interactions?.create === 'function'
     ) {
       try {
@@ -612,12 +639,61 @@ export async function generateContentWithFallback(
     : new Error(extractErrorMessage(lastError) || 'Gemini API request failed');
 }
 
-function parseJsonBody<T>(req: IncomingMessage): Promise<T | null> {
+const MAX_IMAGE_BODY_BYTES = 6 * 1024 * 1024;
+const MAX_IMAGE_DECODED_BYTES = 4 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+]);
+
+export function sanitizeAiImageInput(raw: unknown): {
+  image?: AiImagePayload;
+  error?: string;
+} {
+  if (raw === undefined || raw === null) {
+    return {};
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'Invalid image payload.' };
+  }
+  const obj = raw as Record<string, unknown>;
+  let mimeType = typeof obj.mimeType === 'string' ? obj.mimeType.trim().toLowerCase() : '';
+  if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
+
+  let data = typeof obj.data === 'string' ? obj.data.trim() : '';
+  const dataUrlMatch = /^data:([^;,]+);base64,(.+)$/is.exec(data);
+  if (dataUrlMatch) {
+    const inferredMime = dataUrlMatch[1].trim().toLowerCase();
+    if (!mimeType) mimeType = inferredMime === 'image/jpg' ? 'image/jpeg' : inferredMime;
+    data = dataUrlMatch[2];
+  }
+  data = data.replace(/\s+/g, '');
+
+  if (!ALLOWED_IMAGE_MIME_TYPES.has(mimeType)) {
+    return { error: 'Unsupported image format. Please use JPEG, PNG, WebP, or GIF.' };
+  }
+  if (!data || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
+    return { error: 'Invalid base64 image data.' };
+  }
+  const decoded = Buffer.from(data, 'base64');
+  if (decoded.length === 0) {
+    return { error: 'Uploaded image is empty.' };
+  }
+  if (decoded.length > MAX_IMAGE_DECODED_BYTES) {
+    return { error: 'Uploaded image exceeds the 4 MB size limit.' };
+  }
+
+  return { image: { mimeType, data } };
+}
+
+function parseJsonBody<T>(req: IncomingMessage, maxBytes = 128 * 1024): Promise<T | null> {
   return new Promise((resolve) => {
     let data = '';
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 128 * 1024) {
+      if (data.length > maxBytes) {
         req.destroy();
         resolve(null);
       }
@@ -704,6 +780,7 @@ interface QueryPlanResult {
   headline: string;
   intro: string;
   semanticProfile: string;
+  imageSummary?: string;
   planTags: string[];
   plans: FilterPlan[];
   targetCountryCodes: string[];
@@ -906,25 +983,50 @@ async function planSearchWithLlm(
   ai: GoogleGenAI,
   model: AiModelId,
   thinkingLevel: AiThinkingLevel,
-  opts: { mode: 'search'; query: string } | { mode: 'similar'; station: Station }
+  opts: { mode: 'search'; query: string; image?: AiImagePayload } | { mode: 'similar'; station: Station }
 ): Promise<QueryPlanResult> {
+  const hasImage = opts.mode === 'search' && Boolean(opts.image);
   const systemInstruction =
-    'You are an expert global radio curator for World Radio. Translate a listener prompt or seed radio station into structured Radio Browser directory search filters plus a rich semantic mood profile for vector matching.\n' +
+    'You are an expert global radio curator for World Radio. Translate a listener prompt, uploaded image, or seed radio station into structured Radio Browser directory search filters plus a rich semantic mood profile for vector matching.\n' +
     'GEOGRAPHY RULES:\n' +
-    '- If the prompt mentions or evokes ANY country, city, continent, sub-region, culture, or regional biome (e.g. "Africa safari", "Amazon rainy forest", "Tokyo", "Nordic", "Caribbean"), set geoPriority=true, list the most relevant 2-letter ISO-3166-1 uppercase codes in targetCountryCodes (up to 12 countries, e.g. Africa safari -> ["KE","TZ","ZA","BW","NA","UG","NG","GH","ET","SN"]; Amazon rainforest -> ["BR","PE","CO","EC","BO","VE"]), and list human region names in targetRegions.\n' +
+    '- If the prompt or image mentions or evokes ANY country, city, continent, sub-region, culture, or regional biome (e.g. "Africa safari", "Amazon rainy forest", "Tokyo", "Nordic", "Caribbean"), set geoPriority=true, list the most relevant 2-letter ISO-3166-1 uppercase codes in targetCountryCodes (up to 12 countries, e.g. Africa safari -> ["KE","TZ","ZA","BW","NA","UG","NG","GH","ET","SN"]; Amazon rainforest -> ["BR","PE","CO","EC","BO","VE"]), and list human region names in targetRegions.\n' +
     '- In plans, NEVER invent non-existent Radio Browser scene tags like "safari", "rainforest", "amazon", or "savanna" as tag filters. Use real Radio Browser music/broadcast tags (e.g. african, afrobeat, world music, mpb, bossa nova, cumbia, folk, jazz, ambient, news, talk, soul, indie, electronic, tango, dub, reggae).\n' +
-    '- When geoPriority=true, make plans target targetCountryCodes (including at least one country-only plan without a restrictive tag, e.g. { "countrycode": "KE" } or { "countrycode": "BR" }). Only omit countrycode when geoPriority=false (pure global mood/genre queries).';
+    '- When geoPriority=true, make plans target targetCountryCodes (including at least one country-only plan without a restrictive tag, e.g. { "countrycode": "KE" } or { "countrycode": "BR" }). Only omit countrycode when geoPriority=false (pure global mood/genre queries).' +
+    (hasImage
+      ? '\nIMAGE CURATION RULES:\n' +
+        '- Inspect the uploaded image carefully: setting, architecture, signage/script, landscape/biome, era, color palette, lighting, and human energy.\n' +
+        '- If the image shows recognizable regional/cultural cues (e.g., Tokyo neon street signs, Parisian cafe, coastal Greece, vintage Americana diner), set geoPriority=true with the appropriate targetCountryCodes and targetRegions.\n' +
+        '- If the image is abstract, studio gear, or mood-driven without a clear geographic location, set geoPriority=false and focus on sonic mood, genre, and era.\n' +
+        '- When the listener also provides text alongside the image, let the text refine or steer the visual interpretation.\n' +
+        '- Also provide imageSummary: a crisp 1-sentence description (max 20 words) of the visual scene and its musical/atmospheric translation.'
+      : '');
 
-  const userPrompt =
-    opts.mode === 'search'
-      ? `Listener prompt: "${opts.query}"\nGenerate 3 to 4 Radio Browser search plans, targetCountryCodes, targetRegions, geoPriority, a short atmospheric editorial headline (3-6 words), a 1-sentence host intro, and a rich semanticProfile describing the sonic texture, tempo, mood, era, and geography.`
-      : `Seed radio station:\n${buildStationDescriptor(opts.station)}\nGenerate 2 to 4 Radio Browser search plans to discover spiritual and sonic cousins from around the world (include both same/adjacent genres and regional/cultural echoes), set geoPriority=false unless the station name strongly implies purely local discovery, an editorial headline like "Echoes of ${opts.station.name.slice(0, 28)}", a 1-sentence host intro, and a rich semanticProfile capturing its sonic essence.`;
+  let userPrompt: string;
+  if (opts.mode === 'similar') {
+    userPrompt = `Seed radio station:\n${buildStationDescriptor(opts.station)}\nGenerate 2 to 4 Radio Browser search plans to discover spiritual and sonic cousins from around the world (include both same/adjacent genres and regional/cultural echoes), set geoPriority=false unless the station name strongly implies purely local discovery, an editorial headline like "Echoes of ${opts.station.name.slice(0, 28)}", a 1-sentence host intro, and a rich semanticProfile capturing its sonic essence.`;
+  } else if (opts.image && opts.query.trim()) {
+    userPrompt = `Analyze the attached image together with the listener's steering prompt: "${opts.query.trim()}"\nGenerate 3 to 4 Radio Browser search plans, targetCountryCodes, targetRegions, geoPriority, imageSummary, a short atmospheric editorial headline (3-6 words), a 1-sentence host intro, and a rich semanticProfile describing the sonic texture, tempo, mood, era, and geography.`;
+  } else if (opts.image) {
+    userPrompt = `Analyze the attached image and translate its atmosphere, place, era, and mood into live radio.\nGenerate 3 to 4 Radio Browser search plans, targetCountryCodes, targetRegions, geoPriority, imageSummary, a short atmospheric editorial headline (3-6 words), a 1-sentence host intro, and a rich semanticProfile describing the sonic texture, tempo, mood, era, and geography.`;
+  } else {
+    userPrompt = `Listener prompt: "${opts.query}"\nGenerate 3 to 4 Radio Browser search plans, targetCountryCodes, targetRegions, geoPriority, a short atmospheric editorial headline (3-6 words), a 1-sentence host intro, and a rich semanticProfile describing the sonic texture, tempo, mood, era, and geography.`;
+  }
 
   const plannerCfg = getPlannerConfig(model, thinkingLevel);
+  const userParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+  if (opts.mode === 'search' && opts.image) {
+    userParts.push({
+      inlineData: {
+        mimeType: opts.image.mimeType,
+        data: opts.image.data,
+      },
+    });
+  }
+  userParts.push({ text: userPrompt });
 
   const { response } = await generateContentWithFallback(ai, {
     model: plannerCfg.model,
-    contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+    contents: [{ role: 'user', parts: userParts }],
     systemInstruction,
     thinkingLevel: plannerCfg.thinkingLevel,
     responseMimeType: 'application/json',
@@ -934,6 +1036,7 @@ async function planSearchWithLlm(
         headline: { type: Type.STRING },
         intro: { type: Type.STRING },
         semanticProfile: { type: Type.STRING },
+        imageSummary: { type: Type.STRING },
         geoPriority: { type: Type.BOOLEAN },
         targetCountryCodes: {
           type: Type.ARRAY,
@@ -963,7 +1066,7 @@ async function planSearchWithLlm(
       required: ['headline', 'intro', 'semanticProfile', 'geoPriority', 'targetCountryCodes', 'targetRegions', 'planTags', 'plans'],
     },
     jsonFallbackHint:
-      'Return ONLY valid JSON matching { "headline": string, "intro": string, "semanticProfile": string, "geoPriority": boolean, "targetCountryCodes": string[], "targetRegions": string[], "planTags": string[], "plans": Array<{ tag?: string, countrycode?: string, language?: string, name?: string }> }.',
+      'Return ONLY valid JSON matching { "headline": string, "intro": string, "semanticProfile": string, "imageSummary"?: string, "geoPriority": boolean, "targetCountryCodes": string[], "targetRegions": string[], "planTags": string[], "plans": Array<{ tag?: string, countrycode?: string, language?: string, name?: string }> }.',
   });
 
   const parsed = parseJsonObject(response.text || '{}') as Partial<QueryPlanResult>;
@@ -975,9 +1078,16 @@ async function planSearchWithLlm(
     ? parsed.targetRegions.filter((r): r is string => typeof r === 'string')
     : [];
 
+  const geoSeedText =
+    opts.mode === 'search'
+      ? opts.image
+        ? [opts.query, ...rawLlmRegions].filter(Boolean).join(' ')
+        : opts.query
+      : '';
+
   const mergedGeo =
     opts.mode === 'search'
-      ? mergeGeoIntent(opts.query, rawLlmCodes, rawLlmRegions, Boolean(parsed.geoPriority))
+      ? mergeGeoIntent(geoSeedText, rawLlmCodes, rawLlmRegions, Boolean(parsed.geoPriority))
       : {
           targetCountryCodes: rawLlmCodes.map((c) => c.trim().toUpperCase()).filter((c) => c.length === 2),
           targetRegions: rawLlmRegions.map((r) => r.trim()).filter(Boolean),
@@ -1004,12 +1114,19 @@ async function planSearchWithLlm(
     : [];
   const combinedTags = [...new Set([...rawPlanTags, ...mergedGeo.regionalTags])].slice(0, 6);
 
+  const imageSummary =
+    typeof parsed.imageSummary === 'string' && parsed.imageSummary.trim()
+      ? parsed.imageSummary.trim()
+      : undefined;
+
   return {
     headline:
       typeof parsed.headline === 'string' && parsed.headline.trim()
         ? parsed.headline.trim()
         : opts.mode === 'search'
-          ? 'Curated Frequencies'
+          ? opts.image
+            ? 'Visual Frequencies'
+            : 'Curated Frequencies'
           : `Echoes of ${opts.station.name}`,
     intro:
       typeof parsed.intro === 'string' && parsed.intro.trim()
@@ -1019,8 +1136,9 @@ async function planSearchWithLlm(
       typeof parsed.semanticProfile === 'string' && parsed.semanticProfile.trim()
         ? parsed.semanticProfile.trim()
         : opts.mode === 'search'
-          ? opts.query
+          ? opts.query || imageSummary || 'Atmospheric global radio'
           : buildStationDescriptor(opts.station),
+    imageSummary,
     planTags: combinedTags,
     plans: finalPlans,
     targetCountryCodes: mergedGeo.targetCountryCodes,
@@ -1029,13 +1147,24 @@ async function planSearchWithLlm(
   };
 }
 
+/** Wrap each text in its own Content object so @google/genai keeps 1:1 batch items for gemini-embedding-2. */
+export function toEmbedContents(
+  texts: string[]
+): Array<{ role: 'user'; parts: Array<{ text: string }> }> {
+  return texts.map((text) => ({
+    role: 'user',
+    parts: [{ text }],
+  }));
+}
+
 async function embedTexts(ai: GoogleGenAI, texts: string[]): Promise<Float32Array[]> {
   if (texts.length === 0) return [];
+  const contents = toEmbedContents(texts);
   let res;
   try {
     res = await ai.models.embedContent({
       model: EMBEDDING_MODEL,
-      contents: texts,
+      contents,
       config: { outputDimensionality: SEED_EMBEDDING_DIM },
     });
   } catch (err) {
@@ -1047,7 +1176,7 @@ async function embedTexts(ai: GoogleGenAI, texts: string[]): Promise<Float32Arra
     }
     res = await ai.models.embedContent({
       model: EMBEDDING_MODEL,
-      contents: texts,
+      contents,
       config: {
         outputDimensionality: SEED_EMBEDDING_DIM,
         httpOptions: { apiVersion: 'v1beta' },
@@ -1057,9 +1186,70 @@ async function embedTexts(ai: GoogleGenAI, texts: string[]): Promise<Float32Arra
   const embeddings = res.embeddings ?? [];
   return texts.map((_, idx) => {
     const vals = embeddings[idx]?.values;
-    if (!vals || vals.length === 0) return new Float32Array(SEED_EMBEDDING_DIM);
+    if (!vals || vals.length === 0 || !hasNonZeroVectorValues(vals)) return new Float32Array(0);
     return normalizeVector(vals);
   });
+}
+
+/**
+ * Embed a multimodal query (image + semantic text) in gemini-embedding-2's unified 768d space,
+ * gracefully falling back to text-only semanticProfile embedding if multimodal embed is rejected.
+ */
+async function embedMultimodalQuery(
+  ai: GoogleGenAI,
+  text: string,
+  image?: AiImagePayload
+): Promise<Float32Array[]> {
+  if (!image) {
+    return embedTexts(ai, [text]);
+  }
+  const contents = [
+    {
+      role: 'user' as const,
+      parts: [
+        { inlineData: { mimeType: image.mimeType, data: image.data } },
+        { text },
+      ],
+    },
+  ];
+  try {
+    let res;
+    try {
+      res = await ai.models.embedContent({
+        model: EMBEDDING_MODEL,
+        contents,
+        config: { outputDimensionality: SEED_EMBEDDING_DIM },
+      });
+    } catch (err) {
+      if (
+        isFatalAuthOrQuotaError(err) ||
+        (!isModelNotFoundError(err) && !isRecoverableBadRequestError(err))
+      ) {
+        throw err;
+      }
+      res = await ai.models.embedContent({
+        model: EMBEDDING_MODEL,
+        contents,
+        config: {
+          outputDimensionality: SEED_EMBEDDING_DIM,
+          httpOptions: { apiVersion: 'v1beta' },
+        },
+      });
+    }
+    const vals = res.embeddings?.[0]?.values;
+    if (vals && vals.length > 0 && hasNonZeroVectorValues(vals)) {
+      return [normalizeVector(vals)];
+    }
+  } catch (err) {
+    if (isFatalAuthOrQuotaError(err)) {
+      throw err;
+    }
+    console.warn(
+      '[aiSearch] Multimodal image embedding failed, falling back to semantic text embedding:',
+      extractErrorMessage(err)
+    );
+  }
+  return embedTexts(ai, [text]);
 }
 
 async function getOrEmbedStations(
@@ -1103,7 +1293,7 @@ async function getOrEmbedStations(
       );
       slice.forEach((m, idx) => {
         const vec = vecs[idx];
-        if (vec) {
+        if (vec && vec.length === SEED_EMBEDDING_DIM) {
           liveVectorCache.set(m.station.stationuuid, { signature: m.sig, vector: vec });
           result.set(m.station.stationuuid, vec);
         }
@@ -1253,6 +1443,7 @@ export async function rerankCandidatesWithLlm(
   thinkingLevel: AiThinkingLevel,
   opts: {
     contextLabel: string;
+    image?: AiImagePayload;
     targetRegions: string[];
     targetCountryCodes: string[];
     geoPriority: boolean;
@@ -1295,9 +1486,20 @@ export async function rerankCandidatesWithLlm(
 
   try {
     const cfg = getPlannerConfig(model, thinkingLevel);
+    const rerankParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+    if (opts.image) {
+      rerankParts.push({
+        inlineData: {
+          mimeType: opts.image.mimeType,
+          data: opts.image.data,
+        },
+      });
+    }
+    rerankParts.push({ text: userPrompt });
+
     const { response } = await generateContentWithFallback(ai, {
       model: cfg.model,
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+      contents: [{ role: 'user', parts: rerankParts }],
       systemInstruction,
       thinkingLevel: cfg.thinkingLevel,
       responseMimeType: 'application/json',
@@ -1368,12 +1570,13 @@ export async function rerankCandidatesWithLlm(
   }
 }
 
-async function runHybridPipeline(
+export async function runHybridPipeline(
   ai: GoogleGenAI,
   opts:
     | {
         mode: 'search';
         query: string;
+        image?: AiImagePayload;
         model: AiModelId;
         thinkingLevel: AiThinkingLevel;
         notesModel?: AiModelId;
@@ -1403,13 +1606,13 @@ async function runHybridPipeline(
     opts.model,
     opts.thinkingLevel,
     opts.mode === 'search'
-      ? { mode: 'search', query: opts.query }
+      ? { mode: 'search', query: opts.query, image: opts.image }
       : { mode: 'similar', station: opts.station }
   );
 
   const semanticText =
     opts.mode === 'search'
-      ? `${opts.query}. ${plan.semanticProfile}`
+      ? [opts.query, plan.imageSummary, plan.semanticProfile].filter(Boolean).join('. ')
       : `${buildStationDescriptor(opts.station)}. ${plan.semanticProfile}`;
 
   // Build dedicated bare-country live queries for top target countries when geo intent is active
@@ -1425,16 +1628,16 @@ async function runHybridPipeline(
         .map((countrycode) => ({ countrycode }))
     : [];
 
-  // Step 2: Embed semantic query + fan out planned and country-level Radio Browser queries in parallel
+  // Step 2: Embed semantic query (multimodal when image is provided) + fan out planned and country-level Radio Browser queries in parallel
   const [queryVecArr, ...allLiveLists] = await Promise.all([
-    embedTexts(ai, [semanticText]),
+    embedMultimodalQuery(ai, semanticText, opts.mode === 'search' ? opts.image : undefined),
     ...plan.plans.map((p) => fetchRadioBrowserPlan(p, opts.httpsOnly, 16)),
     ...extraCountryPlans.map((p) => fetchRadioBrowserPlan(p, opts.httpsOnly, 14)),
   ]);
   const liveLists = allLiveLists.slice(0, plan.plans.length);
   const geoLiveLists = allLiveLists.slice(plan.plans.length);
 
-  const queryVector = queryVecArr[0];
+  const queryVector = queryVecArr[0]?.length === SEED_EMBEDDING_DIM ? queryVecArr[0] : undefined;
   if (queryVector && (seedStats.vectorCount < seedStats.totalStations || seedStats.totalStations !== seedStats.targetCount)) {
     startSeedSyncBackground();
   }
@@ -1445,7 +1648,9 @@ async function runHybridPipeline(
   const searchTerms = [
     ...plan.planTags,
     ...plan.targetRegions,
-    ...(opts.mode === 'search' ? [opts.query] : [opts.station.tags, opts.station.country]),
+    ...(opts.mode === 'search'
+      ? [opts.query, plan.imageSummary || '']
+      : [opts.station.tags, opts.station.country]),
     ...plan.plans.flatMap((p) => [p.tag || '', p.name || '', p.language || '']),
   ].filter(Boolean);
 
@@ -1566,6 +1771,7 @@ async function runHybridPipeline(
       thinkingLevel: opts.thinkingLevel,
       usedReranker: false,
       targetRegions: plan.targetRegions,
+      imageSummary: plan.imageSummary,
     };
   }
 
@@ -1591,9 +1797,17 @@ async function runHybridPipeline(
 
   // Step 5: Optional LLM Curatorial Reranking Pass (default ON)
   const useReranker = opts.useReranker !== false;
+  const searchContextParts =
+    opts.mode === 'search'
+      ? [
+          opts.query ? `Listener mood/scene prompt: "${opts.query}"` : '',
+          plan.imageSummary ? `Uploaded image scene: "${plan.imageSummary}"` : '',
+          `profile: ${plan.semanticProfile}`,
+        ].filter(Boolean)
+      : [];
   const contextLabel =
     opts.mode === 'search'
-      ? `Listener mood/scene prompt: "${opts.query}" (profile: ${plan.semanticProfile})`
+      ? searchContextParts.join(' | ')
       : `Finding stations similar to "${opts.station.name}" (${opts.station.country}, tags: ${opts.station.tags})`;
 
   let selected: Station[];
@@ -1602,6 +1816,7 @@ async function runHybridPipeline(
   if (useReranker) {
     const reranked = await rerankCandidatesWithLlm(ai, opts.model, opts.thinkingLevel, {
       contextLabel,
+      image: opts.mode === 'search' ? opts.image : undefined,
       targetRegions: plan.targetRegions,
       targetCountryCodes: plan.targetCountryCodes,
       geoPriority: plan.geoPriority,
@@ -1618,7 +1833,12 @@ async function runHybridPipeline(
   if (opts.includeDjNotes) {
     const notesContext =
       opts.mode === 'search'
-        ? `Listener mood/scene prompt: "${opts.query}"`
+        ? [
+            opts.query ? `Listener mood/scene prompt: "${opts.query}"` : '',
+            plan.imageSummary ? `Uploaded image scene: "${plan.imageSummary}"` : '',
+          ]
+            .filter(Boolean)
+            .join(' | ') || `Visual/sonic mood: ${plan.semanticProfile}`
         : `Finding stations similar to "${opts.station.name}" (${opts.station.country}, tags: ${opts.station.tags})`;
     djNotes = await generateDjNotes(
       ai,
@@ -1641,6 +1861,7 @@ async function runHybridPipeline(
     thinkingLevel: opts.thinkingLevel,
     usedReranker,
     targetRegions: plan.targetRegions,
+    imageSummary: plan.imageSummary,
   };
 }
 
@@ -1731,6 +1952,7 @@ export async function handleAiSearchRequest(
   if (pathname === '/api/ai/search') {
     const body = await parseJsonBody<{
       query?: string;
+      image?: unknown;
       model?: unknown;
       thinkingLevel?: unknown;
       notesModel?: unknown;
@@ -1738,24 +1960,41 @@ export async function handleAiSearchRequest(
       httpsOnly?: boolean;
       includeDjNotes?: boolean;
       useReranker?: boolean;
-    }>(req);
-    const query = (body?.query || '').trim().slice(0, 240);
-    if (!query) {
-      sendJson(res, 400, { error: 'Please enter a mood, scene, or station description.' });
+    }>(req, MAX_IMAGE_BODY_BYTES);
+    if (!body) {
+      sendJson(res, 400, {
+        error: 'Invalid JSON request body or image exceeds upload size limit.',
+      });
       return true;
     }
 
-    const model = normalizeAiModel(body?.model);
-    const thinkingLevel = normalizeThinkingLevel(body?.thinkingLevel);
-    const notesModel = body?.notesModel !== undefined ? normalizeAiModel(body.notesModel) : model;
+    const query = (typeof body.query === 'string' ? body.query : '').trim().slice(0, 240);
+    const { image, error: imageError } = sanitizeAiImageInput(body.image);
+    if (imageError) {
+      sendJson(res, 400, { error: imageError });
+      return true;
+    }
+    if (!query && !image) {
+      sendJson(res, 400, {
+        error: 'Please enter a mood, scene, or upload an image to search.',
+      });
+      return true;
+    }
+
+    const model = normalizeAiModel(body.model);
+    const thinkingLevel = normalizeThinkingLevel(body.thinkingLevel);
+    const notesModel = body.notesModel !== undefined ? normalizeAiModel(body.notesModel) : model;
     const notesThinkingLevel =
-      body?.notesThinkingLevel !== undefined
+      body.notesThinkingLevel !== undefined
         ? normalizeThinkingLevel(body.notesThinkingLevel)
         : thinkingLevel;
-    const httpsOnly = body?.httpsOnly !== false;
-    const includeDjNotes = body?.includeDjNotes === true;
-    const useReranker = body?.useReranker !== false;
-    const cacheKey = `search|${query.toLowerCase()}|${model}|${thinkingLevel}|${httpsOnly}|${useReranker}`;
+    const httpsOnly = body.httpsOnly !== false;
+    const includeDjNotes = body.includeDjNotes === true;
+    const useReranker = body.useReranker !== false;
+    const imageHash = image
+      ? crypto.createHash('sha1').update(`${image.mimeType}:${image.data}`).digest('hex').slice(0, 16)
+      : '';
+    const cacheKey = `search|${query.toLowerCase()}|${imageHash}|${model}|${thinkingLevel}|${httpsOnly}|${useReranker}`;
 
     const cached = responseCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now() && !includeDjNotes) {
@@ -1767,6 +2006,7 @@ export async function handleAiSearchRequest(
       const result = await runHybridPipeline(ai, {
         mode: 'search',
         query,
+        image,
         model,
         thinkingLevel,
         notesModel,
@@ -1853,6 +2093,7 @@ export async function handleAiSearchRequest(
   if (pathname === '/api/ai/dj-notes') {
     const body = await parseJsonBody<{
       query?: string;
+      imageContext?: string;
       seedStation?: unknown;
       stations?: unknown[];
       notesModel?: unknown;
@@ -1862,15 +2103,20 @@ export async function handleAiSearchRequest(
       httpsOnly?: boolean;
     }>(req);
     const seedStation = sanitizeServerStation(body?.seedStation);
-    const query = (body?.query || '').trim().slice(0, 240);
+    const query = (typeof body?.query === 'string' ? body.query : '').trim().slice(0, 240);
+    const imageContext = (typeof body?.imageContext === 'string' ? body.imageContext : '')
+      .trim()
+      .slice(0, 300);
     const rawStations = Array.isArray(body?.stations) ? body.stations : [];
     const stations = rawStations
       .map((s) => sanitizeServerStation(s))
       .filter((s): s is Station => s !== null)
       .slice(0, 16);
 
-    if (stations.length === 0 || (!query && !seedStation)) {
-      sendJson(res, 400, { error: 'Stations and query or seedStation are required for DJ notes.' });
+    if (stations.length === 0 || (!query && !imageContext && !seedStation)) {
+      sendJson(res, 400, {
+        error: 'Stations and query, imageContext, or seedStation are required for DJ notes.',
+      });
       return true;
     }
 
@@ -1879,7 +2125,9 @@ export async function handleAiSearchRequest(
       body?.notesThinkingLevel ?? body?.thinkingLevel
     );
     const mode = seedStation ? 'similar' : 'search';
-    const queryOrUuid = seedStation ? seedStation.stationuuid : query.toLowerCase();
+    const queryOrUuid = seedStation
+      ? seedStation.stationuuid
+      : `${query.toLowerCase()}|${imageContext.toLowerCase()}`;
     const stationsHash = hashDescriptor(stations.map((s) => s.stationuuid).join(','));
     const notesCacheKey = `${mode}|${queryOrUuid}|${stationsHash}|${notesModel}|${notesThinkingLevel}`;
 
@@ -1891,7 +2139,12 @@ export async function handleAiSearchRequest(
 
     const contextLabel = seedStation
       ? `Finding stations similar to "${seedStation.name}" (${seedStation.country}, tags: ${seedStation.tags})`
-      : `Listener mood/scene prompt: "${query}"`;
+      : [
+          query ? `Listener mood/scene prompt: "${query}"` : '',
+          imageContext ? `Uploaded image scene: "${imageContext}"` : '',
+        ]
+          .filter(Boolean)
+          .join(' | ');
 
     try {
       const djNotes = await generateDjNotes(
